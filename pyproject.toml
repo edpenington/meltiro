@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meltiro"
+# Single-sourced from `meltiro.__version__`. The version is stamped into every
+# session's provenance record, so a second declaration here could drift from
+# the one the runtime reports and silently misdate an extraction's audit trail.
+dynamic = ["version"]
+description = "Agentic LLM-assisted data extraction for systematic reviews: paper bundle + config in, structured evidence-linked extraction out."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Ed Penington" }]
+keywords = ["systematic-review", "data-extraction", "llm", "evidence-synthesis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    # POSIX-only, declared rather than discovered at import. `run_log.py`
+    # imports `fcntl` at module scope and takes an exclusive `flock` around
+    # the whole read-modify-write of run_log.json, so two sessions finishing
+    # at once (a multi-`--paper` batch) cannot clobber each other's append.
+    # Guarding the import would trade a loud ImportError on Windows for a
+    # silently unlocked append on the one file that records what every run
+    # produced — the failure would be a lost or duplicated entry in an audit
+    # trail, discovered later or never. No Windows support is claimed
+    # anywhere, and CI tests Linux only, so the honest declaration is the
+    # narrow one.
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    # The shared provider layer: adapters, model registry, cost arithmetic.
+    # meltiro stays importable WITHOUT it — every name `import meltiro`
+    # advertises resolves with direktoro absent, so a consumer that only reads
+    # and validates bundles can install --no-deps and add `pyyaml` (needed by
+    # the import itself) plus `python-dotenv` (needed by the CLI) by hand.
+    # --no-deps here means "without the provider layer", NOT "without
+    # dependencies": pyyaml and python-dotenv below are load-bearing either
+    # way. The CLI requires direktoro outright.
+    #
+    # The floor is a fingerprint floor, not a feature floor, and it is the
+    # strictest kind meltiro declares. `call_identity_fields` plus
+    # `canonical_json` produce the block that is the FIRST component of every
+    # stage fingerprint; `resolved_decoding_params` decides which of those
+    # params reach it; `model_supports_images` feeds `structure_hash`. A
+    # release that changes the shape of any of those moves every fingerprint
+    # this project has published, with no config edit to explain it. 0.1.0 is
+    # the version whose shapes the recorded goldens were computed against, so
+    # an install below it would recompute published numbers differently.
+    # Runs record the resolved version too (`direktoro_version` in run.json and
+    # in each run-log entry, folded into `engine_fp`), so the declaration here
+    # and the artefact agree on which direktoro produced a given run.
+    "direktoro>=0.1.0",
+    # anthropic and openai are direktoro's runtime deps too, but meltiro
+    # constructs clients directly (lazily, in orchestrator/checker), so they
+    # are declared here in their own right.
+    #
+    # The anthropic floor is set by the per-role thinking seam: meltiro hands
+    # direktoro a `Thinking` spec, which it emits as `thinking=` and
+    # `output_config=` on `messages.stream(...)`. An SDK without those keyword
+    # parameters raises TypeError the moment a bundle names a thinking key.
+    # Measured against the published wheels: `thinking` first appears in
+    # 0.47.0, `output_config` in 0.77.0, so 0.77.0 is the oldest SDK accepting
+    # both. tests/test_dependency_floors.py checks this floor against the
+    # installed SDK's real signature and against direktoro's own declaration.
+    "anthropic>=0.77",
+    # The openai floor is inherited rather than self-imposed: meltiro only
+    # constructs `openai.OpenAI(...)`, which has been available far longer, but
+    # the client it builds is handed to direktoro's adapter, which calls
+    # `client.responses.create`. The `responses` namespace first ships in
+    # openai-python 1.66.0, so an older SDK resolves, imports, and then fails
+    # with an AttributeError at the first OpenAI call — after the run has
+    # started. Declared here at its true runtime floor rather than left to
+    # whatever direktoro happens to require.
+    "openai>=1.66",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/edpenington/meltiro"
+Repository = "https://github.com/edpenington/meltiro"
+Issues = "https://github.com/edpenington/meltiro/issues"
+
+[project.scripts]
+meltiro = "meltiro.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "meltiro.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+meltiro = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

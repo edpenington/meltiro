@@ -1,0 +1,36 @@
+# Caps and defaults for the agentic extraction loop, for the synthetic test
+# fixture. Every key here is on the allowlist in src/meltiro/config_bundle.py
+# (`KNOWN_PIPELINE_KEYS`); an unknown key is rejected at load.
+
+# Iteration caps. Operational budgets, out of every fingerprint: a run that
+# hits one pauses and can be resumed with the cap raised.
+max_tool_calls: 100
+max_review_tool_calls: 30
+max_checks_per_field: 2
+
+# Pipeline structure. These move the config fingerprint.
+final_review: true
+check_reviewer_edits: false
+
+# Model defaults
+extractor_model: claude-opus-4-8
+checker_model: claude-sonnet-4-6
+review_model: claude-opus-4-8
+
+# Decoding. Temperature is per role. With the models above, `temperature` and
+# `review_temperature` are inert: claude-opus-4-8 rejects the parameter, so the
+# adapter omits it. Only `checker_temperature` reaches the wire.
+temperature: 1.0
+review_temperature: 0.0
+checker_temperature: 0.0
+extractor_max_tokens: 32768
+checker_max_tokens: 1024
+review_max_tokens: 32768
+
+# Parallelism for the checker fan-out: max in-flight provider calls.
+checker_concurrency: 10
+
+# Characters of surrounding paper text shown on EACH side of every quote the
+# checker is given. A budget, not a hard cap. It changes the question the
+# checker is asked, so it rides in checker_fp.
+checker_context_chars: 1000

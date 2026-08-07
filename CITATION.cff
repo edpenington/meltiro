@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+message: "If you use meltiro in academic work, please cite it as below."
+title: "meltiro: agentic LLM-assisted data extraction for systematic reviews"
+abstract: >-
+  meltiro is a pipeline for AI-assisted data extraction and quality assessment
+  as part of evidence synthesis studies. It coordinates the agentic construction
+  of an extraction output in which fields are linked to figures, tables and
+  quotes from the paper wherever possible, and checked by multiple agents with
+  differing context. A run takes a paper bundle (clean full text file with cropped
+  figures and tables) together with a config bundle (extraction
+  template, prompts, reference lists, and pipeline settings), and returns a
+  validated extraction output. Each field is deterministically validated against
+  the requirements of the extraction template at every stage, with passing fields
+  committed to the extraction output and errors returned to the agent with an
+  informative error message. Wherever a field is linked to evidence (a quote,
+  figure or table) its existence in the paper is deterministically checked, 
+  and the interpretation of that evidence is cross-checked by an LLM.
+  Three deliberately uncorrelated roles participate: an Extractor, a per-field
+  Checker with restricted context, and a Reviewer with a fresh context. The inputs
+  for every run generate a fingerprint, meaning while extraction outputs
+  are not reproducible, runs with identical inputs and/or configurations can be
+  meaningfully compared.
+type: software
+version: 0.1.0
+date-released: "2026-08-06"
+authors:
+  - family-names: Penington
+    given-names: Ed
+    orcid: "https://orcid.org/0000-0001-7668-438X"
+    affiliation: "Department of Psychiatry, University of Oxford"
+# doi: ""
+keywords:
+  - systematic review
+  - evidence synthesis
+  - data extraction
+  - large language models
+  - research software
+repository-code: "https://github.com/edpenington/meltiro"
+url: "https://github.com/edpenington/meltiro"
+license: Apache-2.0

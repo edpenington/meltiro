@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "syn-degradation",
+  "title": "Can SPLINE-CD build a corrosion index score? Adapting a durability-score method to rig-wide gauge data",
+  "doi": "10.0000/syn.0003",
+  "exhibits": [],
+  "summary": "Objective. SPLINE-CD builds a composite durability score from the summary statistics of a network-wide gauge association study, and it does so by leaning on a covariance map that tells it which gauges move together. Corrosion has no such map. We asked whether the package can be pointed at rig-wide gauge data anyway, with the covariance prior replaced by something a depot can actually supply: clusters of gauges that corrode together, blocks of bays that sit next to one another, or a plain window sliding along the running line. Each variant was scored on held-out corrosion readings from withdrawn and in-service widgets (N = 1,308). Nothing in the design required raw readings to leave the depot that recorded them, a condition of access. Results. Two of the three substitutes worked as well as the method they were meant to improve on and no better, explaining about 4.2% of the variance in scrappage. The co-corroding clusters were the exception, and they failed for a mundane reason: too few gauges ended up in a cluster with anything else. What is more telling is that random clusters, carrying no structural information at all, matched the bay-based prior almost exactly. On this evidence the gain comes from the sampler rather than from the prior, and choosing between priors is not where effort is best spent. None of this is an argument against the package, only against the assumption that a better prior is where the next improvement lies."
+}

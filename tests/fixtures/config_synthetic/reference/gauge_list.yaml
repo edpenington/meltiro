@@ -1,0 +1,38 @@
+# Gauge Reference List for the synthetic widget durability review. Every gauge
+# below is invented; none of them exists.
+#
+# Each entry pairs a canonical `tool_name` (used verbatim in extracted data)
+# with semicolon-separated `search_terms` (upstream screening only, never
+# canonicalising) and an optional `aliases:` list. `aliases` is the ONLY key
+# that canonicalises: a value matching an alias is stored as the canonical
+# `tool_name`.
+#
+# `label:` is a presentation-only display name for the template render. It
+# reaches no model and moves no fingerprint.
+
+label: Gauge Reference List
+
+gauge_reference_list:
+  - tool_name: Widget Durability Scale 9 (WDS-9)
+    search_terms: Widget Durability Scale; WDS-9; WDS9; WDS 9
+    aliases:
+      - WDS-9
+      - WDS9
+      - Widget Durability Scale 9
+
+  - tool_name: Surface Resistance Index 7 (SRI-7)
+    search_terms: Surface Resistance Index; SRI-7; SRI7; SRI 7
+    aliases:
+      - SRI-7
+      - SRI7
+
+  - tool_name: Composite Rig Test (Heavy Duty)
+    search_terms: Composite Rig Test; CRT heavy duty; CRT-HD
+    aliases:
+      - CRT-HD
+
+  - tool_name: Bracket Load Rating (BLR)
+    search_terms: Bracket Load Rating; BLR
+
+  - tool_name: Coupling Wear Score (CWS)
+    search_terms: Coupling Wear Score; CWS

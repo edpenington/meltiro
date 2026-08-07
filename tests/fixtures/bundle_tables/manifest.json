@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "syn-flexural",
+  "title": "Does a high flexural durability grade protect load-bearing widgets from cracking? A one-year depot cohort study",
+  "doi": "10.0000/syn.0002",
+  "exhibits": [
+    {
+      "label": "figure_01",
+      "caption": "Fig. 1 Detection characteristic curve of the flexural durability grade for predicting flexural cracking one year later"
+    }
+  ],
+  "summary": "Objectives. We asked whether a widget graded highly for flexural durability at one inspection round is less likely to be found cracked at the next round. Methods. Two inspection rounds twelve months apart supplied the data, the first in February 2020 and the second in February 2021. Eligibility was restricted to units rated over 18 kN. Any widget missing from either round, or already cracked when the first round opened, was set aside. Ten rig-sheet items make up the depot durability grade, and all ten were scored at the first round. Flexural failure at follow-up was determined from the inspector's written finding of a through-crack or a fractured load path. Odds ratios (OR) came from multivariate logistic regression carrying unit age, duty class, manufacturer, baseline load severity, and any workshop repair recorded before the first round as fixed covariates. Results. Of the 588 widgets carried through both rounds, n = 47 (8.0%) were found cracked at the second. Each additional grade point lowered the odds of cracking once covariates were allowed for (aOR = 0.79 [95% confidence interval: 0.70–0.89]). Splitting the fleet at the cut-off read off these data reproduced the pattern: units graded 6 or above against those graded below (< 6) gave (aOR = 0.42 [0.21–0.84]). Conclusions. The grade carries usable warning of cracking a year ahead. Confirmation against a withdrawal standard set independently of the rig sheet is the obvious next step. A threshold fit for depot scheduling is proposed."
+}

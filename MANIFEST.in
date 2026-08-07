@@ -1,0 +1,14 @@
+# What the source distribution carries beyond the package itself.
+#
+# setuptools' default sdist sweep takes `tests/test*.py` and nothing else under
+# `tests/`, which ships the top-level test modules without `tests/conftest.py`
+# (the session-wide network guard and the config-bundle fixtures), without the
+# `tests/agentic_extraction/` and `tests/extraction/` packages, and without a
+# single data fixture — a suite that cannot be collected. `recursive-include`
+# ships it whole, data included, and `pythonpath = ["src"]` under
+# `[tool.pytest.ini_options]` lets the unpacked sdist import what it ships.
+recursive-include tests *
+include CITATION.cff
+global-exclude *.py[cod]
+global-exclude .DS_Store
+prune tests/**/__pycache__

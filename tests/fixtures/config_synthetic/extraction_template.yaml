@@ -1,0 +1,238 @@
+# Synthetic extraction template: the widget durability review.
+#
+# Invented end to end. The domain, the gauges, the outcomes, and every value
+# below are made up: no real review, instrument, or paper is described here.
+# It exists to exercise the engine's template features against a bundle small
+# enough to read in one sitting, and pairs with tests/fixtures/bundle_minimal/,
+# which is written in the same universe.
+
+
+# Study-level fields: one row per study.
+study_extraction:
+- section: Identity
+  fields:
+  - variable: study_label
+    description: Short label used in tables
+    type: string
+    extraction_instruction: Usually first author surname plus year. It is constructed rather than quoted, so evidence is optional.
+    evidence: optional
+  - variable: title
+    label: Title
+    description: Full paper title
+    type: string
+    evidence: required
+  - variable: authors
+    description: Author list, one per entry
+    type: string_list
+    evidence: required
+  - variable: year
+    description: Publication year
+    type: year
+    evidence: required
+  - variable: journal
+    description: Journal or source name
+    type: string
+    evidence: required
+  - variable: doi
+    label: DOI
+    description: Digital Object Identifier
+    type: string
+    evidence: required
+- section: Publication
+  fields:
+  - variable: abstract
+    description: The paper's abstract
+    type: string
+    role: summary
+    extraction_instruction: Reproduce the abstract as printed. It stands in as the study's short summary when the paper bundle's manifest carries none.
+    evidence: required
+  - variable: publication_type
+    description: Kind of document this is
+    options: [Journal article, Technical report, Standards body publication]
+    allow_other: true
+    evidence: required
+- section: Study Design
+  label: Design and setting
+  fields:
+  - variable: design
+    description: Design as described by authors
+    options: [Bench test, Field trial, Retrospective service records]
+    evidence: required
+  - variable: widget_class
+    description: Class of widget studied
+    type: string
+    evidence: required
+  - variable: sample_size
+    description: Widgets in the analysed sample
+    type: integer
+    evidence: required
+  - variable: test_start
+    description: When data collection began
+    type: date
+    evidence: required
+- section: Gauge Exposure
+  extraction_instruction: Record what the study measured, not what it found. A gauge belongs here whenever the paper reports collecting it, even if no relationship is estimated from it.
+  fields:
+  - variable: gauges_collected
+    description: Gauges recorded in this study
+    type: string_list
+    extraction_instruction: One exact name per gauge recorded, as a list.
+    evidence: required
+    canonical_reference: gauge_list
+  - variable: mean_gauge_score
+    description: Mean gauge score reported
+    type: number
+    evidence: required
+# Study-level quality appraisal. `qa: true` is presentation only: the render
+# groups the section under its own heading, and the publication view omits it.
+- section: Reporting
+  qa: true
+  fields:
+  - variable: qa_reporting
+    description: Compliance with a reporting checklist
+    options: [Compliant, Non-compliant, Not reported]
+    extraction_instruction: In this field's notes, name the checklist used.
+    evidence: optional
+
+# The repeated-row entity. The mapping key is the singular name; plural
+# defaults to singular + "s". Exactly one record type is supported.
+records:
+  relationship:
+    plural: relationships
+    description: a reported relationship between a durability gauge score and a lifecycle outcome
+    extraction_instruction: Create one entry per distinct gauge-outcome statistical relationship reported. Walk each results table row by row and emit a separate entry for every outcome variable named. Do NOT consolidate related outcomes into a single combined entry.
+    # Record fields the checker shows after the engine record id, as a
+    # human-readable label for one record.
+    checker_context_fields: [gauge, gauge_score_format, outcome_variable, outcome_category, statistical_method]
+    extraction:
+    - section: Gauge
+      fields:
+      - variable: gauge
+        label: Gauge
+        required: true
+        description: Which durability gauge is being assessed in this relationship
+        type: string
+        extraction_instruction: Use exact names from the Gauge Reference List.
+        evidence: required
+        canonical_reference: gauge_list
+      - variable: gauge_score_format
+        description: How the gauge score is operationalised
+        type: string
+        evidence: required
+    - section: Outcome
+      extraction_instruction: Record an outcome only where the paper reports a direct statistical estimate tying a gauge score to it.
+      fields:
+      - variable: outcome_variable
+        required: true
+        description: The specific outcome measure
+        type: string
+        evidence: required
+      - variable: outcome_category
+        required: true
+        description: Broad outcome category
+        options: [Cost or resource use, Service life, Failure state]
+        evidence: optional
+      - variable: index_tariff
+        description: Durability index tariff used
+        type: string
+        extraction_instruction: Only for Service life outcomes; leave null otherwise.
+        evidence: required
+      - variable: cost_source
+        description: Where the unit costs came from
+        type: string
+        evidence: required
+      - variable: failure_state_definition
+        description: How the failure state is defined
+        type: string
+        evidence: required
+    - section: Statistical Relationship
+      fields:
+      - variable: statistical_method
+        description: Analysis that produced the estimate
+        type: string
+        evidence: required
+      - variable: effect_type
+        description: Kind of estimate reported
+        type: string
+        soft_canonicalisation: true
+        evidence: required
+      - variable: effect_size
+        description: Point estimate as reported
+        type: string
+        evidence: required
+      - variable: direction
+        description: Direction of the association
+        options: [Positive, Negative, 'Null', Mixed]
+        evidence: optional
+      - variable: estimate_basis
+        description: Analysis this estimate comes from
+        options: [Primary analysis, Subgroup analysis, Sensitivity analysis]
+        allow_other: true
+        evidence: optional
+      - variable: adjusted
+        description: Whether the estimate is adjusted
+        type: boolean
+        evidence: required
+    # Record-level quality appraisal sections.
+    - section: Sample and Selection
+      qa: true
+      fields:
+      - variable: rqa_sample_adequate
+        description: Was the sample adequate here
+        options: [Adequate, Marginal, Inadequate, Unclear]
+        evidence: optional
+    - section: Method Appraisal
+      qa: true
+      fields:
+      - variable: rqa_pre_specified
+        description: Pre-specified or exploratory analysis
+        options: [Pre-specified, Exploratory, Unclear]
+        evidence: optional
+
+# Cross-field gates (optional). A gated field carrying a value while its
+# controlling field sits outside `allowed_values` earns a warning, never an
+# error. Both sides are `<entity>.<variable>` paths.
+gates:
+- when_field: relationship.outcome_category
+  field: relationship.index_tariff
+  allowed_values: [Service life]
+- when_field: relationship.outcome_category
+  field: relationship.cost_source
+  allowed_values: [Cost or resource use]
+- when_field: relationship.outcome_category
+  field: relationship.failure_state_definition
+  allowed_values: [Failure state]
+
+# LLM initial check: bare values, recorded before extraction begins.
+llm_initial_check:
+- section: Initial Check
+  extraction_instruction: Recorded before extraction begins. The extractor scans the supplied inputs, flags any obvious problem, and commits to how many relationships it expects to find.
+  fields:
+  - variable: text_readable
+    required: true
+    description: Is the supplied text readable
+    type: boolean
+  - variable: figure_tables_included
+    required: true
+    description: Was every exhibit supplied
+    type: boolean
+  - variable: missing_exhibits
+    description: Exhibits missing from the bundle
+    type: string_list
+  - variable: expected_relationships
+    required: true
+    description: How many relationships are expected
+    type: string
+
+# LLM quality check: bare values, recorded at mark_complete.
+llm_quality_check:
+- section: Quality Check
+  extraction_instruction: Recorded at mark_complete. The extractor reflects on what actually happened, including any divergence from `expected_relationships`.
+  fields:
+  - variable: deviation_from_expectations
+    required: true
+    description: How many were extracted, and why
+    type: string
+  - variable: general_notes
+    description: Any other observation worth recording
+    type: string

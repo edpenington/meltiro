@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A public repository: give the default token nothing it does not need.
+permissions:
+  contents: read
+
+# One run per ref. A force-push supersedes the run it interrupts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep the checkout clean and match how the suite is run locally.
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The versions pyproject.toml claims support for.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # direktoro is a public package now: a plain install, no deploy key and
+      # no repository secret. It is deliberately NOT pinned to a tag — meltiro
+      # declares `direktoro` with no version bound, so a stranger's install
+      # takes whatever direktoro is current, and CI should test that same
+      # thing. Once direktoro is on PyPI this whole step can be deleted: the
+      # editable install below resolves the name on its own.
+      - name: Install direktoro (public sister package)
+        run: pip install "direktoro @ git+https://github.com/edpenington/direktoro"
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # The suite is hermetic: tests/conftest.py installs a session-wide
+      # network guard, every LLM call runs against a stub, and no API key is
+      # read. Nothing to configure here and nothing that can spend.
+      - name: Test
+        run: pytest -q
+
+      # The console entry point, end to end, against fixtures that live inside
+      # tests/ so the smoke cannot be broken by anything outside the suite.
+      # `--dry-run` makes no API call and needs no key.
+      - name: Smoke (dry-run extract via the console entry point)
+        run: |
+          meltiro extract \
+            --config tests/fixtures/config_synthetic \
+            --paper tests/fixtures/bundle_minimal \
+            --out "$RUNNER_TEMP/m_smoke" \
+            --dry-run
+
+      - name: Smoke (the read-only subcommands)
+        run: |
+          meltiro fingerprint --config tests/fixtures/config_synthetic > /dev/null
+          meltiro validate-bundle tests/fixtures/bundle_minimal
+          meltiro render-template --config tests/fixtures/config_synthetic \
+            --view publication --out "$RUNNER_TEMP/template.md"
+
+  no-direktoro-import:
+    # meltiro promises that its LIBRARY surface imports with direktoro absent:
+    # a consumer that only reads bundles — parse the YAML, compare hashes,
+    # verify a pin — installs the wheel --no-deps and gets a working package.
+    # tests/test_config_bundle_without_direktoro.py checks this by poisoning
+    # sys.modules; this checks it for real, against a built wheel in an
+    # environment where direktoro genuinely is not installed.
+    #
+    # Note the boundary: the CLI (meltiro.cli) DOES import direktoro at module
+    # scope. The contract is about `import meltiro`, not about the command.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build --wheel
+      # --no-deps, then the two dependencies that ARE needed at import time
+      # (meltiro.reference_lists imports yaml; meltiro.cli imports dotenv).
+      # direktoro, anthropic and openai are all left out.
+      - run: pip install --no-deps dist/*.whl && pip install pyyaml python-dotenv
+      - name: Import and use the library with direktoro absent
+        run: |
+          python - <<'PY'
+          import importlib.util as u
+          for absent in ("direktoro", "anthropic", "openai"):
+              assert u.find_spec(absent) is None, f"{absent} unexpectedly installed"
+          import sys
+          import meltiro
+          assert "direktoro" not in sys.modules, "importing meltiro pulled direktoro"
+          from meltiro import (ConfigBundle, PaperBundle, RUN_STATUSES,
+                               load_bundle, load_config_bundle, validate_value)
+          # The whole advertised surface must resolve here: every name in
+          # __all__ is part of the contract a --no-deps consumer installs for,
+          # so a name that needed the provider layer would break it.
+          for name in meltiro.__all__:
+              assert hasattr(meltiro, name), f"meltiro.{name} is missing"
+          assert "direktoro" not in sys.modules, "the public surface pulled direktoro"
+          # The wheel's metadata version must equal the attribute it was built
+          # from, so the packaging metadata and the version stamped into every
+          # session's provenance record cannot drift.
+          import importlib.metadata as md
+          assert md.version("meltiro") == meltiro.__version__, (
+              md.version("meltiro"), meltiro.__version__)
+          print("ok", meltiro.__version__)
+          PY
+
+  packaging:
+    # What is actually published, checked rather than assumed: the wheel ships
+    # py.typed and nothing else beyond the package, the metadata is valid, and
+    # the sdist ships a suite that RUNS. CI otherwise only ever sees the
+    # checkout, where every file is present by definition.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine pytest
+      - run: python -m build
+      - name: Metadata is valid for an index
+        run: twine check --strict dist/*
+      - name: The wheel ships py.typed and only the package
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          assert "meltiro/py.typed" in names, "py.typed missing from the wheel"
+          stray = [n for n in names
+                   if not n.startswith(("meltiro/", "meltiro-"))]
+          assert not stray, stray
+          for unwanted in ("tests", "docs", "examples"):
+              hit = [n for n in names if n.startswith(f"{unwanted}/")]
+              assert not hit, hit
+          print(f"wheel ok: {len(names)} entries")
+          PY
+      - name: The sdist ships a suite that runs
+        # The suite contains subprocess tests (tests/test_config_bundle_without_direktoro.py
+        # re-invokes sys.executable), so the unpacked sdist is INSTALLED rather
+        # than run off pytest's `pythonpath` alone: a bare `pytest` there fails
+        # 4 tests with "No module named 'meltiro'" in the child process.
+        run: |
+          pip install "direktoro @ git+https://github.com/edpenington/direktoro"
+          mkdir -p "$RUNNER_TEMP/sdist"
+          tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist" --strip-components=1
+          pip install "$RUNNER_TEMP/sdist"
+          cd "$RUNNER_TEMP/sdist"
+          pytest -q
