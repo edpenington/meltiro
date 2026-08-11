@@ -6,6 +6,11 @@ well-formed args; richer validation (verbatim quotes, gate rules,
 reference-list canonicalisation, type matches against the template) happens in
 the dispatcher and lands in the `tool_result` payload.
 
+The checker has a catalogue of its own, one tool wide: `record_verdict`, at the
+bottom of this module. It is not dispatched here — `meltiro.checker` reads the
+call off the response itself — and it is hashed apart from the two catalogues
+above, for the reasons given where it is defined.
+
 The two check blocks have one path each and one author each
 -----------------------------------------------------------
 `initial_check` and `quality_check` are self-assessments about how the
@@ -929,6 +934,106 @@ def canonical_tool_set_json(template):
     """Canonical JSON serialisation of the tool catalogues, for tool_set_hash."""
     return json.dumps(
         all_tool_definitions(template),
+        sort_keys=True, separators=(",", ":"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The checker's verdict tool
+# ---------------------------------------------------------------------------
+
+# The two verdicts, in the order the schema offers them. A tuple rather than a
+# set so the rendered enum is deterministic: it is hashed into `checker_fp`,
+# and a set's iteration order would move that fingerprint between runs of one
+# unchanged tree. `meltiro.checker` derives its accepted-verdict set from this,
+# so the vocabulary the schema advertises and the one the reader enforces
+# cannot drift apart.
+CHECKER_VERDICTS = ("ok", "challenge")
+
+CHECKER_VERDICT_TOOL_NAME = "record_verdict"
+
+# The checker's whole catalogue: one tool, carrying one verdict on one field.
+#
+# Deliberately NOT part of `ROLES` / `all_tool_definitions` above. Those
+# catalogues are derived from the extraction template and hash into `config_fp`
+# and `review_fp`; this schema is fixed, holds no template content, and belongs
+# to `checker_fp` alone. Keeping it separate means an edit here moves the
+# checker's fingerprint and nothing else, which is the honest reading: it
+# changes what the checker may answer, and touches neither the extractor's
+# tools nor the reviewer's.
+_CHECKER_VERDICT_TOOL = {
+    "name": CHECKER_VERDICT_TOOL_NAME,
+    "description": (
+        "Record your verdict on the field you were asked about. This is how a "
+        "verdict is given: a reply that calls no tool records nothing."
+    ),
+    "input_schema": {
+        "type": "object",
+        # `rationale` is declared before `verdict` because a model filling this
+        # schema generates its properties in declaration order, and the
+        # checker is asked to work through the evidence and let the verdict
+        # follow from it. Declaring `verdict` first would invite a verdict
+        # chosen up front and justified afterwards.
+        "properties": {
+            "rationale": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Required. One short sentence working through whether the "
+                    "evidence supports the value. Write it before choosing "
+                    "the verdict and let the verdict follow from it. It is "
+                    "read by the extractor, so it has to carry its point "
+                    "succinctly."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "enum": list(CHECKER_VERDICTS),
+                "description": (
+                    "Required. `ok` when the evidence supports the value, "
+                    "either directly or by a derivation checkable from the "
+                    "quote. `challenge` when the evidence genuinely does not "
+                    "support it — the value contradicts the evidence, asserts "
+                    "a number or category the quote does not justify, or the "
+                    "quote is unrelated to the claim. Give `challenge` only "
+                    "if you expect the extractor to change the value or the "
+                    "evidence; if working through the rationale leaves you "
+                    "content with the value, the verdict is `ok`."
+                ),
+            },
+            "notes": {
+                "type": "string",
+                "description": (
+                    "Optional. Any further observation that should reach a "
+                    "human reviewer but is not part of the verdict. Omit it "
+                    "when there is nothing to add."
+                ),
+            },
+        },
+        "required": ["rationale", "verdict"],
+        "additionalProperties": False,
+    },
+}
+
+
+def checker_tool_definitions():
+    """The checker's tool catalogue: its verdict, and nothing else.
+
+    A list of one, returned as a list because that is what the provider
+    adapters take and what a second checker tool would extend.
+    """
+    return [_CHECKER_VERDICT_TOOL]
+
+
+def canonical_checker_tool_json():
+    """Canonical JSON of the checker's tool catalogue, for `checker_fp`.
+
+    The twin of `canonical_tool_set_json` for the checker's own schema, kept
+    apart from it for the reason given on `_CHECKER_VERDICT_TOOL`: the two
+    hash into different fingerprints.
+    """
+    return json.dumps(
+        checker_tool_definitions(),
         sort_keys=True, separators=(",", ":"),
     )
 

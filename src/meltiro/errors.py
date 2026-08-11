@@ -19,8 +19,31 @@ class ValidationFailure(AgenticExtractionError):
 
 
 class CheckerError(AgenticExtractionError):
-    """Raised when the checker LLM fails (API error after retries, or
-    response can't be parsed)."""
+    """Raised when one checker call cannot produce a verdict.
+
+    `spent` carries the usage of any provider calls that were BILLED before
+    the failure, as the same four counters a verdict reports
+    (`input_tokens`, `output_tokens`, `cache_creation_tokens`,
+    `cache_read_tokens`) plus `responses`, how many billed calls there were.
+    It is empty for a failure that reached no provider (a missing key) or
+    whose every attempt errored, and populated for one that got an answer and
+    could not use it — a truncated reply, or a run of replies that called no
+    tool. Those calls cost money, and a run that reported them as free would
+    understate its own spend; `run_checker_batch` reads this to price the
+    degraded field honestly.
+    """
+
+    _NO_SPEND = {
+        "responses": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+    }
+
+    def __init__(self, message, spent=None):
+        self.spent = dict(spent) if spent else dict(self._NO_SPEND)
+        super().__init__(message)
 
 
 class SessionError(AgenticExtractionError):

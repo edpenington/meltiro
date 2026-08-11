@@ -86,7 +86,7 @@ from meltiro.prompt_builder import (
     build_review_system_message, compute_prompt_config_hash)
 from meltiro.prompt_partials import stage_predicates
 from meltiro.template import load_template
-from meltiro.tools import all_tool_definitions
+from meltiro.tools import all_tool_definitions, checker_tool_definitions
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ PINNED_DIREKTORO_SOURCE = (
 GOLDEN_TEMPLATE_HASH = \
     "1821dbceb8ba6c4c8ac4835b155420d954a3c6c52ab1d1b42ee477e46c834ce5"
 GOLDEN_PROMPTS_HASH = \
-    "1078446b31ce01741909986cf2d1562c79831e5d4b098432af32d55ce922398b"
+    "6548d3b0480b1f7b5e4fb9710bf38e46462e2ad3f51dec973f90d6d26bd151ae"
 GOLDEN_REFERENCE_LISTS_HASH = \
     "51c7c7184b640abd363e95f5c169cb963760badb1792400a6ac5f017897fbcf6"
 GOLDEN_TOOL_SET_HASH = \
@@ -130,8 +130,8 @@ GOLDEN_EXTRACTOR_PROMPT_HASH = \
 
 # The instrument axis, as a run and `meltiro fingerprint` both record it.
 GOLDEN_INSTRUMENT_FP = ("instrument_fp:"
-                        "19e6d4b56df8e2c6964b4dd665fe5db699eac845d0edc7c03"
-                        "bf77c6d3762f80e")
+                        "4792f1c5b1f1a098edc0b3b29ca8e0d44033534b048896274"
+                        "fb0431152f3949d")
 
 # Stage fingerprints over the fixture bundle's real content, with
 # PINNED_CALL_IDENTITY in place of the provider-call identity block.
@@ -139,8 +139,8 @@ GOLDEN_CONFIG_FP = ("config_fp:"
                     "bcd0fa092c0b548b8db6b0ae883b1d85afb40e63e4760aae4"
                     "509fa67d8cdbbd5")
 GOLDEN_CHECKER_FP = ("checker_fp:"
-                     "52aba7afe95e5993c9b7e9a6229732817f595b6b95e3bce63"
-                     "5c11e0dde86c60d")
+                     "abe198c6de7360cd6cabd794694c5a50c9c19c01216e65c94"
+                     "cfbcd16537407dc")
 GOLDEN_REVIEW_FP = ("review_fp:"
                     "c0be020a20f4e8ab9fd99e8291f266f2b34c7d4c8d3b5c633"
                     "c689d2917b7be72")
@@ -176,8 +176,8 @@ PINNED_ENGINE_FP = ("engine_fp:"
 # The whole-run identity, composed from the stage goldens and the engine
 # placeholder above.
 GOLDEN_RUN_FP = ("run_fp:"
-                 "2954cf164fd8764ed03bae284d3e37de0de34d5d2dd1d80fb4b277"
-                 "3c69ea1685")
+                 "327c1fed98f9b516e5075f30f4187c591b0c4442332677d8049f0f"
+                 "c019b487fc")
 GOLDEN_RUN_FP_EXTRACTOR_ONLY = ("run_fp:"
                                 "cb54078a2ba9d8974e2eb48ed9230c937134f2932"
                                 "4e41ff6271d31a200e5df51")
@@ -503,6 +503,10 @@ class TestStageFingerprintComposition:
             PINNED_CALL_IDENTITY,
             system_text,
             checker.user_prompt_template_text(predicates=predicates),
+            # The schema the checker's verdict must fit. Its own catalogue,
+            # hashed apart from the extractor's and the reviewer's, so this
+            # component moves only when the shape of a verdict does.
+            tool_set_hash=tool_set_hash(checker_tool_definitions()),
             # The checker checks nothing of its own, so its structure component
             # carries only the image-capability toggle.
             structure_hash=structure_hash(0, supports_images=True),
@@ -514,8 +518,9 @@ class TestStageFingerprintComposition:
         assert fp == GOLDEN_CHECKER_FP, _moved(
             "checker_fp",
             "call identity | system prompt | user prompt template | "
-            "structure | field_catalogue_hash | reference_lists_hash | "
-            "ordered context fields | quote-context width",
+            "checker tool set | structure | field_catalogue_hash | "
+            "reference_lists_hash | ordered context fields | "
+            "quote-context width",
             "every checker-stage fingerprint this repo has published is "
             "unreproducible, and the per-config audit trail of checker "
             "verdicts no longer lines up with the runs that produced it.")

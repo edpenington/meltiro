@@ -866,13 +866,17 @@ class TestDirektoroContract:
 class _StopReasonAdapter:
     """A checker adapter that returns one response with a chosen stop_reason."""
 
-    def __init__(self, stop_reason, text='{"verdict": "ok", "rationale": "x"}'):
+    def __init__(self, stop_reason, verdict="ok", rationale="x"):
         self._stop_reason = stop_reason
-        self._text = text
+        self._verdict = verdict
+        self._rationale = rationale
 
     def create_message(self, **kwargs):
         from types import SimpleNamespace
-        block = SimpleNamespace(type="text", text=self._text)
+        from meltiro.tools import CHECKER_VERDICT_TOOL_NAME
+        block = SimpleNamespace(
+            type="tool_use", name=CHECKER_VERDICT_TOOL_NAME,
+            input={"verdict": self._verdict, "rationale": self._rationale})
         usage = SimpleNamespace(
             input_tokens=10, output_tokens=5,
             cache_creation_input_tokens=0, cache_read_input_tokens=0)

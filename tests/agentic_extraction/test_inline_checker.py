@@ -380,6 +380,7 @@ class TestVerdictRouting:
             "evidence_checked": "<q>The WDS-9 was administered</q>",
             "note_checked": None,
             "error_origin": False,
+            "reprompted": 0,
             "stage": "extractor",
             "input_tokens": 120,
             "output_tokens": 17,

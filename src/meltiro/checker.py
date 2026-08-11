@@ -2,11 +2,18 @@
 
 One call per field a tool call just wrote, in parallel up to a configurable
 concurrency. Each call gets a cached system prompt (the config bundle's checker
-prompt: role, verdict shape, and the rendered reference lists, with no field
-catalogue in it) plus a small per-field user message (field identity, the
-field's definition and allowed values, identity context, evidence, value, and
-the field's note). Returns one of `{ok, challenge}` plus a one-sentence
-rationale.
+prompt: role, the rendered reference lists, with no field catalogue in it) plus
+a small per-field user message (field identity, the field's definition and
+allowed values, identity context, evidence, value, and the field's note).
+Returns one of `{ok, challenge}` plus a one-sentence rationale.
+
+The verdict arrives as a tool call (`record_verdict`, defined in
+`meltiro.tools`), read off the response by block type. That is what makes the
+shape of an answer the engine's business and its content the config bundle's:
+the bundle says what the checker is for and how to weigh evidence, and can be
+rewritten freely for another review without any edit to it being able to break
+how a verdict is read. It also means a reply that leads with reasoning blocks,
+or with a sentence of preamble, is read exactly like one that does not.
 
 The checker is a probabilistic extension of the deterministic validator, not a
 pipeline stage: the orchestrator fans out over the fields one tool call
@@ -14,7 +21,9 @@ applied, and the challenges come back in that call's tool result alongside the
 validation errors. Each call is single-turn and sees only the current value,
 its evidence read in the surrounding paper text (see `DEFAULT_CONTEXT_CHARS`
 below and `checker_prompts`), and the field note, so a re-check after a
-revision judges a genuinely fresh context.
+revision judges a genuinely fresh context. A reply that calls no tool is
+re-asked once, as its own single-turn call carrying the same field and a nudge,
+so that property holds for a re-asked field too.
 
 Each call goes through direktoro's adapter as one blocking `create_message`
 and comes back complete; how that reaches the wire is the adapter's business,
@@ -27,7 +36,6 @@ extraction.
 from __future__ import annotations
 
 import concurrent.futures
-import json
 import os
 import time
 from dataclasses import dataclass
@@ -40,8 +48,14 @@ from meltiro.fingerprint import (
     structure_hash,
     field_catalogue_hash,
     reference_lists_hash,
+    tool_set_hash,
 )
 from meltiro.thinking import truncation_message
+from meltiro.tools import (
+    CHECKER_VERDICT_TOOL_NAME,
+    CHECKER_VERDICTS,
+    checker_tool_definitions,
+)
 
 # `direktoro` is imported LAZILY throughout this module, inside the functions
 # that actually reach a provider. `meltiro.config_bundle` imports this module,
@@ -68,7 +82,29 @@ DEFAULT_CONCURRENCY = 10
 # than the paper. 0 turns context off.
 DEFAULT_CONTEXT_CHARS = 1000
 
-VALID_VERDICTS = {"ok", "challenge"}
+# The verdicts a checker call may come back with, derived from the schema the
+# checker is sent (`meltiro.tools.CHECKER_VERDICTS`) so the vocabulary offered
+# and the vocabulary accepted are one value. A tool call is coaxed by its
+# schema rather than constrained by it, so the returned verdict is still
+# checked against this before it is believed.
+VALID_VERDICTS = frozenset(CHECKER_VERDICTS)
+
+# How many times one field's check may be re-asked when the reply carries no
+# tool call. One: a checker model under a forced tool_choice should not need
+# even that, and a model that declines twice is not going to answer on a third
+# ask — it is misconfigured, and the error-origin challenge says so at a cost
+# of one extra call rather than several.
+MAX_TOOL_FREE_REPROMPTS = 1
+
+# The nudge a tool-free checker reply is re-asked with. Engine framing, like
+# the extractor's and the reviewer's in `meltiro.prompt_builder`: the config
+# bundle says what the checker is for, and the engine says how an answer
+# reaches it. It rides in no fingerprint for the same reason theirs do not —
+# `engine_fp` identifies it.
+CHECKER_TOOL_REPROMPT = (
+    f"Record your verdict by calling the {CHECKER_VERDICT_TOOL_NAME} tool. "
+    f"A reply in prose records no verdict for this field."
+)
 
 
 @dataclass
@@ -243,6 +279,11 @@ class CheckerConfig:
             self.call_identity(),
             system_text,
             self.user_prompt_template_text(predicates=predicates),
+            # The schema the verdict must fit. It is engine-owned and fixed
+            # for a release, so this component moves only when the shape of a
+            # verdict itself changes — which is exactly when two runs stop
+            # being comparable.
+            tool_set_hash=tool_set_hash(checker_tool_definitions()),
             # The checker never checks itself, so its structure component
             # folds in only the image-capability toggle.
             structure_hash=structure_hash(
@@ -310,6 +351,57 @@ def _compute_cost(rates, input_tokens, output_tokens, cache_creation_tokens,
     ), 6)
 
 
+def _spend(config, responses):
+    """What one field's check cost, summed over every ask it took.
+
+    Returns the four token counters, `responses` (how many billed calls), and
+    `cost_usd`. Summed rather than read off the answering call because each
+    ask was billed: a field re-asked once and then answered cost two calls,
+    and reporting only the second would understate the run.
+
+    Three costing paths: a ROUTED checker model is priced FROM the responses
+    (OpenRouter usage.cost -> reported_cost; a missing value is a loud fault,
+    never $0); a DIRECT model is priced against the checker's rate card, which
+    is recorded with the run so the figure stays checkable; a DIRECT model with
+    no rate card states no cost at all, leaving the token counters as the
+    record. None is deliberate there and is never a 0.0, which would read as a
+    free call.
+
+    Called on the way to a verdict AND on the way out of a failure that had
+    already been billed, so a degraded field is priced the same way a
+    successful one is.
+    """
+    from direktoro import model_info
+
+    def total(attr):
+        return sum(getattr(r.usage, attr, 0) or 0 for r in responses)
+
+    input_tokens = total("input_tokens")
+    output_tokens = total("output_tokens")
+    cache_create = total("cache_creation_input_tokens")
+    cache_read = total("cache_read_input_tokens")
+
+    if model_info(config.checker_model).route is not None:
+        cost_usd = round(sum(
+            reported_cost_or_raise(config.checker_model, r)
+            for r in responses), 6)
+    elif config.rates is not None:
+        cost_usd = _compute_cost(
+            config.rates, input_tokens, output_tokens,
+            cache_create, cache_read,
+        )
+    else:
+        cost_usd = None
+    return {
+        "responses": len(responses),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_creation_tokens": cache_create,
+        "cache_read_tokens": cache_read,
+        "cost_usd": cost_usd,
+    }
+
+
 def reported_cost_or_raise(model, response):
     """The response-reported USD cost for a ROUTED (gateway-served) call.
 
@@ -334,58 +426,6 @@ def reported_cost_or_raise(model, response):
             f"it as $0: a routed call's cost comes from the response."
         )
     return reported
-
-
-def _strip_code_fences(raw):
-    s = raw.strip()
-    if s.startswith("```"):
-        s = s[3:]
-        if s.lower().startswith("json"):
-            s = s[4:]
-        if s.endswith("```"):
-            s = s[:-3]
-        s = s.strip()
-    return s
-
-
-def _parse_checker_json(raw):
-    """Parse the checker's JSON response, tolerating trailing text.
-
-    Sonnet occasionally appends a sentence of commentary after the JSON
-    object even though the prompt forbids it. `json.JSONDecoder.raw_decode`
-    returns the first complete JSON value and stops, so it is used to
-    extract just the object and ignore any trailing prose.
-
-    Raises CheckerError if no parseable JSON object can be found at all.
-    """
-    s = _strip_code_fences(raw).lstrip()
-    if not s:
-        raise CheckerError("Checker returned an empty response")
-
-    decoder = json.JSONDecoder()
-    try:
-        obj, end = decoder.raw_decode(s)
-    except json.JSONDecodeError as e:
-        # Heuristic: maybe there's prose BEFORE the JSON. Find the first
-        # `{` and try from there.
-        first_brace = s.find("{")
-        if first_brace > 0:
-            try:
-                obj, end = decoder.raw_decode(s[first_brace:])
-            except json.JSONDecodeError as e2:
-                raise CheckerError(
-                    f"Checker returned non-JSON: {e2}: {s[:200]!r}"
-                ) from e2
-        else:
-            raise CheckerError(
-                f"Checker returned non-JSON: {e}: {s[:200]!r}"
-            ) from e
-
-    if not isinstance(obj, dict):
-        raise CheckerError(
-            f"Checker JSON was not an object: {type(obj).__name__}"
-        )
-    return obj
 
 
 def _build_checker_adapter(config, client=None):
@@ -433,16 +473,19 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     is the per-field content blocks. `adapter` is a provider adapter; when
     omitted it is built from `config` (and an optional injected `client`).
 
-    Returns a dict with keys: verdict, rationale, input_tokens,
-    output_tokens, cache_creation_tokens, cache_read_tokens, cost_usd.
-    `cost_usd` is None when the call cannot be costed — a direct model and no
-    rate card on `config` — so the token counters stand alone rather than beside
-    a zero that would read as a free call.
+    Returns a dict with keys: verdict, rationale, notes, reprompted,
+    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+    cost_usd. `cost_usd` is None when the call cannot be costed — a direct
+    model and no rate card on `config` — so the token counters stand alone
+    rather than beside a zero that would read as a free call. Every counter
+    covers EVERY call this check made, so a re-asked field reports what it
+    actually cost.
 
     Raises CheckerError on any failure.
     """
     from direktoro import (ProviderError, ProviderRateLimitError,
-                           ProviderRetryableError, model_info)
+                           ProviderRetryableError, extract_tool_call,
+                           model_info, tool_choice_named)
     if adapter is None:
         adapter = _build_checker_adapter(config, client)
     if adapter is None:
@@ -456,109 +499,137 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     max_retries = 3
     backoff = [2, 4, 8]
 
-    response = None
-    for attempt in range(max_retries + 1):
-        try:
-            response = adapter.create_message(
-                model=config.checker_model,
-                max_tokens=config.max_tokens,
-                system=system_message_blocks,
-                messages=[{"role": "user", "content": user_message_blocks}],
-                temperature=config.temperature,
-                thinking=config.thinking,
-            )
-            break
-        except ProviderRateLimitError as e:
-            if attempt < max_retries:
-                time.sleep(backoff[attempt])
-                continue
-            raise CheckerError(f"Rate limit after {max_retries} retries: {e}")
-        except ProviderRetryableError as e:
-            if attempt < max_retries:
-                time.sleep(backoff[attempt])
-                continue
+    # The verdict tool, and the strongest tool_choice this model's endpoint
+    # honours. `tool_choice_named` returns the wire's "auto" form for an
+    # endpoint that refuses a forced choice, so a non-forcing checker model
+    # needs no branch here; it is why the re-prompt below exists at all.
+    #
+    # Tools render ahead of the system prompt in the cached prefix, so adding
+    # them lengthens what the first call of a run writes to cache and every
+    # call after it reads. The schema is fixed for the run, so that is a
+    # one-time cost, not a per-call one.
+    tools = checker_tool_definitions()
+    tool_choice = tool_choice_named(
+        config.checker_model, CHECKER_VERDICT_TOOL_NAME)
+
+    responses = []
+    tool_input = None
+    last_error = None
+    # Each attempt is its own SINGLE-TURN call, not a growing conversation:
+    # the re-prompt re-sends the same per-field message with the nudge
+    # appended, rather than replaying the model's tool-free reply back at it.
+    # That keeps the property the whole checker rests on — one call sees one
+    # field and nothing else — true of a re-asked field as well as a
+    # first-asked one, and leaves the cached system prefix untouched.
+    for ask in range(MAX_TOOL_FREE_REPROMPTS + 1):
+        blocks = list(user_message_blocks)
+        if ask:
+            blocks.append({"type": "text", "text": CHECKER_TOOL_REPROMPT})
+
+        response = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = adapter.create_message(
+                    model=config.checker_model,
+                    max_tokens=config.max_tokens,
+                    system=system_message_blocks,
+                    messages=[{"role": "user", "content": blocks}],
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    temperature=config.temperature,
+                    thinking=config.thinking,
+                )
+                break
+            except ProviderRateLimitError as e:
+                if attempt < max_retries:
+                    time.sleep(backoff[attempt])
+                    continue
+                raise CheckerError(
+                    f"Rate limit after {max_retries} retries: {e}")
+            except ProviderRetryableError as e:
+                if attempt < max_retries:
+                    time.sleep(backoff[attempt])
+                    continue
+                raise CheckerError(
+                    f"Provider error after {max_retries} retries: {e}")
+            except ProviderError as e:
+                raise CheckerError(f"Provider API error: {e}")
+
+        responses.append(response)
+
+        # Verbatim API audit log, one entry per call — so a re-asked field
+        # leaves both asks in the audit trail rather than only the one that
+        # answered.
+        if api_logger is not None:
+            try:
+                meta = dict(api_log_meta or {})
+                meta.update(provider=response.provider,
+                            base_url=response.base_url,
+                            wire_model=response.resolved_model,
+                            wire_request=response.wire_request,
+                            ask=ask)
+                api_logger(response.raw_request, response.raw_response, **meta)
+            except Exception:
+                # Audit-side errors must not abort the checker call.
+                pass
+
+        # Truncation, named. On a thinking model the cap covers the reasoning
+        # too (see `meltiro.thinking`), so the whole budget can go on
+        # reasoning and the turn end before the tool call is emitted; unnamed,
+        # that arrives here as an ordinary tool-free reply, which points at
+        # the model's willingness rather than at the cap. The startup guard in
+        # meltiro.thinking refuses caps that cannot fit a think plus an
+        # answer, but adaptive thinking can still spend a legal cap, so
+        # truncation stays possible. Not re-asked: a cap that truncated once
+        # will truncate again, and the message names the fix.
+        if getattr(response, "stop_reason", None) == "max_tokens":
             raise CheckerError(
-                f"Provider error after {max_retries} retries: {e}")
-        except ProviderError as e:
-            raise CheckerError(f"Provider API error: {e}")
+                truncation_message("checker", config.checker_model,
+                                   config.max_tokens, thinking=config.thinking),
+                spent=_spend(config, responses))
 
-    # Verbatim API audit log (one entry per call). The adapter carries the
-    # canonical request and the resolved provider/model for provenance.
-    if api_logger is not None:
-        try:
-            meta = dict(api_log_meta or {})
-            meta.update(provider=response.provider,
-                        base_url=response.base_url,
-                        wire_model=response.resolved_model,
-                        wire_request=response.wire_request)
-            api_logger(response.raw_request, response.raw_response, **meta)
-        except Exception:
-            # Audit-side errors must not abort the checker call.
-            pass
+        # Read the verdict off the response by BLOCK TYPE rather than by
+        # position, so any leading block a model or endpoint emits ahead of
+        # the tool call — reasoning, a sentence of preamble — is skipped
+        # rather than mistaken for the answer.
+        tool_input, last_error = extract_tool_call(
+            response, CHECKER_VERDICT_TOOL_NAME)
+        if tool_input is not None:
+            break
 
-    # Truncation, named. On a thinking model the cap covers the reasoning too
-    # (see `meltiro.thinking`), so the whole budget can go on reasoning and
-    # the JSON be cut off before it closes; unnamed, that reaches
-    # `_parse_checker_json` as "Checker returned non-JSON", which points at
-    # the model's formatting rather than at the cap. The startup guard in
-    # meltiro.thinking refuses caps that cannot fit a think plus an answer,
-    # but adaptive thinking can still spend a legal cap, so truncation stays
-    # possible. Raised as a CheckerError so run_checker_batch degrades this
-    # one field to an error-origin challenge rather than aborting the
-    # extraction.
-    if getattr(response, "stop_reason", None) == "max_tokens":
+    if tool_input is None:
+        # Every ask came back without the verdict tool. A model under a forced
+        # tool_choice should never reach here; one under "auto" has now
+        # declined twice. Either way no verdict was given, which
+        # run_checker_batch records as an error-origin challenge — an absence
+        # of checking, never an objection to the value.
         raise CheckerError(
-            truncation_message("checker", config.checker_model,
-                               config.max_tokens, thinking=config.thinking))
+            f"Checker gave no {CHECKER_VERDICT_TOOL_NAME} call in "
+            f"{len(responses)} ask(s): {last_error}",
+            spent=_spend(config, responses))
 
-    # Guard the first content block: an empty content list or a non-text
-    # first block (for example a stray tool_use) would otherwise raise
-    # IndexError/AttributeError, which is not a CheckerError and so would
-    # escape the per-field error handling and kill the whole extraction.
-    # Raise CheckerError instead, so run_checker_batch wraps it as a single
-    # challenged field.
-    content = response.content
-    if not content:
-        raise CheckerError("Checker response had no content blocks")
-    raw_text = getattr(content[0], "text", None)
-    if raw_text is None:
-        block_type = getattr(
-            content[0], "type", type(content[0]).__name__)
-        raise CheckerError(
-            f"Checker response's first content block has no text "
-            f"(block type {block_type!r})")
-    parsed = _parse_checker_json(raw_text)
-    verdict = parsed.get("verdict")
-    rationale = parsed.get("rationale", "")
-    notes = parsed.get("notes")  # optional free-text field
+    verdict = tool_input.get("verdict")
+    rationale = tool_input.get("rationale", "")
+    notes = tool_input.get("notes")  # optional free-text field
+    # The schema advertises the vocabulary; nothing enforces it on the wire,
+    # so a verdict outside it is refused here rather than believed. NOT
+    # re-asked: a tool-free reply is an answer that never arrived, while this
+    # is an answer that arrived invalid, and re-asking it would be
+    # second-guessing a judgement the checker did make.
     if verdict not in VALID_VERDICTS:
         raise CheckerError(
-            f"Invalid verdict {verdict!r}; expected one of {VALID_VERDICTS}"
+            f"Invalid verdict {verdict!r}; expected one of "
+            f"{sorted(VALID_VERDICTS)}"
         )
 
-    usage = response.usage
-    input_tokens = getattr(usage, "input_tokens", 0) or 0
-    output_tokens = getattr(usage, "output_tokens", 0) or 0
-    cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
-    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-    # Three costing paths: a ROUTED checker model is priced FROM the response
-    # (OpenRouter usage.cost -> reported_cost; a missing value is a loud fault,
-    # never $0); a DIRECT model is priced against the checker's rate card, which
-    # is recorded with the run so the figure stays checkable; a DIRECT model
-    # with no rate card states no cost at all, leaving the token counters above
-    # as the record. None is deliberate here and is never a 0.0, which would
-    # read as a free call.
-    checker_info = model_info(config.checker_model)
-    if checker_info.route is not None:
-        cost_usd = round(
-            reported_cost_or_raise(config.checker_model, response), 6)
-    elif config.rates is not None:
-        cost_usd = _compute_cost(
-            config.rates, input_tokens, output_tokens,
-            cache_create, cache_read,
-        )
-    else:
-        cost_usd = None
+    # `response` is the ask that answered, and is what the provenance below
+    # describes; the counters cover every ask.
+    spent = _spend(config, responses)
+    input_tokens = spent["input_tokens"]
+    output_tokens = spent["output_tokens"]
+    cache_create = spent["cache_creation_tokens"]
+    cache_read = spent["cache_read_tokens"]
+    cost_usd = spent["cost_usd"]
     return {
         "verdict": verdict,
         "rationale": rationale,
@@ -568,6 +639,12 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
         # real challenge from an exhausted-retry one; a genuine verdict is never
         # error-origin.
         "error_origin": False,
+        # How many times this field had to be re-asked before the verdict
+        # arrived. Nearly always 0. It is calibration signal about the CHECKER
+        # MODEL rather than about the field: a model that needs nudging is
+        # marginal for the role, and a run's diagnostics report it separately
+        # from the failures so the two are never read as one number.
+        "reprompted": len(responses) - 1,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_creation_tokens": cache_create,
@@ -658,16 +735,25 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
                 # genuine one: an error-origin challenge must never contribute
                 # to a trusted status.
                 "error_origin": True,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_creation_tokens": 0,
-                "cache_read_tokens": 0,
-                # Zero, not "not priced": this record carries zero tokens
-                # because the attempts that would have spent them all failed,
-                # and zero tokens cost zero under any rate card. It is a real
-                # figure over a real (empty) usage, so it neither needs rates
-                # nor withholds a total from a run that has them.
-                "cost_usd": 0.0,
+                # A degraded field still reports the asks it took to get
+                # there, so the calibration signal reads the same way on this
+                # path as on a successful one.
+                "reprompted": max(0, e.spent["responses"] - 1),
+                # The spend the failure had already incurred (CheckerError.
+                # spent): zero when nothing reached the provider or every
+                # attempt errored, and a real figure when the calls succeeded
+                # and their answers could not be used — a truncated reply, or
+                # replies that called no tool. Those were billed, and a run
+                # that ledgered them at zero would understate itself.
+                "input_tokens": e.spent["input_tokens"],
+                "output_tokens": e.spent["output_tokens"],
+                "cache_creation_tokens": e.spent["cache_creation_tokens"],
+                "cache_read_tokens": e.spent["cache_read_tokens"],
+                # 0.0 rather than None when nothing was spent: zero tokens
+                # cost zero under any rate card, so it is a real figure over a
+                # real (empty) usage and neither needs rates nor withholds a
+                # total from a run that has them.
+                "cost_usd": e.spent.get("cost_usd") or 0.0,
             }
         return call["field_path"], res
 
