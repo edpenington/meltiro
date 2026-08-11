@@ -89,7 +89,8 @@ from meltiro.session import Session, result_to_model_text
 from meltiro.statuses import CONSIDERED_STATUSES, VALIDATED_STATUSES
 from meltiro.thinking import check_role_thinking, truncation_message
 from meltiro.tools import (
-    MUTATING_TOOLS, ToolDispatcher, get_tool_definitions)
+    MUTATING_TOOLS, ToolDispatcher, canonical_checker_tool_json,
+    get_tool_definitions)
 from meltiro.validators import missing_required_fields
 
 
@@ -984,6 +985,11 @@ class Orchestrator:
         if checker_system is not None:
             print("\n=== CHECKER SYSTEM MESSAGE ===\n")
             print(checker_system)
+            # The verdict schema alongside the prompt that briefs it. It is
+            # engine-owned rather than part of the bundle, so a dry run is
+            # where an operator reads the shape their checker must answer in.
+            print("\n=== CHECKER TOOL CATALOGUE (canonical JSON) ===\n")
+            print(canonical_checker_tool_json())
         if review_system is not None:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
@@ -1027,6 +1033,8 @@ class Orchestrator:
             if checker_system is not None:
                 (tmp_dir / "checker_system.md").write_text(
                     checker_system, encoding="utf-8")
+                (tmp_dir / "checker_tool_catalogue.json").write_text(
+                    canonical_checker_tool_json(), encoding="utf-8")
             if review_system is not None:
                 (tmp_dir / "review_system.md").write_text(
                     review_system, encoding="utf-8")
@@ -2750,6 +2758,11 @@ class Orchestrator:
                 "evidence_checked": envelopes.get(fp, {}).get("evidence"),
                 "note_checked": envelopes.get(fp, {}).get("notes"),
                 "error_origin": bool(v.get("error_origin")),
+                # How many times this check had to be re-asked before a
+                # verdict arrived; 0 on nearly every check. Kept per verdict
+                # rather than only totalled, so the run's summary can be
+                # rebuilt from the event log like every other checker figure.
+                "reprompted": int(v.get("reprompted") or 0),
                 "stage": stage,
                 "input_tokens": v.get("input_tokens", 0),
                 "output_tokens": v.get("output_tokens", 0),
@@ -3024,9 +3037,19 @@ class Orchestrator:
         genuine challenge. `checker_errors` lists those whose last verdict was
         an exhausted-retry artefact, which is an absence of information rather
         than an objection, and so is reported apart from it.
+
+        `checks_reprompted` counts the checks whose reply had to be re-asked
+        before a verdict arrived (see `checker.MAX_TOOL_FREE_REPROMPTS`). It
+        is a fact about the CHECKER MODEL, not about any field: a model that
+        needs nudging is marginal for the role, and one that needs it often is
+        the wrong choice even when every nudge worked. Reported beside
+        `checker_errors` and never merged into it — a check that was re-asked
+        and then answered produced a real verdict, while an error is the
+        absence of one.
         """
         last = {}
         total = 0
+        reprompted = 0
         for ev in self.session.read_events():
             result = ev.get("result")
             if not isinstance(result, dict):
@@ -3034,6 +3057,8 @@ class Orchestrator:
             for fp, v in (result.get("_checker_verdicts") or {}).items():
                 last[fp] = v
                 total += 1
+                if v.get("reprompted"):
+                    reprompted += 1
         unresolved = sorted(
             fp for fp, v in last.items()
             if v.get("verdict") == "challenge" and not v.get("error_origin"))
@@ -3042,6 +3067,7 @@ class Orchestrator:
         return {
             "fields_checked": len(last),
             "checks_run": total,
+            "checks_reprompted": reprompted,
             "unresolved_challenges": unresolved,
             "checker_errors": errored,
         }

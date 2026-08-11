@@ -84,9 +84,12 @@ def figure_hashes(figure_paths):
 def tool_set_hash(tools):
     """Canonical-JSON SHA-256 of the tool definitions.
 
-    `tools` is what `tools.all_tool_definitions()` produces: a {role: [tool,
-    ...]} mapping covering every role's catalogue. `sort_keys=True` makes
-    dict-key reordering irrelevant; each list's order is significant.
+    `tools` is a tool catalogue: `tools.all_tool_definitions()`'s {role:
+    [tool, ...]} mapping for the extractor and reviewer, or
+    `tools.checker_tool_definitions()`'s plain list for the checker.
+    `sort_keys=True` makes dict-key reordering irrelevant; each list's order
+    is significant. The two catalogues are hashed separately and land in
+    different fingerprints, so this says how to hash one, never which.
     """
     return _sha256(canonical_json(tools))
 
@@ -166,6 +169,7 @@ def reference_lists_hash(reference_lists):
 def checker_config_fingerprint(call_identity,
                                system_prompt_text,
                                user_prompt_template_text,
+                               tool_set_hash="none",
                                structure_hash="default",
                                field_catalogue_hash_str="none",
                                reference_hash="none",
@@ -188,6 +192,12 @@ def checker_config_fingerprint(call_identity,
     so it rides here as its own ordered component rather than inside
     `field_catalogue_hash`.
 
+    `tool_set_hash` covers the checker's own tool catalogue — the schema its
+    verdict must fit. It is the checker's alone, hashed apart from the
+    extractor's and reviewer's catalogues (see `meltiro.tools`), so editing
+    the verdict schema moves this fingerprint and no other, and editing the
+    extraction template's tools moves theirs and not this one.
+
     `checker_context_chars` is how many characters of surrounding PAPER text
     the checker is shown on each side of a matched quote: it changes what the
     checker is asked, so it is config identity, while the text it selects is
@@ -201,7 +211,7 @@ def checker_config_fingerprint(call_identity,
     up = _sha256(user_prompt_template_text)
     # Ordered, so a reordering (a genuine edit to the label) moves the hash.
     sig = json.dumps(list(checker_context_fields or []), separators=(",", ":"))
-    key = (f"{call_identity}|{sp}|{up}"
+    key = (f"{call_identity}|{sp}|{up}|{tool_set_hash}"
            f"|{structure_hash}|{field_catalogue_hash_str}"
            f"|{reference_hash}|{sig}|ctx{int(checker_context_chars)}")
     return f"checker_fp:{_sha256(key)}"

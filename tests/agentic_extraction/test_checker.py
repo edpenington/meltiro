@@ -1,8 +1,9 @@
 """Tests for the checker client.
 
 The Anthropic call itself is mocked; what is under test is the wrapper
-logic: JSON parsing, verdict validation, cost accounting, the parallel
-fan-out, and the error-wrapping in run_checker_batch.
+logic: reading the verdict tool call off the response, verdict validation,
+cost accounting, the re-ask a tool-free reply gets, the parallel fan-out, and
+the error-wrapping in run_checker_batch.
 """
 
 from unittest.mock import MagicMock, patch
@@ -10,14 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from meltiro.checker import (
+    CHECKER_TOOL_REPROMPT,
     CheckerConfig,
     check_one_field,
     run_checker_batch,
-    _strip_code_fences,
 )
 from meltiro.errors import CheckerError
 from meltiro.prompt_partials import stage_predicates
 from meltiro.rates import Rates
+from meltiro.tools import CHECKER_VERDICT_TOOL_NAME
 from direktoro import NormalisedResponse, NormalisedUsage
 from direktoro.registry import OPENROUTER_BASE_URL
 
@@ -28,11 +30,51 @@ from direktoro.registry import OPENROUTER_BASE_URL
 PREDICATES = stage_predicates(2, True)
 
 
-def _stream_returning(content_text, *, input_tokens=100,
-                      output_tokens=20, cache_creation=0, cache_read=0):
-    """Build a mock that mimics anthropic's streaming context manager."""
+# Content blocks, as plain classes rather than MagicMocks. Two reasons: a
+# MagicMock answers `getattr(block, "type", None)` with a new mock rather than
+# None, so it would pass a type test it should fail; and `name` is a MagicMock
+# CONSTRUCTOR argument, so `MagicMock(name="record_verdict")` names the mock
+# instead of giving it a `.name` — the exact attribute the tool reader keys on.
+class _Text:
+    """A minimal Anthropic-shaped text block."""
+    type = "text"
+
+    def __init__(self, text):
+        self.text = text
+
+
+class _Thinking:
+    """A reasoning block, as a thinking model leads its response with."""
+    type = "thinking"
+
+    def __init__(self, thinking=""):
+        self.thinking = thinking
+
+
+class _ToolUse:
+    """A tool_use block: what a verdict actually arrives in."""
+    type = "tool_use"
+
+    def __init__(self, name, tool_input):
+        self.name = name
+        self.input = tool_input
+
+
+def _verdict_block(verdict="ok", rationale="matches the quote", notes=None,
+                   *, name=CHECKER_VERDICT_TOOL_NAME):
+    payload = {"verdict": verdict, "rationale": rationale}
+    if notes is not None:
+        payload["notes"] = notes
+    return _ToolUse(name, payload)
+
+
+def _stream_returning_content(content, *, input_tokens=100, output_tokens=20,
+                              cache_creation=0, cache_read=0,
+                              stop_reason="tool_use"):
+    """A mock of anthropic's streaming context manager over `content`."""
     response = MagicMock()
-    response.content = [MagicMock(text=content_text)]
+    response.content = content
+    response.stop_reason = stop_reason
     response.usage = MagicMock(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -47,34 +89,33 @@ def _stream_returning(content_text, *, input_tokens=100,
     return stream_cm
 
 
-def _client_returning(content_text, **kw):
+def _stream_returning_verdict(verdict="ok", rationale="matches the quote",
+                              notes=None, **kw):
+    return _stream_returning_content(
+        [_verdict_block(verdict, rationale, notes)], **kw)
+
+
+def _client_returning_content(content, **kw):
     client = MagicMock()
     client.messages.stream = MagicMock(
-        return_value=_stream_returning(content_text, **kw))
+        return_value=_stream_returning_content(content, **kw))
     return client
 
 
-def _stream_returning_content(content, *, input_tokens=100, output_tokens=20):
-    """Like _stream_returning but with a caller-supplied `content` list, so a
-    test can hand back an empty list or a first block that has no `.text`."""
-    response = MagicMock()
-    response.content = content
-    response.usage = MagicMock(
-        input_tokens=input_tokens, output_tokens=output_tokens,
-        cache_creation_input_tokens=0, cache_read_input_tokens=0,
-    )
-    stream_cm = MagicMock()
-    stream_cm.__enter__ = MagicMock(return_value=stream_cm)
-    stream_cm.__exit__ = MagicMock(return_value=False)
-    stream_cm.text_stream = iter([])
-    stream_cm.get_final_message = MagicMock(return_value=response)
-    return stream_cm
-
-
-def _client_returning_content(content):
+def _client_returning(verdict="ok", rationale="matches the quote",
+                      notes=None, **kw):
+    """A client whose every call answers with the verdict tool."""
     client = MagicMock()
     client.messages.stream = MagicMock(
-        return_value=_stream_returning_content(content))
+        return_value=_stream_returning_verdict(
+            verdict, rationale, notes, **kw))
+    return client
+
+
+def _client_returning_streams(*streams):
+    """A client handing back a different stream per call, in order."""
+    client = MagicMock()
+    client.messages.stream = MagicMock(side_effect=list(streams))
     return client
 
 
@@ -92,22 +133,9 @@ def _config(rates=RATES):
     )
 
 
-class TestStripCodeFences:
-    def test_no_fence(self):
-        assert _strip_code_fences('{"a":1}') == '{"a":1}'
-
-    def test_json_fence(self):
-        assert _strip_code_fences('```json\n{"a":1}\n```') == '{"a":1}'
-
-    def test_plain_fence(self):
-        assert _strip_code_fences('```\n{"a":1}\n```') == '{"a":1}'
-
-
 class TestCheckOneField:
     def test_ok_verdict(self):
-        client = _client_returning(
-            '{"verdict": "ok", "rationale": "matches the quote"}'
-        )
+        client = _client_returning("ok", "matches the quote")
         result = check_one_field(
             system_message_blocks=[{"type": "text", "text": "sys"}],
             user_message_blocks=[{"type": "text", "text": "user"}],
@@ -118,11 +146,11 @@ class TestCheckOneField:
         assert result["input_tokens"] == 100
         assert result["output_tokens"] == 20
         assert result["cost_usd"] > 0
+        # Answered on the first ask, which is the ordinary case.
+        assert result["reprompted"] == 0
 
     def test_challenge_verdict(self):
-        client = _client_returning(
-            '{"verdict": "challenge", "rationale": "wrong"}'
-        )
+        client = _client_returning("challenge", "wrong")
         result = check_one_field(
             system_message_blocks=[],
             user_message_blocks=[],
@@ -130,13 +158,64 @@ class TestCheckOneField:
         )
         assert result["verdict"] == "challenge"
 
+    def test_notes_ride_through_when_given(self):
+        client = _client_returning("ok", "r", notes="borderline")
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=_config(), client=client,
+        )
+        assert result["notes"] == "borderline"
+
+    def test_call_sends_the_verdict_tool_and_asks_for_it(self):
+        # The verdict tool is on every checker request, and the call asks for
+        # it by name on an endpoint that honours a forced choice. Without both
+        # there is no contract for the reply to satisfy.
+        client = _client_returning()
+        check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=_config(), client=client,
+        )
+        kwargs = client.messages.stream.call_args.kwargs
+        assert [t["name"] for t in kwargs["tools"]] == [
+            CHECKER_VERDICT_TOOL_NAME]
+        assert kwargs["tool_choice"] == {
+            "type": "tool", "name": CHECKER_VERDICT_TOOL_NAME}
+
+    def test_a_non_forcing_model_is_asked_with_auto(self):
+        # The two GLM vision endpoints 404 a forced tool_choice, so their
+        # calls go out under "auto" instead — which is why a tool-free reply
+        # has to be recoverable at all.
+        config = _config(rates=None)
+        config.checker_model = "z-ai/glm-4.6v"
+        adapter = _StubAdapter(
+            _routed_response([_verdict_block()], model="z-ai/glm-4.6v"))
+        check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=config, adapter=adapter,
+        )
+        assert adapter.calls[0]["tool_choice"] == {"type": "auto"}
+
+    def test_a_thinking_block_before_the_tool_call_is_read(self):
+        # A thinking model leads its response with reasoning blocks, and on
+        # the default display those carry no text at all. The verdict is found
+        # by block type, so what precedes it is immaterial.
+        client = _client_returning_content(
+            [_Thinking(), _Text("Let me look at the quote."),
+             _verdict_block("challenge", "the quote gives no denominator")])
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=_config(), client=client,
+        )
+        assert result["verdict"] == "challenge"
+        assert result["rationale"] == "the quote gives no denominator"
+
     def test_call_sends_the_configured_checker_temperature(self):
         # The WIRE side of the checker's decoding contract. checker_fp folds in
         # the checker's resolved decoding params, and that promise ("a
         # fingerprint folds in exactly what is sent") only holds while the call
         # site reads the same config value the fingerprint does. A non-default
         # value, so a hardcoded 0.0 anywhere on the path cannot pass.
-        client = _client_returning('{"verdict": "ok", "rationale": "r"}')
+        client = _client_returning()
         config = _config()
         config.temperature = 0.35
         check_one_field(
@@ -149,7 +228,7 @@ class TestCheckOneField:
     def test_call_omits_temperature_for_a_no_temperature_checker_model(self):
         # The quirk applies to the checker's live call too: a checker model that
         # rejects temperature is sent none, whatever the config asked for.
-        client = _client_returning('{"verdict": "ok", "rationale": "r"}')
+        client = _client_returning()
         config = _config()
         config.checker_model = "claude-opus-4-8"
         config.temperature = 0.35
@@ -161,60 +240,113 @@ class TestCheckOneField:
         assert "temperature" not in client.messages.stream.call_args.kwargs
 
     def test_invalid_verdict_raises(self):
-        client = _client_returning(
-            '{"verdict": "maybe", "rationale": "unsure"}'
-        )
+        # A tool call IS an answer, so a verdict outside the vocabulary is
+        # refused rather than re-asked: the checker judged, and the judgement
+        # is unusable.
+        client = _client_returning("maybe", "unsure")
         with pytest.raises(CheckerError, match="Invalid verdict"):
             check_one_field(
                 system_message_blocks=[],
                 user_message_blocks=[],
                 config=_config(), client=client,
             )
+        assert client.messages.stream.call_count == 1
 
-    def test_non_json_raises(self):
-        client = _client_returning("not json at all")
-        with pytest.raises(CheckerError, match="non-JSON"):
-            check_one_field(
-                system_message_blocks=[],
-                user_message_blocks=[],
-                config=_config(), client=client,
-            )
+    def test_a_tool_free_reply_is_reasked_and_then_answered(self):
+        # A model under "auto" may decline to call the tool. The field is
+        # re-asked once, as its own single-turn call carrying the nudge, and
+        # the verdict that arrives is an ordinary one.
+        client = _client_returning_streams(
+            _stream_returning_content([_Text("The value looks fine to me.")]),
+            _stream_returning_verdict("ok", "the quote carries the figure"),
+        )
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[{
+                "type": "text", "text": "field"}],
+            config=_config(), client=client,
+        )
+        assert result["verdict"] == "ok"
+        assert result["reprompted"] == 1
+        assert client.messages.stream.call_count == 2
+        # The re-ask is a fresh single-turn call: one user message, carrying
+        # the field again plus the nudge, and no assistant turn replayed back.
+        second = client.messages.stream.call_args_list[1].kwargs
+        assert [m["role"] for m in second["messages"]] == ["user"]
+        assert second["messages"][0]["content"][-1]["text"] == \
+            CHECKER_TOOL_REPROMPT
+        assert second["messages"][0]["content"][0]["text"] == "field"
 
-    def test_empty_content_raises_checker_error(self):
-        # An empty content list must become a CheckerError, not an
-        # unguarded IndexError that would escape the per-field handling.
-        client = _client_returning_content([])
-        with pytest.raises(CheckerError, match="no content blocks"):
+    def test_a_reasked_field_reports_both_calls_spend(self):
+        # Both asks were billed. Reporting only the one that answered would
+        # understate the run.
+        client = _client_returning_streams(
+            _stream_returning_content([_Text("no tool")], input_tokens=40,
+                                      output_tokens=5),
+            _stream_returning_verdict(input_tokens=60, output_tokens=15),
+        )
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=_config(), client=client,
+        )
+        assert result["input_tokens"] == 100
+        assert result["output_tokens"] == 20
+
+    def test_a_persistently_tool_free_checker_raises(self):
+        # Declining twice is a misconfigured checker model, not a slow one.
+        client = _client_returning_streams(
+            _stream_returning_content([_Text("still prose")]),
+            _stream_returning_content([_Text("still prose")]),
+        )
+        with pytest.raises(CheckerError, match="no record_verdict call"):
             check_one_field(
                 system_message_blocks=[], user_message_blocks=[],
                 config=_config(), client=client,
             )
+        assert client.messages.stream.call_count == 2
 
-    def test_non_text_first_block_raises_checker_error(self):
-        # A first block with no `.text` (for example a stray tool_use) must
-        # become a CheckerError, not an unguarded AttributeError.
-        import types
-        block = types.SimpleNamespace(type="tool_use")
-        client = _client_returning_content([block])
-        with pytest.raises(CheckerError, match="no text"):
-            check_one_field(
-                system_message_blocks=[], user_message_blocks=[],
-                config=_config(), client=client,
-            )
-
-    def test_strips_code_fences(self):
-        client = _client_returning(
-            '```json\n{"verdict": "ok", "rationale": "..."}\n```'
+    def test_a_wrong_tool_is_not_taken_as_a_verdict(self):
+        # Only the verdict tool answers. Another tool name is a tool-free
+        # reply as far as the verdict is concerned.
+        client = _client_returning_streams(
+            _stream_returning_content(
+                [_ToolUse("mark_complete", {"quality_check": {}})]),
+            _stream_returning_verdict("ok", "r"),
         )
         result = check_one_field(
             system_message_blocks=[], user_message_blocks=[],
             config=_config(), client=client,
         )
         assert result["verdict"] == "ok"
+        assert result["reprompted"] == 1
+
+    def test_empty_content_is_reasked_then_raises(self):
+        # An empty content list is a reply with no verdict in it, handled as
+        # any other tool-free reply — and never as an IndexError that would
+        # escape the per-field handling.
+        client = _client_returning_streams(
+            _stream_returning_content([]),
+            _stream_returning_content([]),
+        )
+        with pytest.raises(CheckerError, match="no record_verdict call"):
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=_config(), client=client,
+            )
+
+    def test_truncation_is_named_and_not_reasked(self):
+        # A cap that truncated once will truncate again, so the ask is not
+        # repeated; the message names the cap rather than the model.
+        client = _client_returning_content(
+            [_Thinking()], stop_reason="max_tokens")
+        with pytest.raises(CheckerError, match="max_tokens"):
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=_config(), client=client,
+            )
+        assert client.messages.stream.call_count == 1
 
     def test_cache_read_discount_applied(self):
         client = _client_returning(
-            '{"verdict": "ok", "rationale": "..."}',
             input_tokens=100, output_tokens=20,
             cache_creation=0, cache_read=5000,
         )
@@ -228,10 +360,7 @@ class TestCheckOneField:
         # through for exactly this reason.
         cheap = result["cost_usd"]
         # Compare to a non-cached call with the same total prompt size.
-        client2 = _client_returning(
-            '{"verdict": "ok", "rationale": "..."}',
-            input_tokens=5100, output_tokens=20,
-        )
+        client2 = _client_returning(input_tokens=5100, output_tokens=20)
         result2 = check_one_field(
             system_message_blocks=[], user_message_blocks=[],
             config=_config(), client=client2,
@@ -242,10 +371,7 @@ class TestCheckOneField:
         # A direct checker model with no rates states NO cost. Not 0.0, which
         # would read as a free call and would silently pull a run's total down;
         # the token counters are the record, and they came from the provider.
-        client = _client_returning(
-            '{"verdict": "ok", "rationale": "..."}',
-            input_tokens=100, output_tokens=20,
-        )
+        client = _client_returning(input_tokens=100, output_tokens=20)
         result = check_one_field(
             system_message_blocks=[], user_message_blocks=[],
             config=_config(rates=None), client=client,
@@ -255,12 +381,19 @@ class TestCheckOneField:
         assert result["output_tokens"] == 20
 
 
-class _Text:
-    """A minimal Anthropic-shaped text block for a stubbed NormalisedResponse."""
-    type = "text"
-
-    def __init__(self, text):
-        self.text = text
+def _routed_response(content, *, model="z-ai/glm-5v-turbo",
+                     reported_cost=0.0123, generation_id="gen-chk-1",
+                     served="Z.AI", input_tokens=5, output_tokens=1):
+    """A canned NormalisedResponse from a gateway-routed checker call."""
+    return NormalisedResponse(
+        content=content,
+        usage=NormalisedUsage(input_tokens=input_tokens,
+                              output_tokens=output_tokens),
+        resolved_model=model, provider="openrouter",
+        base_url=OPENROUTER_BASE_URL, raw_request={}, raw_response={},
+        decoding_params={"max_tokens": 1024},
+        generation_id=generation_id, served_provider=served,
+        reported_cost=reported_cost)
 
 
 class _StubAdapter:
@@ -274,6 +407,14 @@ class _StubAdapter:
     def create_message(self, **kwargs):
         self.calls.append(kwargs)
         return self._response
+
+
+class _RaisingAdapter:
+    """An adapter whose call never reaches a provider, so nothing is billed."""
+
+    def create_message(self, **kwargs):
+        from direktoro import ProviderError
+        raise ProviderError("connection refused")
 
 
 class TestCheckOneFieldRoutedCost:
@@ -291,14 +432,10 @@ class TestCheckOneFieldRoutedCost:
 
     def _response(self, reported_cost, *, generation_id="gen-chk-1",
                   served="Z.AI"):
-        return NormalisedResponse(
-            content=[_Text('{"verdict": "ok", "rationale": "r"}')],
-            usage=NormalisedUsage(input_tokens=5, output_tokens=1),
-            resolved_model=self.ROUTED, provider="openrouter",
-            base_url=OPENROUTER_BASE_URL, raw_request={}, raw_response={},
-            decoding_params={"max_tokens": 1024},
-            generation_id=generation_id, served_provider=served,
-            reported_cost=reported_cost)
+        return _routed_response(
+            [_verdict_block("ok", "r")], model=self.ROUTED,
+            reported_cost=reported_cost, generation_id=generation_id,
+            served=served)
 
     def test_reported_cost_is_used_with_no_rate_card(self):
         # No rates on this config, so the only figure available is the
@@ -323,9 +460,7 @@ class TestCheckOneFieldRoutedCost:
 
 class TestRunCheckerBatch:
     def test_parallel_fan_out(self):
-        client = _client_returning(
-            '{"verdict": "ok", "rationale": "..."}'
-        )
+        client = _client_returning()
         calls = [
             {"field_path": f"study.field{i}",
              "system_message_blocks": [],
@@ -342,12 +477,13 @@ class TestRunCheckerBatch:
             assert r["verdict"] == "ok"
 
     def test_one_error_doesnt_abort_the_batch(self):
-        # First call returns invalid JSON, second returns ok.
-        client = MagicMock()
-        client.messages.stream = MagicMock(side_effect=[
-            _stream_returning("not json"),
-            _stream_returning('{"verdict": "ok", "rationale": "fine"}'),
-        ])
+        # The first field's checker call answers with a verdict outside the
+        # vocabulary; the second answers properly. Concurrency is 1 so the
+        # side_effect order is the field order.
+        client = _client_returning_streams(
+            _stream_returning_verdict("maybe", "unsure"),
+            _stream_returning_verdict("ok", "fine"),
+        )
         results = run_checker_batch(
             calls=[
                 {"field_path": "study.bad", "system_message_blocks": [],
@@ -365,9 +501,7 @@ class TestRunCheckerBatch:
         assert results["study.good"]["verdict"] == "ok"
 
     def test_on_complete_called(self):
-        client = _client_returning(
-            '{"verdict": "ok", "rationale": "..."}'
-        )
+        client = _client_returning()
         seen = []
         run_checker_batch(
             calls=[{"field_path": "x", "system_message_blocks": [],
@@ -389,11 +523,43 @@ class TestRunCheckerBatch:
         assert results["study.x"]["verdict"] == "challenge"
         assert "error" in results["study.x"]
 
+    def test_a_degraded_field_still_reports_what_its_asks_cost(self):
+        # Both asks reached the provider and were billed. A field degraded to
+        # an error-origin challenge must carry that spend, or the run's total
+        # understates itself by however many checks went this way.
+        client = _client_returning_content(
+            [_Text("prose")], input_tokens=30, output_tokens=4)
+        results = run_checker_batch(
+            calls=[{"field_path": "study.x", "system_message_blocks": [],
+                    "user_message_blocks": []}],
+            config=_config(), client=client,
+        )
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["input_tokens"] == 60
+        assert degraded["output_tokens"] == 8
+        assert degraded["cost_usd"] > 0
+
+    def test_a_failure_that_never_reached_the_provider_costs_nothing(self):
+        client = MagicMock()
+        client.messages.stream = MagicMock(
+            side_effect=RuntimeError("connection refused"))
+        with patch("meltiro.checker._build_checker_adapter") as build:
+            build.return_value = _RaisingAdapter()
+            results = run_checker_batch(
+                calls=[{"field_path": "study.x", "system_message_blocks": [],
+                        "user_message_blocks": []}],
+                config=_config(), client=client,
+            )
+        assert results["study.x"]["error_origin"] is True
+        assert results["study.x"]["input_tokens"] == 0
+        assert results["study.x"]["cost_usd"] == 0.0
+
     def test_results_ordered_by_field_path(self):
         # Results are returned sorted by field path, not by nondeterministic
         # completion order, so the tool result the model reads and the session
         # event that records it are reproducible.
-        client = _client_returning('{"verdict": "ok", "rationale": "..."}')
+        client = _client_returning()
         unsorted_paths = ["study.zeta", "record.relationship_2.gauge",
                           "study.alpha", "record.relationship_1.gauge",
                           "study.mid"]

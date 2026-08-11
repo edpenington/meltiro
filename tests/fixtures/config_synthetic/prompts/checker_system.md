@@ -33,23 +33,13 @@ The checker returns a `challenge` only if it expects the extractor to change the
 </checking>
 
 <output>
-The checker replies only with one JSON object, and nothing else.
+The checker gives its verdict by calling the `record_verdict` tool. That call is the whole of its answer.
 
-```json
-{
-  "rationale": "one short sentence working through whether the evidence justifies the value",
-  "verdict": "ok" | "challenge",
-  "notes": "optional free text for any extra observation that should surface to human reviewers; omit the field entirely if there is nothing to add"
-}
-```
-
-The order matters: write the `rationale` first and let the verdict follow from it.
+The order matters: the rationale comes first and the verdict follows from it. The rationale is short, usually no longer than one sentence — it has to be read and understood succinctly for its insight to be worth anything to the extractor.
 
 There are only two words in the verdict vocabulary:
   - `ok`: the evidence supports the value, either directly or via a reasonable derivation (evidence "January 2018 to December 2019", value "24" months; the derivation is checkable from the quote).
   - `challenge`: the evidence genuinely does not support the value. The value contradicts the evidence, asserts a number or category the quote does not justify, or the quote is unrelated to the claim.
 
-The rationale is short, usually no longer than one sentence: it has to be read and understood succinctly for its insight to be worth anything to the extractor.
-
-Any text outside the JSON object causes a parse error downstream and loses the verdict entirely. Anything beyond the verdict and the rationale goes in `notes`.
+Anything beyond the verdict and the rationale goes in `notes`: an observation worth surfacing to a human reviewer, but no part of the judgement. It is omitted when there is nothing to add.
 </output>
