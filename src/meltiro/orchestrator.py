@@ -24,11 +24,11 @@ Lifecycle of one run (each phase below is implemented in this module):
 The checker is NOT a stage. It is a probabilistic extension of the
 deterministic validator, running per field inside the tool call: a field that
 passes validation, holds a non-null value, and carries evidence goes to one
-narrow single-turn checker call, and any challenge comes back in the same tool
-result as the validation errors. A challenge is advisory. The model overrules
-it by ignoring it (no reply, no tool call, no counter-argument); revising the
-field sends the new value for one further check, bounded by
-`max_checks_per_field`. No challenge blocks mark_complete; a field still
+narrow checker call — re-asked once, as a correction, if it comes back with no
+verdict — and any challenge comes back in the same tool result as the
+validation errors. A challenge is advisory. The model overrules it by ignoring
+it (no reply, no tool call, no counter-argument); revising the field sends the
+new value for one further check, bounded by `max_checks_per_field`. No challenge blocks mark_complete; a field still
 challenged when its budget runs out is recorded in `meta.checker_diagnostics`
 while the run finalises `complete`.
 

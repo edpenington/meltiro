@@ -606,11 +606,11 @@ class TestDegradesHonestly:
         # so this check was asked twice — and BOTH asks were sent and billed.
         # Each is printed and labelled: keyed on the field and the check
         # alone, the second would overwrite the first, and the document would
-        # show the nudged re-ask as if it were the whole of what was sent.
+        # show the re-ask as if it were the whole of what was sent.
         assert "This check took 2 asks" in document
         assert "Ask 1 of 2, the first ask:" in document
-        assert ("Ask 2 of 2, re-asked, with the nudge to record a verdict:"
-                in document)
+        assert ("Ask 2 of 2, re-asked, correcting the reply that recorded no "
+                "verdict:" in document)
         assert "The rendered user message for this check is not in the " \
             "session" not in document
         # The verbatim message, slot by slot: the field, its value, and the
@@ -620,14 +620,49 @@ class TestDegradesHonestly:
         assert "`study.title`" in check
         assert f'"{SHORT_TITLE}"' in check
         assert f'"{QUOTE}"' in check
-        # The nudge rides on the second ask and nothing else, so its one
+        # The correction rides on the second ask and nothing else, so its one
         # appearance is what separates the two messages.
         assert check.count(CHECKER_TOOL_REPROMPT) == 1
+        # The re-ask replayed the prose reply, and the document shows it as
+        # the model's own words rather than as more of what it was sent: three
+        # fences under Ask 2, and the middle one named for what it is.
+        assert "the reply being corrected:" in check
+        assert "the correction, as a new user turn:" in check
         assert "`full` is the top level" in document
         # The re-ask is on the outcome, not only in the message dump.
         assert "##### Check 1. `study.title`" in document
         assert "(re-asked once)" in document
         assert "| Re-asks before a verdict | 1 |" in document
+
+    def test_full_labels_no_replay_when_the_reply_could_not_be_replayed(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        """A reply holding a tool call is corrected without being replayed, so
+        the re-ask is one message and the document shows one, unlabelled."""
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     max_checks_per_field=1, diagnostics="full")
+        orch.prepare_new_session()
+        _drive(orch, [
+            _resp(_tool_use("t1", "update_study", {"study": {
+                "title": {"value": SHORT_TITLE,
+                          "evidence": f"<q>{QUOTE}</q>"}}})),
+            _resp(_tool_use("t2", "view_summary", {})),
+        ])
+        # The checker calls a tool that is not the verdict tool: no verdict,
+        # and nothing the re-ask can quote back.
+        _use_real_fanout(monkeypatch,
+                         [_tool_use("c1", "mark_complete", {})])
+        orch._adapter_for_role = lambda role: object()
+        assert orch.run() == "complete"
+
+        document = (orch.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        check = _between(document, "##### Check 1. `study.title`",
+                         "| Property | Value |")
+        assert "This check took 2 asks" in check
+        assert check.count(CHECKER_TOOL_REPROMPT) == 1
+        # Nothing was replayed, so nothing is labelled as replayed.
+        assert "the reply being corrected:" not in check
+        assert "the correction, as a new user turn:" not in check
 
     def test_a_session_stopped_before_the_review_says_so(
             self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
@@ -642,22 +677,29 @@ class TestDegradesHonestly:
             "system prompt." in document
 
 
-def _use_real_fanout(monkeypatch):
-    """Run the genuine checker fan-out against a stubbed provider adapter."""
+def _use_real_fanout(monkeypatch, content=None):
+    """Run the genuine checker fan-out against a stubbed provider adapter.
+
+    `content` is the reply every checker call gets. The default is prose — the
+    verdict written out rather than called in — which records no verdict, so
+    the check is re-asked and both asks reach the wire log the document is
+    rendered from.
+    """
+    if content is None:
+        content = [_text(json.dumps({
+            "verdict": "challenge",
+            "rationale": "The quote gives the full title.",
+            "notes": None,
+        }))]
 
     class _Adapter:
         def create_message(self, **kwargs):
-            body = json.dumps({
-                "verdict": "challenge",
-                "rationale": "The quote gives the full title.",
-                "notes": None,
-            })
             # One dict under both names, as the Anthropic adapter records it:
             # the canonical format IS that wire, so the two are the same
             # object and the audit log stores the request once.
             request = dict(kwargs)
             return NormalisedResponse(
-                content=[_text(body)],
+                content=list(content),
                 usage=NormalisedUsage(input_tokens=812, output_tokens=96),
                 resolved_model=CHECKER, provider="anthropic", base_url=None,
                 raw_request=request, raw_response={"id": "msg_stub"},

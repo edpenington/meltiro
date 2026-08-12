@@ -2,10 +2,12 @@
 
 The Anthropic call itself is mocked; what is under test is the wrapper
 logic: reading the verdict tool call off the response, verdict validation,
-cost accounting, the re-ask a tool-free reply gets, the parallel fan-out, and
-the error-wrapping in run_checker_batch.
+cost accounting, the re-ask a reply that records no verdict gets, the parallel
+fan-out, and the error-wrapping in run_checker_batch.
 """
 
+import copy
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -273,8 +275,7 @@ class TestCheckOneField:
 
     def test_a_tool_free_reply_is_reasked_and_then_answered(self):
         # A model under "auto" may decline to call the tool. The field is
-        # re-asked once, as its own single-turn call carrying the nudge, and
-        # the verdict that arrives is an ordinary one.
+        # re-asked once and the verdict that arrives is an ordinary one.
         client = _client_returning_streams(
             _stream_returning_content([_Text("The value looks fine to me.")]),
             _stream_returning_verdict("ok", "the quote carries the figure"),
@@ -287,13 +288,208 @@ class TestCheckOneField:
         assert result["verdict"] == "ok"
         assert result["reprompted"] == 1
         assert client.messages.stream.call_count == 2
-        # The re-ask is a fresh single-turn call: one user message, carrying
-        # the field again plus the nudge, and no assistant turn replayed back.
-        second = client.messages.stream.call_args_list[1].kwargs
-        assert [m["role"] for m in second["messages"]] == ["user"]
-        assert second["messages"][0]["content"][-1]["text"] == \
-            CHECKER_TOOL_REPROMPT
-        assert second["messages"][0]["content"][0]["text"] == "field"
+
+    def test_a_text_only_reply_is_replayed_and_corrected_after_itself(self):
+        # Three messages: the field's message as the first ask sent it, the
+        # model's own reply verbatim, and the correction as a new user turn.
+        # The model is corrected AFTER a reply it can see it gave, which is
+        # what makes a different reply likely — it has been shown the same one
+        # field and the same one value either way.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("The value looks fine to me.")]),
+            _direct_response([_verdict_block("ok", "the quote carries it")]),
+        )
+        result = check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert result["verdict"] == "ok"
+        assert len(adapter.calls) == 2
+        assert adapter.calls[0]["messages"] == [
+            {"role": "user", "content": [{"type": "text", "text": "field"}]},
+        ]
+        assert adapter.calls[1]["messages"] == [
+            {"role": "user", "content": [{"type": "text", "text": "field"}]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "The value looks fine to me."}]},
+            {"role": "user", "content": [
+                {"type": "text", "text": CHECKER_TOOL_REPROMPT}]},
+        ]
+
+    def test_a_replayed_reply_keeps_every_text_block_in_order(self):
+        # The reply is replayed WHOLE. A model that answered in two blocks is
+        # quoted back in two blocks, in the order it wrote them: replaying one
+        # of them, or both the other way round, would put a reply in its mouth
+        # that it did not give.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("First, the value."),
+                              _Text("Second, the evidence.")]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert adapter.calls[1]["messages"][1] == {
+            "role": "assistant", "content": [
+                {"type": "text", "text": "First, the value."},
+                {"type": "text", "text": "Second, the evidence."}]}
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_a_text_block_carrying_no_text_is_not_replayed(self, empty):
+        # An empty text block says nothing, and an empty text block is content
+        # a provider refuses, so it is dropped on the way into the replay
+        # rather than sent back as a turn the model has to be told about.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text(empty), _Text("the real sentence")]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert adapter.calls[1]["messages"][1] == {
+            "role": "assistant", "content": [
+                {"type": "text", "text": "the real sentence"}]}
+
+    def test_a_reply_of_nothing_but_empty_text_is_not_replayed_at_all(self):
+        # Nothing to quote back, so the correction rides on the field's message
+        # as it does for any other reply that cannot be replayed.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("")]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == ["user"]
+
+    def test_the_reasks_first_message_is_byte_identical_to_the_first_asks(
+            self):
+        # The field the second verdict is about is the field the first ask
+        # asked about, to the byte: the blocks the caller rendered are passed
+        # through rather than rebuilt, so nothing about the value under review
+        # can drift between the two asks. `_SequenceAdapter` copies what it
+        # captures, so this compares the two calls rather than one object with
+        # itself.
+        blocks = [
+            {"type": "text", "text": "field"},
+            {"type": "text", "text": "the value and its evidence"},
+        ]
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("prose")]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[], user_message_blocks=blocks,
+            config=_config(), adapter=adapter,
+        )
+        first, second = adapter.calls
+        assert second["messages"][0] is not first["messages"][0]
+        assert (json.dumps(second["messages"][0])
+                == json.dumps(first["messages"][0]))
+
+    def test_the_correction_is_the_reasks_last_message_and_nothing_else(self):
+        # The correction is a user turn of its own. Appending it to the field's
+        # blocks instead would put it before the reply it corrects, and correct
+        # a reply the model had not yet given.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("prose")]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        messages = adapter.calls[1]["messages"]
+        assert messages[-1] == {"role": "user", "content": [
+            {"type": "text", "text": CHECKER_TOOL_REPROMPT}]}
+        assert CHECKER_TOOL_REPROMPT not in json.dumps(messages[:-1])
+        assert CHECKER_TOOL_REPROMPT not in json.dumps(
+            adapter.calls[0]["messages"])
+
+    # The four replies that reach the re-ask, each named by what it did. What
+    # they share is that the field has no verdict, which is what the correction
+    # states; no one mechanism below is true of the other three.
+    VERDICTLESS_REPLIES = [
+        ("prose", [_Text("The value looks fine to me.")]),
+        ("called twice", [_verdict_block("ok", "a"),
+                          _verdict_block("ok", "b")]),
+        ("called with no arguments", [_ToolUse(CHECKER_VERDICT_TOOL_NAME,
+                                               None)]),
+        ("called with a list", [_ToolUse(CHECKER_VERDICT_TOOL_NAME, ["ok"])]),
+    ]
+
+    @pytest.mark.parametrize(
+        "content", [c for _shape, c in VERDICTLESS_REPLIES],
+        ids=[shape for shape, _c in VERDICTLESS_REPLIES])
+    def test_every_verdictless_reply_is_reasked_with_the_correction(
+            self, content):
+        adapter = _SequenceAdapter(
+            _direct_response(content),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        result = check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert result["reprompted"] == 1
+        assert CHECKER_TOOL_REPROMPT in json.dumps(
+            adapter.calls[1]["messages"])
+
+    @pytest.mark.parametrize(
+        "content", [c for _shape, c in VERDICTLESS_REPLIES[1:]],
+        ids=[shape for shape, _c in VERDICTLESS_REPLIES[1:]])
+    def test_a_reply_holding_a_tool_call_is_corrected_but_not_replayed(
+            self, content):
+        # Each of these called the verdict tool and still left the field with
+        # no verdict. None of them is replayed: a tool_use block quoted back
+        # here is a call the correction would leave with no result after it,
+        # which is not a conversation any provider accepts. So the re-ask is
+        # one user turn — the field once more, correction on the end.
+        adapter = _SequenceAdapter(
+            _direct_response(content),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == ["user"]
+        assert adapter.calls[1]["messages"][0]["content"] == [
+            {"type": "text", "text": "field"},
+            {"type": "text", "text": CHECKER_TOOL_REPROMPT},
+        ]
+
+    def test_a_second_tool_free_reply_degrades_with_both_asks_spend(self):
+        # The corrected reply came back without a verdict too. Both asks were
+        # billed, and the failure carries both — the shape the re-ask took is
+        # no part of what it cost.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("still prose")], input_tokens=40,
+                             output_tokens=5),
+            _direct_response([_Text("still prose")], input_tokens=60,
+                             output_tokens=15),
+        )
+        with pytest.raises(CheckerError, match="no record_verdict call") as exc:
+            check_one_field(
+                system_message_blocks=[],
+                user_message_blocks=[{"type": "text", "text": "field"}],
+                config=_config(), adapter=adapter,
+            )
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == [
+            "user", "assistant", "user"]
+        assert exc.value.spent["responses"] == 2
+        assert exc.value.spent["input_tokens"] == 100
+        assert exc.value.spent["output_tokens"] == 20
 
     def test_a_reasked_field_reports_both_calls_spend(self):
         # Both asks were billed. Reporting only the one that answered would
@@ -324,33 +520,75 @@ class TestCheckOneField:
         assert client.messages.stream.call_count == 2
 
     def test_a_wrong_tool_is_not_taken_as_a_verdict(self):
-        # Only the verdict tool answers. Another tool name is a tool-free
-        # reply as far as the verdict is concerned.
-        client = _client_returning_streams(
-            _stream_returning_content(
+        # Only the verdict tool answers. Another tool name is a verdict-free
+        # reply as far as this field is concerned, and it is re-asked as one.
+        adapter = _SequenceAdapter(
+            _direct_response(
                 [_ToolUse("mark_complete", {"quality_check": {}})]),
-            _stream_returning_verdict("ok", "r"),
+            _direct_response([_verdict_block("ok", "r")]),
         )
         result = check_one_field(
-            system_message_blocks=[], user_message_blocks=[],
-            config=_config(), client=client,
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
         )
         assert result["verdict"] == "ok"
         assert result["reprompted"] == 1
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == ["user"]
+        assert adapter.calls[1]["messages"][0]["content"] == [
+            {"type": "text", "text": "field"},
+            {"type": "text", "text": CHECKER_TOOL_REPROMPT},
+        ]
+
+    def test_prose_beside_a_tool_call_is_corrected_without_being_replayed(
+            self):
+        # A reply that both narrated and called something is not replayed
+        # either, prose and all: quoting back the text while dropping the call
+        # it came with would be correcting a reply the model never gave. So the
+        # test of the replay is the WHOLE reply, not the part of it that fits.
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("I'll mark this one complete."),
+                              _ToolUse("mark_complete", {})]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == ["user"]
+        assert "I'll mark this one complete." not in json.dumps(
+            adapter.calls[1]["messages"])
+
+    def test_a_reply_leading_with_reasoning_is_not_replayed(self):
+        # A reasoning block cannot be replayed without the signature it came
+        # with, so a reply holding one is corrected without being shown.
+        adapter = _SequenceAdapter(
+            _direct_response([_Thinking("weighing the quote"),
+                              _Text("it looks fine")]),
+            _direct_response([_verdict_block("ok", "r")]),
+        )
+        check_one_field(
+            system_message_blocks=[],
+            user_message_blocks=[{"type": "text", "text": "field"}],
+            config=_config(), adapter=adapter,
+        )
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == ["user"]
 
     def test_empty_content_is_reasked_then_raises(self):
         # An empty content list is a reply with no verdict in it, handled as
-        # any other tool-free reply — and never as an IndexError that would
-        # escape the per-field handling.
-        client = _client_returning_streams(
-            _stream_returning_content([]),
-            _stream_returning_content([]),
-        )
+        # any other verdict-free reply — and never as an IndexError that would
+        # escape the per-field handling. There is nothing in it to replay, so
+        # that ask is the field and the correction as one user turn.
+        adapter = _SequenceAdapter(_direct_response([]))
         with pytest.raises(CheckerError, match="no record_verdict call"):
             check_one_field(
-                system_message_blocks=[], user_message_blocks=[],
-                config=_config(), client=client,
+                system_message_blocks=[],
+                user_message_blocks=[{"type": "text", "text": "field"}],
+                config=_config(), adapter=adapter,
             )
+        assert len(adapter.calls) == 2
+        assert [m["role"] for m in adapter.calls[1]["messages"]] == ["user"]
 
     def test_truncation_is_named_and_not_reasked(self):
         # A cap that truncated once will truncate again, so the ask is not
@@ -472,7 +710,12 @@ class _SequenceAdapter:
 
     def create_message(self, **kwargs):
         outcome = self._outcomes[min(len(self.calls), len(self._outcomes) - 1)]
-        self.calls.append(kwargs)
+        # The messages are captured BY VALUE. A re-ask passes the first ask's
+        # message object straight through, so two stored references would be
+        # one object, and a test comparing the two asks would be comparing it
+        # with itself and passing whatever the code did to it in between.
+        self.calls.append({**kwargs,
+                           "messages": copy.deepcopy(kwargs.get("messages"))})
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome

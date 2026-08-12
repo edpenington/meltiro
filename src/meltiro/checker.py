@@ -18,12 +18,14 @@ or with a sentence of preamble, is read exactly like one that does not.
 The checker is a probabilistic extension of the deterministic validator, not a
 pipeline stage: the orchestrator fans out over the fields one tool call
 applied, and the challenges come back in that call's tool result alongside the
-validation errors. Each call is single-turn and sees only the current value,
-its evidence read in the surrounding paper text (see `DEFAULT_CONTEXT_CHARS`
-below and `checker_prompts`), and the field note, so a re-check after a
-revision judges a genuinely fresh context. A reply that calls no tool is
-re-asked once, as its own single-turn call carrying the same field and a nudge,
-so that property holds for a re-asked field too.
+validation errors. Each check sees only the current value, its evidence read in
+the surrounding paper text (see `DEFAULT_CONTEXT_CHARS` below and
+`checker_prompts`), and the field note, so a re-check after a revision judges a
+genuinely fresh context. A reply that records no verdict is re-asked once, as a
+correction: a reply that was nothing but text is replayed back as the model's
+own turn with the correction after it, and any other reply is corrected in the
+field's message itself, so either way the re-asked call is still looking at one
+field and nothing else.
 
 Each call goes through direktoro's adapter as one blocking `create_message`
 and comes back complete; how that reaches the wire is the adapter's business,
@@ -89,21 +91,27 @@ DEFAULT_CONTEXT_CHARS = 1000
 # checked against this before it is believed.
 VALID_VERDICTS = frozenset(CHECKER_VERDICTS)
 
-# How many times one field's check may be re-asked when the reply carries no
-# tool call. One: a checker model under a forced tool_choice should not need
+# How many times one field's check may be re-asked when the reply records no
+# verdict. One: a checker model under a forced tool_choice should not need
 # even that, and a model that declines twice is not going to answer on a third
 # ask — it is misconfigured, and the error-origin challenge says so at a cost
 # of one extra call rather than several.
 MAX_TOOL_FREE_REPROMPTS = 1
 
-# The nudge a tool-free checker reply is re-asked with. Engine framing, like
-# the extractor's and the reviewer's in `meltiro.prompt_builder`: the config
-# bundle says what the checker is for, and the engine says how an answer
-# reaches it. It rides in no fingerprint for the same reason theirs do not —
-# `engine_fp` identifies it.
+# The correction a verdict-free checker reply is re-asked with. Four replies
+# reach it: prose with no call in it, the verdict tool called twice, called
+# with no arguments, and called with something that is not an object of
+# arguments. It therefore states the OUTCOME all four share — this field still
+# has no verdict — rather than a mechanism that would be true of only one of
+# them, and asks for the shape the other three got wrong: one call, arguments
+# in one object. Engine framing, like the extractor's and the reviewer's in
+# `meltiro.prompt_builder`: the config bundle says what the checker is for, and
+# the engine says how an answer reaches it. It rides in no fingerprint for the
+# same reason theirs do not — `engine_fp` identifies it.
 CHECKER_TOOL_REPROMPT = (
-    f"Record your verdict by calling the {CHECKER_VERDICT_TOOL_NAME} tool. "
-    f"A reply in prose records no verdict for this field."
+    f"That reply recorded no verdict for this field. Record it now by calling "
+    f"the {CHECKER_VERDICT_TOOL_NAME} tool exactly once, with its arguments "
+    f"as a single object."
 )
 
 
@@ -675,16 +683,23 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
 
     tool_input = None
     last_error = None
-    # Each attempt is its own SINGLE-TURN call, not a growing conversation:
-    # the re-prompt re-sends the same per-field message with the nudge
-    # appended, rather than replaying the model's tool-free reply back at it.
-    # That keeps the property the whole checker rests on — one call sees one
-    # field and nothing else — true of a re-asked field as well as a
-    # first-asked one, and leaves the cached system prefix untouched.
+    # The first ask puts the field on its own. A second ask CORRECTS the reply
+    # that recorded no verdict rather than restating the question
+    # (`_reask_messages`): a reply that can be replayed is, with the correction
+    # as a new user turn after it, and a reply that cannot is corrected in the
+    # field's own message. Either way the ask carries the one field and the one
+    # value it carried the first time — the correction is the only thing in it
+    # that changed, so it is the only thing that can move the answer. The first
+    # message is byte-identical across the two asks, the blocks the caller
+    # rendered passed through rather than rebuilt, so the field a second
+    # verdict is about is the field the first ask asked about, to the byte.
+    original_message = {"role": "user", "content": list(user_message_blocks)}
+    messages = [original_message]
     for ask in range(MAX_TOOL_FREE_REPROMPTS + 1):
-        blocks = list(user_message_blocks)
         if ask:
-            blocks.append({"type": "text", "text": CHECKER_TOOL_REPROMPT})
+            # `responses[-1]` is the reply that came back without a verdict:
+            # this iteration exists only because it did.
+            messages = _reask_messages(original_message, responses[-1])
 
         response = None
         for attempt in range(max_retries + 1):
@@ -693,7 +708,7 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
                     model=config.checker_model,
                     max_tokens=config.max_tokens,
                     system=system_message_blocks,
-                    messages=[{"role": "user", "content": blocks}],
+                    messages=messages,
                     tools=tools,
                     tool_choice=tool_choice,
                     sampling=config.sampling,
@@ -868,6 +883,48 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
             "served_provider": getattr(response, "served_provider", None),
         },
     }
+
+
+def _reask_messages(original_message, reply):
+    """The messages a re-ask sends: a correction, after the reply it corrects.
+
+    A reply made of TEXT BLOCKS AND NOTHING ELSE is replayed whole, in three
+    messages: `original_message`, which is the first ask's user message passed
+    through as the object that was sent — the field, its value and its evidence
+    exactly where they already were; then that text as an assistant turn; then
+    `CHECKER_TOOL_REPROMPT` alone, as a new user turn. So the model is
+    corrected after a reply it can see it gave, in its own words, with nothing
+    of it left out. The text is replayed in the plain-dict shape meltiro
+    replays an assistant turn in everywhere else (the orchestrator's
+    conversion, which is what `Session.replay_messages` reads back), because
+    the log this ask writes is a JSON record and a provider SDK's block object
+    is not. A text block carrying no text is dropped on the way: it says
+    nothing, and an empty text block is content a provider refuses.
+
+    Any other reply is replayed not at all, and that ask carries the field once
+    more with the correction on the end of it: one user turn, valid on any
+    wire. Replaying such a reply could only mean replaying the part of it that
+    fits — a tool_use block cannot be replayed here, being a call the next
+    message would leave with no result after it, and a reasoning block cannot
+    be replayed without the signature it came with — and a reply quoted back
+    with pieces missing is a reply the model did not give. So a reply holding a
+    tool_use or a reasoning block, and a reply that said nothing at all, are
+    corrected without being shown.
+    """
+    correction = {"type": "text", "text": CHECKER_TOOL_REPROMPT}
+    blocks = getattr(reply, "content", None) or []
+    said = [{"type": "text", "text": block.text} for block in blocks
+            if getattr(block, "type", None) == "text"
+            and getattr(block, "text", "")]
+    text_only = all(getattr(b, "type", None) == "text" for b in blocks)
+    if not said or not text_only:
+        return [{"role": "user",
+                 "content": [*original_message["content"], correction]}]
+    return [
+        original_message,
+        {"role": "assistant", "content": said},
+        {"role": "user", "content": [correction]},
+    ]
 
 
 # ---------------------------------------------------------------------------

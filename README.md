@@ -74,17 +74,18 @@ own prompt and its own context, and they may be assigned different models
    it went; and `abandon_extraction`, for when it judges that no honest
    extraction can be produced from the provided inputs
 
-2. **Checker** (per field submission) — a narrow, single-turn call with
-   deliberately restricted context, run inside the tool call rather than as a
-   stage of its own. Any field that carries evidence is eligible, whether or
-   not the template requires evidence for it. The Checker sees the field
-   definition, a short identity context for the paper (and the record, if it's
-   a record-level field), the extracted value, and the recorded evidence with
-   its surrounding text — and is asked only whether the evidence supports the
-   value. A challenge is advisory and returns in the same tool result as any
-   validation errors, so the Extractor can revise or overrule it from its
-   broader context. Each field can be checked at most `max_checks_per_field`
-   times (default 2).
+2. **Checker** (per field submission) — a narrow call with deliberately
+   restricted context, re-asked at most once as a correction if it records no
+   verdict, run inside the tool call rather than as a stage of its own. Any
+   field that carries evidence is eligible, whether or not the template
+   requires evidence for it. The Checker sees the field definition, a short
+   identity context for the paper (and the record, if it's a record-level
+   field), the extracted value, and the recorded evidence with its surrounding
+   text — and is asked only whether the evidence supports the value. A
+   challenge is advisory and returns in the same tool result as any validation
+   errors, so the Extractor can revise or overrule it from its broader
+   context. Each field can be checked at most `max_checks_per_field` times
+   (default 2).
 
 3. **Reviewer** (once per paper) — a second agentic loop with a fresh context,
    the completed extraction, and its own prompt. Its catalogue is the

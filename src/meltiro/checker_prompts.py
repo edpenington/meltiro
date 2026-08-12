@@ -513,8 +513,11 @@ def build_checker_user_message(
             pipeline.yaml). 0, the default here, renders no context at all.
 
     Returns a list of Anthropic content blocks suitable for the user
-    message of the checker call (last block carries cache_control on the
-    cached identity_context onwards; see below).
+    message of the checker call: the rendered text as one block, preceded for
+    an image-sourced field by a caption block and the cropped PNG per image
+    its evidence cites. No cache_control on any of them: what the checker's
+    calls share is the system prompt, and that is where the marker goes
+    (`prompt_builder.system_message_blocks`); this message is one field's.
     """
     if envelope is None:
         envelope = {}

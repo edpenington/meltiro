@@ -253,13 +253,18 @@ class _Session:
     # -- convenience ------------------------------------------------------
 
     def checker_messages(self):
-        """`{(field_path, check_index): [message per ask]}` from the wire log.
+        """`{(field_path, check_index): [ask per call]}` from the wire log.
+
+        Each ask is a list of `(role, text)` segments in message order, as
+        `_ask_segments_from_request` reads them off the logged request: one
+        segment for a first ask, and three for a re-ask that replayed the reply
+        it corrects.
 
         The checker's per-field user message is rendered at call time and
         stored nowhere but the wire log, so this map is empty at any level
         below `full`. `check_index` disambiguates a field checked more than
         once, and `ask` disambiguates the calls WITHIN one check: a reply that
-        called no verdict tool is re-asked, and both asks were sent, billed,
+        recorded no verdict is re-asked, and both asks were sent, billed,
         and logged. They are collected as a list in ask order rather than
         keyed by (field, check) alone, which would keep whichever landed last
         and hide the ask that made the re-ask necessary. Every key is logged on
@@ -272,44 +277,52 @@ class _Session:
             field_path = call.get("field_path")
             if not field_path:
                 continue
-            text = _user_text_from_request(call.get("request") or {})
-            if text is None:
+            segments = _ask_segments_from_request(call.get("request") or {})
+            if segments is None:
                 continue
             asks = out.setdefault((field_path, call.get("check_index")), [])
             # `ask` is the 0-based ask number; a log written before it was
             # recorded has none, and those keep their file order.
-            asks.append((call.get("ask") or 0, text))
-        return {key: [text for _ask, text in sorted(asks, key=lambda a: a[0])]
+            asks.append((call.get("ask") or 0, segments))
+        return {key: [seg for _ask, seg in sorted(asks, key=lambda a: a[0])]
                 for key, asks in out.items()}
 
 
-def _user_text_from_request(request):
-    """The text portion of a logged request's single user message.
+def _ask_segments_from_request(request):
+    """One logged call's text as `(role, text)` per message, in message order.
 
-    A checker request carries one user message whose blocks are the rendered
-    text plus, for an image-sourced field, caption and image blocks. The image
-    bytes were reduced to hashes by the wire logger, so what is left to render
-    is the text, joined in block order.
+    A checker call carries the per-field user message, whose blocks are the
+    rendered text plus, for an image-sourced field, caption and image blocks;
+    they are joined into one segment, since they are one message. A re-ask
+    carries that message and the correction, and — where the reply it corrects
+    was one the checker could replay — that reply between them, as an
+    `assistant` segment. Kept as segments rather than joined into one string so
+    that a replayed reply can be rendered as what it is: the order is the order
+    the call was made in, and the model's own words are not run together with
+    what it was sent. The image bytes were reduced to hashes by the wire
+    logger, so what is left to render is the text.
     """
     messages = request.get("messages")
     if not isinstance(messages, list):
         return None
-    parts = []
+    segments = []
     for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in ("user", "assistant"):
             continue
         content = message.get("content")
+        parts = []
         if isinstance(content, str):
             parts.append(content)
-            continue
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-    if not parts:
-        return None
-    return "\n\n".join(parts)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+        if parts:
+            segments.append((role, "\n\n".join(parts)))
+    return segments or None
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +602,25 @@ class _Renderer:
         if text:
             self.out.append(text)
             self.out.append("")
+
+    def _ask(self, segments):
+        """One checker call's text, fenced, in the order the call carried it.
+
+        A re-ask that replayed the reply it corrects carries three segments,
+        two of them things the checker was sent and one of them the checker's
+        own words. Those two are labelled where they appear, so a reader is
+        never left to infer which of three fences the model wrote. A call with
+        one segment is the field's message and nothing else, and it is
+        introduced by the line above it rather than labelled again.
+        """
+        for i, (role, text) in enumerate(segments):
+            if role == "assistant":
+                self._p("the reply being corrected:")
+                self._p()
+            elif i:
+                self._p("the correction, as a new user turn:")
+                self._p()
+            self._block(_fence(text, "text"))
 
     def _note(self, path, label, anchor):
         self._trail.setdefault(path, []).append((label, anchor))
@@ -1325,7 +1357,7 @@ class _Renderer:
         self._p()
         if (self.s.meta.get("structure") or {}).get("checker"):
             self._p(
-                "Every check below was made by a separate single-turn call "
+                "Every check below was made by a separate call of its own "
                 "under [the checker's system prompt]"
                 "(#instrument-checker-system), which is printed once in "
                 "section 2 and never repeated here. What changes per check is "
@@ -1691,23 +1723,27 @@ class _Renderer:
 
         messages = self._checker_messages.get((path, ordinal)) or []
         if len(messages) > 1:
-            # Every ask was its own single-turn call, and every one of them
-            # was sent and billed. The first is the one that came back without
-            # a verdict, which is the whole reason there is a second.
+            # Every ask was sent and billed. The first came back without a
+            # verdict, which is the whole reason there is a second, and the
+            # second corrected it: the same field message, the reply where the
+            # checker could replay one, then the correction. Each ask is
+            # printed whole, in the order it carried, so the field appears in
+            # both and the correction only in the last.
             self._p(
-                f"This check took {_plural(len(messages), 'ask')}, each its "
-                f"own single-turn call. All of them in full:")
+                f"This check took {_plural(len(messages), 'ask')}, each sent "
+                "and billed. All of them in full:")
             self._p()
-            for i, text in enumerate(messages, start=1):
+            for i, segments in enumerate(messages, start=1):
                 which = ("the first ask" if i == 1 else
-                         "re-asked, with the nudge to record a verdict")
+                         "re-asked, correcting the reply that recorded no "
+                         "verdict")
                 self._p(f"Ask {i} of {len(messages)}, {which}:")
                 self._p()
-                self._block(_fence(text, "text"))
+                self._ask(segments)
         elif messages:
             self._p("The message this check was sent, in full:")
             self._p()
-            self._block(_fence(messages[0], "text"))
+            self._ask(messages[0])
         elif not captures_api_calls(self.s.level):
             self._p(
                 "*The rendered user message for this check is not in the "
