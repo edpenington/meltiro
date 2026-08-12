@@ -17,10 +17,13 @@ together, in two halves that have to agree:
    is rendered at all). These tests probe that code directly, so a change to
    what the checker sees breaks them first.
 
-2. THE PAIR. Every claim below is checked against BOTH prompt files of every
-   config fixture, never against the one that happened to carry it.
-   A false claim that migrates from one prompt to the other still fails, and
-   a prompt that quietly drops a fact its partner asserts still fails.
+2. THE PAIR. Every claim below is checked against BOTH system prompts of every
+   config fixture AS THEY RENDER — the bundle's own text with its partials and
+   the engine's sections expanded into it, which is what a model is actually
+   shown — never against the one that happened to carry it. A false claim that
+   migrates from one prompt to the other still fails, a prompt that quietly
+   drops a fact its partner asserts still fails, and it makes no difference
+   whether the sentence was written in the bundle or composed from the engine.
 
 The forbidden patterns are the specific false claims, each named beside the
 fact and the code that refutes it. They are not a style check: rewording a
@@ -35,6 +38,10 @@ import pytest
 from meltiro.checker_prompts import (
     _render_evidence_block,
     build_record_context,
+)
+from meltiro.prompt_partials import (
+    EXPAND_ALL_BRANCHES,
+    substitute_include_placeholders,
 )
 from meltiro.quote_context import (
     QUOTE_CLOSE_MARKER,
@@ -185,6 +192,23 @@ class TestWhatTheCheckerIsActuallyShown:
 # 2. The pair: every claim checked against both prompts of every example
 # ---------------------------------------------------------------------------
 
+def _rendered(prompt_path):
+    """A system prompt as a model receives it: every include expanded.
+
+    The claims below are about what reaches a model, and a prompt composes
+    part of what it says from partials of its own and from the engine's
+    sections (`{include:meltiro:NAME}`). Reading the file raw would check the
+    bundle's covering text and skip the body it wraps, which is where most of
+    the checker's contract now is. Every branch is expanded, so a stage a
+    bundle happens to disable today cannot hide a false claim that surfaces
+    when someone switches it on.
+    """
+    text = prompt_path.read_text(encoding="utf-8")
+    return substitute_include_placeholders(
+        text, prompt_path.parent / "partials",
+        predicates=EXPAND_ALL_BRANCHES)
+
+
 def _example_prompt_pairs():
     """(bundle name, extractor text, checker text) for every config bundle.
 
@@ -199,8 +223,7 @@ def _example_prompt_pairs():
         checker = prompts / "checker_system.md"
         if extractor.exists() and checker.exists():
             pairs.append(pytest.param(
-                extractor.read_text(encoding="utf-8"),
-                checker.read_text(encoding="utf-8"),
+                _rendered(extractor), _rendered(checker),
                 id=pipeline.parent.name))
     assert pairs, "no config fixture with both system prompts"
     return pairs

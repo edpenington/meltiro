@@ -116,11 +116,11 @@ class CheckerConfig:
     hold is the run's pipeline STRUCTURE (the per-field check budget, whether
     a reviewer runs): that is the instrument's
     (`meltiro.instrument.Instrument`). Both `user_prompt_template_text` and
-    `fingerprint` below REQUIRE the predicate map as an argument, and the
-    only thing that produces one is `Instrument.predicates()`, so the
-    checker's rendered prompts and its `checker_fp` cannot describe a
-    different pipeline from the one the extractor and reviewer were briefed
-    on.
+    `fingerprint` below REQUIRE the predicate map as an argument, and
+    `fingerprint` requires the check budget beside it; the only thing that
+    produces either is the `Instrument`, so the checker's rendered prompts
+    and its `checker_fp` cannot describe a different pipeline from the one
+    the extractor and reviewer were briefed on.
     """
 
     # No hardcoded fallback model: there is deliberately no default checker
@@ -221,7 +221,7 @@ class CheckerConfig:
     def system_prompt_text(self):
         return Path(self.system_prompt_path).read_text(encoding="utf-8")
 
-    def user_prompt_template_text(self, *, predicates):
+    def user_prompt_template_text(self, *, predicates, mode=None):
         """Return the checker user template with `{include:NAME}` partials
         expanded, matching what the render path
         (checker_prompts.build_checker_user_message) actually sends. The
@@ -235,14 +235,21 @@ class CheckerConfig:
         than reconstructed here, so a `{include_if:review:...}` block in the
         checker's own template resolves against the one pipeline the whole run
         renders against.
+
+        `mode` defaults to the WIRE render, the text the checker is sent. The
+        fingerprint asks for HASH, where an un-overridden engine section the
+        template composes stays as its directive token: engine wording rides
+        in `engine_fp`, and an override the bundle wrote rides here.
         """
-        from meltiro.prompt_partials import substitute_include_placeholders
+        from meltiro.prompt_partials import (
+            WIRE, substitute_include_placeholders)
         raw = Path(self.user_prompt_template_path).read_text(encoding="utf-8")
         return substitute_include_placeholders(
             raw, Path(self.user_prompt_template_path).parent / "partials",
-            predicates=predicates)
+            predicates=predicates, mode=mode or WIRE)
 
-    def fingerprint(self, template, reference_lists=None, *, predicates):
+    def fingerprint(self, template, reference_lists=None, *, predicates,
+                    max_checks_per_field):
         """Fingerprint this checker config.
 
         Hashes the SUBSTITUTED checker system prompt, the text the checker
@@ -257,25 +264,36 @@ class CheckerConfig:
         the render paths require it: both prompts hashed here are rendered
         with it, so the pipeline the checker is briefed on and the pipeline
         this fingerprint claims are one value rather than two kept in step.
-        The toggles behind it are not hashed as values of their own —
-        `structure_hash` already carries them, and folding them in twice would
-        double-count a single toggle.
+        `max_checks_per_field` arrives from the same place and is required on
+        the same terms: it is the one value substituted into the system
+        prompt, so a config that states the budget in its own words hashes
+        what the checker is actually sent. The toggles behind either are not
+        hashed as values of their own — `structure_hash` already carries
+        them, and folding them in twice would double-count a single toggle.
         """
         from direktoro import model_info
         # Lazy import to avoid a module-level import cycle
         # (checker_prompts does not import checker, so this is only a
         # precaution against future coupling).
         from meltiro.checker_prompts import build_checker_system_text
+        from meltiro.prompt_partials import HASH
+        # Both prompts are hashed in HASH mode: an engine section the bundle
+        # composes but does not override contributes its directive, so
+        # rewording the engine's checker briefing moves engine_fp and leaves
+        # every bundle's checker_fp where it was. An override is the bundle's
+        # own text and hashes as such.
         system_text = build_checker_system_text(
             system_prompt_path=self.system_prompt_path,
             reference_lists=reference_lists,
             predicates=predicates,
+            max_checks_per_field=max_checks_per_field,
+            mode=HASH,
         )
         info = model_info(self.checker_model)
         return checker_config_fingerprint(
             self.call_identity(),
             system_text,
-            self.user_prompt_template_text(predicates=predicates),
+            self.user_prompt_template_text(predicates=predicates, mode=HASH),
             # The schema the verdict must fit. It is engine-owned and fixed
             # for a release, so this component moves only when the shape of a
             # verdict itself changes — which is exactly when two runs stop

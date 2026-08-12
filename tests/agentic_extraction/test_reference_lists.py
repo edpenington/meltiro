@@ -482,5 +482,6 @@ class TestRenderersCarryTheBundleLocation:
         path = self._prompt(tmp_path, "checker_system.md")
         with pytest.raises(ConfigBundleError) as e:
             build_checker_system_text(system_prompt_path=path,
+                                      max_checks_per_field=2,
                                       reference_lists={})
         assert e.value.path == tmp_path

@@ -50,7 +50,7 @@ from meltiro.fingerprint import (
 from meltiro.prompt_builder import (
     build_review_system_message, build_system_message,
     compute_prompt_config_hash)
-from meltiro.prompt_partials import stage_predicates
+from meltiro.prompt_partials import HASH, WIRE, stage_predicates
 from meltiro.tools import all_tool_definitions, canonical_tool_set_json
 
 
@@ -228,13 +228,16 @@ class Instrument:
     # The reviewer's instrument
     # ----------------------------------------------------------------------
 
-    def render_review_system_text(self, image_labels, image_captions=None):
+    def render_review_system_text(self, image_labels, image_captions=None,
+                                  mode=WIRE):
         """The reviewer's rendered system message, for `image_labels`.
 
         The single place it is built, so the copy captured into
         `diagnostics/instrument/` at session creation and the copy sent to the
         reviewer later in the run are the same string by construction rather
-        than by two call sites agreeing.
+        than by two call sites agreeing. `mode` decides only whether an
+        un-overridden engine section expands: the reviewer is sent the `WIRE`
+        text, `review_fp` is taken over the `HASH` one.
         """
         return build_review_system_message(
             image_labels,
@@ -243,6 +246,7 @@ class Instrument:
             final_review=self.final_review,
             reference_lists=self.reference_lists,
             image_captions=image_captions,
+            mode=mode,
         )
 
     def review_fingerprint(self, call_identity, *, review_model, tool_hash):
@@ -251,12 +255,14 @@ class Instrument:
         through the registry; a null review_fp is recorded instead).
 
         The review system prompt is rendered with an EMPTY image-label list
-        (mirroring `extractor_prompt_hash`) so two papers under one config
-        share the fingerprint; reference-list substitution still applies, so
-        editing a canonical name moves it. The reference-list CONTENT hash
-        rides beside it for the part no prompt carries: aliases are rendered
-        nowhere, yet they change what the reviewer's tool calls may write and
-        how they canonicalise (see fingerprint.review_config_fingerprint).
+        and in `HASH` mode (mirroring `extractor_prompt_hash`) so two papers
+        under one config share the fingerprint and an engine section the
+        prompt composes rides in `engine_fp` rather than here; reference-list
+        substitution still applies, so editing a canonical name moves it. The
+        reference-list CONTENT hash rides beside it for the part no prompt
+        carries: aliases are rendered nowhere, yet they change what the
+        reviewer's tool calls may write and how they canonicalise (see
+        fingerprint.review_config_fingerprint).
         The tool-call cap rides in no fingerprint (see
         fingerprint.structure_hash). `review_max_tokens` and the reviewer's
         own `review_decoding` block ride in `call_identity`, so tuning either
@@ -267,7 +273,8 @@ class Instrument:
         """
         if not self.final_review:
             return None
-        review_system_text = self.render_review_system_text(image_labels=[])
+        review_system_text = self.render_review_system_text(
+            image_labels=[], mode=HASH)
         review_structure = structure_hash(
             self.max_checks_per_field,
             supports_images=model_supports_images(review_model),
@@ -292,6 +299,7 @@ class Instrument:
         """
         return build_checker_system_text(
             predicates=self.predicates(),
+            max_checks_per_field=self.max_checks_per_field,
             system_prompt_path=self.config.checker_system_path,
             reference_lists=self.reference_lists,
         )
@@ -315,7 +323,8 @@ class Instrument:
             return None
         return checker_config.fingerprint(
             self.template, self.reference_lists,
-            predicates=self.predicates())
+            predicates=self.predicates(),
+            max_checks_per_field=self.max_checks_per_field)
 
     # ----------------------------------------------------------------------
     # The instrument's own identity

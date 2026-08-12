@@ -40,6 +40,14 @@ its slots. Every slot is on a load-time allowlist
 one fails at load instead of shipping the literal token to the model. Slot
 wording is FRAMING — engine text, not config — so it rides in no
 fingerprint; the run's recorded `engine_fp` identifies it.
+
+The system prompt has an allowlist of its own
+(`config_bundle._CHECKER_SYSTEM_PLACEHOLDERS`), holding the one slot this
+function substitutes: `{max_checks_per_field}`. It covers the composed engine
+sections too, so a prompt composing a section written for the extractor —
+`recording_evidence` renders `{image_labels_list}`, which no checker call has
+— is a load error naming that variable rather than a literal token in front
+of the model.
 """
 
 import base64
@@ -49,7 +57,7 @@ from pathlib import Path
 from meltiro.prompt_builder import (  # noqa: F401
     bundle_root_for_prompt, system_message_blocks)
 from meltiro.reference_lists import substitute_reference_placeholders
-from meltiro.prompt_partials import substitute_include_placeholders
+from meltiro.prompt_partials import WIRE, substitute_include_placeholders
 from meltiro.quote_context import (
     QUOTE_CLOSE_MARKER,
     QUOTE_OPEN_MARKER,
@@ -66,8 +74,9 @@ def _load(path):
     return Path(path).read_text(encoding="utf-8").strip()
 
 
-def build_checker_system_text(*, system_prompt_path,
-                              reference_lists=None, predicates=None):
+def build_checker_system_text(*, system_prompt_path, max_checks_per_field,
+                              reference_lists=None, predicates=None,
+                              mode=WIRE):
     """Render the checker's system prompt text.
 
     `system_prompt_path` is REQUIRED; it comes from the config bundle
@@ -80,16 +89,31 @@ def build_checker_system_text(*, system_prompt_path,
     Every `{reference:NAME}` placeholder is substituted with the rendered
     reference list (same blocks the extractor and reviewer see) so the
     checker has the canonical names in context.
+
+    `{max_checks_per_field}` is substituted with the run's per-field check
+    budget, the one slot this prompt has (`load_config_bundle` refuses any
+    other, so nothing else can reach the checker as a literal token). It is
+    REQUIRED and has no default: the value is the run's structure, held by
+    `Instrument`, and a budget nobody chose would describe a run that never
+    happened — the same reason `predicates` must be passed in rather than
+    guessed. Substituted in both modes, so the text a check is sent and the
+    text `checker_fp` covers differ in nothing but engine ownership.
+
+    `mode` picks the render: the checker is SENT the `WIRE` text, with every
+    engine section it composes expanded, and `checker_fp` is taken over the
+    `HASH` one, where an un-overridden engine section stays as its directive
+    token (see `meltiro.prompt_partials`).
     """
     text = _load(system_prompt_path)
     # Expand `{include:NAME}` partials BEFORE reference substitution, so a
     # partial may itself carry `{reference:...}` placeholders.
     text = substitute_include_placeholders(
         text, Path(system_prompt_path).parent / "partials",
-        predicates=predicates)
-    return substitute_reference_placeholders(
+        predicates=predicates, mode=mode)
+    text = substitute_reference_placeholders(
         text, reference_lists,
         path=bundle_root_for_prompt(system_prompt_path))
+    return text.replace("{max_checks_per_field}", str(max_checks_per_field))
 
 
 # ---------------------------------------------------------------------------

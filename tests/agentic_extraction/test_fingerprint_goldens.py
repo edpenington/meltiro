@@ -85,7 +85,7 @@ from meltiro.fingerprint import (
 )
 from meltiro.prompt_builder import (
     build_review_system_message, compute_prompt_config_hash)
-from meltiro.prompt_partials import stage_predicates
+from meltiro.prompt_partials import HASH, stage_predicates
 from meltiro.template import load_template
 from meltiro.tools import all_tool_definitions, checker_tool_definitions
 
@@ -119,7 +119,7 @@ PINNED_DIREKTORO_SOURCE = (
 GOLDEN_TEMPLATE_HASH = \
     "1821dbceb8ba6c4c8ac4835b155420d954a3c6c52ab1d1b42ee477e46c834ce5"
 GOLDEN_PROMPTS_HASH = \
-    "6548d3b0480b1f7b5e4fb9710bf38e46462e2ad3f51dec973f90d6d26bd151ae"
+    "601ecc7cf217ba2659b2e6b54a35ef1a82f4711f52dd290494f1f86be0138bc6"
 GOLDEN_REFERENCE_LISTS_HASH = \
     "51c7c7184b640abd363e95f5c169cb963760badb1792400a6ac5f017897fbcf6"
 GOLDEN_TOOL_SET_HASH = \
@@ -127,21 +127,21 @@ GOLDEN_TOOL_SET_HASH = \
 GOLDEN_FIELD_CATALOGUE_HASH = \
     "aaf68cbd050c4f25e4981c0bb15e9255875c72ef34e033cc276f395bc2b60d94"
 GOLDEN_EXTRACTOR_PROMPT_HASH = \
-    "a451c459bcd9bb18ba647b5a9a7778bf51effa3a71f47104b54e68b8f0fdf2e5"
+    "6b8081ffb642d093f465f9d87d0702b87a933c3dd758559dfc11433e27d14d6f"
 
 # The instrument axis, as a run and `meltiro fingerprint` both record it.
 GOLDEN_INSTRUMENT_FP = ("instrument_fp:"
-                        "4792f1c5b1f1a098edc0b3b29ca8e0d44033534b048896274"
-                        "fb0431152f3949d")
+                        "28cf65b6f25fac439861fe7f717101c1a0f907906e693ab6b"
+                        "d1d0ad83ababf10")
 
 # Stage fingerprints over the fixture bundle's real content, with
 # PINNED_CALL_IDENTITY in place of the provider-call identity block.
 GOLDEN_CONFIG_FP = ("config_fp:"
-                    "bcd0fa092c0b548b8db6b0ae883b1d85afb40e63e4760aae4"
-                    "509fa67d8cdbbd5")
+                    "1eb183e01d59276be16e2c07e7ecc064245102b0a0af2357a"
+                    "b68b5488c1262be")
 GOLDEN_CHECKER_FP = ("checker_fp:"
-                     "abe198c6de7360cd6cabd794694c5a50c9c19c01216e65c94"
-                     "cfbcd16537407dc")
+                     "a299bc9ba8bb9ab06e45d0ec0b970cb278c05f1d672160beb"
+                     "97f468b39d18534")
 GOLDEN_REVIEW_FP = ("review_fp:"
                     "c0be020a20f4e8ab9fd99e8291f266f2b34c7d4c8d3b5c633"
                     "c689d2917b7be72")
@@ -177,11 +177,11 @@ PINNED_ENGINE_FP = ("engine_fp:"
 # The whole-run identity, composed from the stage goldens and the engine
 # placeholder above.
 GOLDEN_RUN_FP = ("run_fp:"
-                 "327c1fed98f9b516e5075f30f4187c591b0c4442332677d8049f0f"
-                 "c019b487fc")
+                 "db521738a14a0e3a53f1f484bb507a38705910f517406138bffe32b"
+                 "703c6fd53")
 GOLDEN_RUN_FP_EXTRACTOR_ONLY = ("run_fp:"
-                                "cb54078a2ba9d8974e2eb48ed9230c937134f2932"
-                                "4e41ff6271d31a200e5df51")
+                                "15bd7e6173636affdc6c94a80ee76f37ebecf189c"
+                                "1369cf9d34b6c4da2bd8e96")
 
 # End to end for the extractor role: direktoro's real call-identity block for
 # the fixture pipeline's extractor model, and the config_fp it produces. This
@@ -190,8 +190,8 @@ GOLDEN_EXTRACTOR_CALL_IDENTITY = (
     '{"base_url":null,"decoding_params":{"max_tokens":32768},'
     '"model":"claude-opus-4-8","provider":"anthropic"}')
 GOLDEN_RUN_CONFIG_FP = ("config_fp:"
-                        "838e14c29b51e94a6d47ec8703da21c24c8894034946c51e"
-                        "547a05fd594bf56c")
+                        "0b6be1584bde265578a2c17e2a327429dea03988b2c4fad3c"
+                        "9d2d46efb1db2a3")
 
 
 # ---------------------------------------------------------------------------
@@ -253,8 +253,9 @@ def _pipeline_predicates(bundle):
 
 
 def _review_system_text(bundle, template):
-    # Empty image labels, exactly as the review fingerprint renders it, so the
-    # value is paper-independent.
+    # Empty image labels and the HASH render, exactly as the review
+    # fingerprint takes it: paper-independent, and with any engine section the
+    # prompt composes left as its directive rather than its text.
     loop = bundle.pipeline
     return build_review_system_message(
         image_labels=[],
@@ -262,6 +263,7 @@ def _review_system_text(bundle, template):
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop["final_review"]),
         reference_lists=bundle.reference_lists,
+        mode=HASH,
     )
 
 
@@ -387,7 +389,9 @@ class TestConfigContentGoldens:
     def test_prompts_hash(self, bundle):
         assert bundle.prompts_hash == GOLDEN_PROMPTS_HASH, _moved(
             "prompts_hash",
-            "the four prompt files with {include:NAME} partials expanded",
+            "the four prompt files with {include:NAME} partials expanded and "
+            "un-overridden {include:meltiro:NAME} engine sections left as "
+            "their directive",
             "every published instrument_fp is now unreproducible, and "
             "`meltiro fingerprint` prints a different identity for an "
             "unedited config bundle.")
@@ -428,7 +432,8 @@ class TestConfigContentGoldens:
                 "prompt_hash (the rendered, paper-independent extractor "
                 "system prompt)",
                 "the extractor system prompt rendered with an empty image "
-                "label list, references substituted, partials expanded",
+                "label list, references substituted, partials expanded, "
+                "un-overridden engine sections left as their directive",
                 "the hash recorded in every run.json and folded into "
                 "config_fp "
                 "has moved for an unedited prompt file. If the render now "
@@ -494,15 +499,22 @@ class TestStageFingerprintComposition:
     def test_checker_fp(self, bundle, template):
         checker = _checker_config(bundle)
         predicates = _pipeline_predicates(bundle)
+        # HASH mode on both prompts, as CheckerConfig.fingerprint takes them:
+        # the checker is SENT the engine's briefing, and hashes the directive
+        # that composed it.
         system_text = build_checker_system_text(
             system_prompt_path=bundle.checker_system_path,
             reference_lists=bundle.reference_lists,
             predicates=predicates,
+            max_checks_per_field=int(
+                bundle.pipeline["max_checks_per_field"]),
+            mode=HASH,
         )
         fp = checker_config_fingerprint(
             PINNED_CALL_IDENTITY,
             system_text,
-            checker.user_prompt_template_text(predicates=predicates),
+            checker.user_prompt_template_text(
+                predicates=predicates, mode=HASH),
             # The schema the checker's verdict must fit. Its own catalogue,
             # hashed apart from the extractor's and the reviewer's, so this
             # component moves only when the shape of a verdict does.

@@ -93,7 +93,10 @@ version = { attr = "meltiro.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-meltiro = ["py.typed"]
+# The engine prompt sections ship with the package: a prompt composing
+# `{include:meltiro:NAME}` resolves it from the installed tree, and the source
+# digest folded into `engine_fp` hashes the same files.
+meltiro = ["py.typed", "engine_prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

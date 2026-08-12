@@ -311,6 +311,7 @@ config-bundle/
     ├── checker_system.md
     ├── checker_user_template.md
     └── partials/             # optional shared blocks
+        └── meltiro/          # optional overrides of engine sections
 ```
 
 Prompts may cite a shared block with `{include:NAME}`, or one that follows a
@@ -319,6 +320,58 @@ is rendered only when that stage is enabled for the run, so a prompt never
 briefs a model on a stage that will not run. A cited partial must exist whether
 or not its branch is taken. Prompts may also cite a reference list with
 `{reference:NAME}`.
+
+### The engine's own sections
+
+How the engine behaves is not a methodological choice, so a review does not
+have to describe it. *meltiro* ships that description as prose, one named file
+per section, and a prompt composes it with `{include:meltiro:NAME}`:
+
+| Section | Role | What it states |
+|---|---|---|
+| `extractor_workflow` | Extractor | the initial-check-first gate, the `ok` / `partial` / `validation_failed` result shape and `failed_fields`, challenges arriving in tool results, the per-field check budget, `mark_complete`, `abandon_extraction`, the finite call budget, the view tools |
+| `recording_evidence` | Extractor | the `<q>` / `<img>` evidence grammar: normalisation, elision, insertion brackets, and the image-label list |
+| `recording_notes` | Extractor | field notes versus scope notes, and who is shown which |
+| `recording_conventions` | Extractor | record-id assignment, strict versus open lists, reference-list fields, warnings versus errors |
+| `checker_briefing` | Checker | the checker's one-field isolation, the quote window and its table expansion, the allowed-values briefing, no memory across checks |
+
+The Review prompt composes no engine section, and none is written for it: the
+reviewer edits the assembled record under the same tool schemas the Extractor
+wrote it with, so what it needs to know arrives in those schemas and in your
+bundle's own prose about the review.
+
+These compose with predicates like any other block
+(`{include_if:checker:meltiro:checker_briefing}`), and a name outside the list
+above is a load error naming the ones that exist. Your prompt supplies
+everything around them: the role framing, the review's scope and criteria, what
+counts as one record, what each field means.
+
+A section fills the slots its own role's prompt supplies, so composing one into
+a prompt that supplies fewer is a load error naming the variable left over. The
+Checker's system prompt supplies one slot, `{max_checks_per_field}`; the
+Extractor's and Reviewer's also supply `{image_labels_list}`. Composing
+`recording_evidence`, which renders that list, into the Checker's prompt is
+refused by name rather than sent as a literal token.
+
+A review may **override** any section by shipping
+`prompts/partials/meltiro/NAME.md`; that text then wins wherever the section is
+cited, and the engine's copy is not consulted. The filename is the whole of the
+wiring, so that directory is enumerated at load: a file named for no section
+(`recording_note.md`, `Recording_Notes.md`, `house_style.md`) is a load error
+rather than a file that quietly overrides nothing. Overriding moves the config
+fingerprints (`prompts_hash`, `instrument_fp`, and the stage fingerprint of
+whichever prompt cites it), because the text is now yours: an un-overridden
+section rides in `engine_fp` instead, so an engine release that rewords one
+leaves every bundle's config fingerprints exactly where they were. Two bundles
+composing the same section, one on the default and one overriding it with
+byte-identical text, read identically to a model and fingerprint differently —
+one is pinned to the engine's wording, the other to its own.
+
+A role's system prompt that composes no section of its own role loads with a
+warning on stderr: the engine's behaviour is then described to that model only
+by whatever the prompt says itself, and a prompt that describes it wrongly is
+obeyed, not corrected. A stage that is off is passed over — with
+`max_checks_per_field: 0` there is no Checker call to underbrief.
 
 `pipeline.yaml` takes exactly these keys; anything else is a load error.
 
@@ -564,14 +617,17 @@ and `bundle_fp` move. Swap a crop for a better one and `figures_fp` and
 `bundle_fp` move. So `run_fp` says what was asked and `bundle_fp` says what it
 was asked of, and either can be compared while the other varies.
 
-*meltiro*'s own prose — the framing the engine writes around your prompts, and
-every tool result and validation error it returns to a model — is covered by
-`engine_fp` and by nothing else. No config fingerprint takes it as a preimage,
-deliberately, so a consumer can pin those across releases; and it lives in the
-package's source files, which is exactly what `engine_fp` hashes. An edit to
-any of that wording therefore moves `engine_fp` and every `run_fp` built on it,
-whether or not it was ever committed. Runs from different *meltiro* versions
-are still compared deliberately, never assumed equivalent.
+*meltiro*'s own prose — the framing the engine writes around your prompts, the
+engine sections your prompts compose, and every tool result and validation
+error it returns to a model — is covered by `engine_fp` and by nothing else. No
+config fingerprint takes it as a preimage, deliberately, so a consumer can pin
+those across releases; and it lives in the package's own files, the modules and
+`engine_prompts/*.md`, which is exactly what `engine_fp` hashes. An edit to any
+of that wording therefore moves `engine_fp` and every `run_fp` built on it,
+whether or not it was ever committed. An engine section you have overridden is
+your text, not the engine's, and rides in the config fingerprints instead. Runs
+from different *meltiro* versions are still compared deliberately, never
+assumed equivalent.
 
 ## Known limitations
 

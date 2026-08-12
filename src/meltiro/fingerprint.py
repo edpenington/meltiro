@@ -387,8 +387,11 @@ def instrument_fingerprint(prompts_hash, template_hash,
     One of the three orthogonal axes. Deliberately absent: every model, provider, endpoint, route and decoding
     parameter (`call_fingerprint`), and the engine's own version and prose
     (`engine_fingerprint`). `prompts_hash` covers all four prompt files with
-    `{include:NAME}` partials expanded — the SOURCE text; reference-list
-    content, aliases included, rides in `reference_hash`. `structure_hash`
+    `{include:NAME}` partials expanded — the SOURCE text; an engine section
+    composed with `{include:meltiro:NAME}` and not overridden by the bundle
+    contributes its directive rather than its text, being the engine's prose
+    and covered by `engine_fingerprint`; reference-list content, aliases
+    included, rides in `reference_hash`. `structure_hash`
     here is `instrument_structure_hash`, not `structure_hash`.
 
     `checker_context_chars` is the checker's quote-context width, or None

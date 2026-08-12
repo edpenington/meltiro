@@ -1011,8 +1011,10 @@ class TestCheckerConfig:
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
         )
-        a = cfg.fingerprint(synthetic_template, predicates=PREDICATES)
-        b = cfg.fingerprint(synthetic_template, predicates=PREDICATES)
+        a = cfg.fingerprint(synthetic_template, predicates=PREDICATES,
+                            max_checks_per_field=2)
+        b = cfg.fingerprint(synthetic_template, predicates=PREDICATES,
+                            max_checks_per_field=2)
         assert a == b
         assert a.startswith("checker_fp:")
 
@@ -1028,7 +1030,8 @@ class TestCheckerConfig:
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
         )
-        fp1 = cfg1.fingerprint(synthetic_template, predicates=PREDICATES)
+        fp1 = cfg1.fingerprint(synthetic_template, predicates=PREDICATES,
+                               max_checks_per_field=2)
 
         sys_path.write_text("v2", encoding="utf-8")
         cfg2 = CheckerConfig(max_tokens=1024, 
@@ -1036,7 +1039,8 @@ class TestCheckerConfig:
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
         )
-        fp2 = cfg2.fingerprint(synthetic_template, predicates=PREDICATES)
+        fp2 = cfg2.fingerprint(synthetic_template, predicates=PREDICATES,
+                               max_checks_per_field=2)
 
         assert fp1 != fp2
 
@@ -1058,10 +1062,10 @@ class TestCheckerConfig:
         )
         fp_a = cfg.fingerprint(
             synthetic_template, {"gauge_list": [{"tool_name": "WDS-9"}]},
-            predicates=PREDICATES)
+            predicates=PREDICATES, max_checks_per_field=2)
         fp_b = cfg.fingerprint(
             synthetic_template, {"gauge_list": [{"tool_name": "SRI-7"}]},
-            predicates=PREDICATES)
+            predicates=PREDICATES, max_checks_per_field=2)
         assert fp_a != fp_b
 
     def test_fingerprint_changes_with_checker_context_fields(
@@ -1079,11 +1083,13 @@ class TestCheckerConfig:
             user_prompt_template_path=str(user_path),
         )
         fp_before = cfg.fingerprint(synthetic_template,
-                                    predicates=PREDICATES)
+                                    predicates=PREDICATES,
+                                    max_checks_per_field=2)
         synthetic_template["checker_context_fields"] = list(
             reversed(synthetic_template["checker_context_fields"]))
         fp_after = cfg.fingerprint(synthetic_template,
-                                   predicates=PREDICATES)
+                                   predicates=PREDICATES,
+                                   max_checks_per_field=2)
         assert fp_before != fp_after
 
     def test_from_env_ignores_checker_decoding_env_vars(self, monkeypatch):

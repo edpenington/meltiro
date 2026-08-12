@@ -34,6 +34,8 @@ from pathlib import Path
 
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
+    HASH,
+    WIRE,
     stage_predicates,
     substitute_include_placeholders,
 )
@@ -129,11 +131,18 @@ def build_system_message(image_labels, *,
                          max_checks_per_field=2,
                          final_review=True,
                          reference_lists=None,
-                         image_captions=None):
+                         image_captions=None,
+                         mode=WIRE):
     """Build the extractor's system message text.
 
     `system_prompt_path` is REQUIRED; it comes from the config bundle
     (`ConfigBundle.extractor_system_path`).
+
+    `mode` picks the render: `WIRE` (the default) expands every include,
+    including the engine sections a prompt composes with
+    `{include:meltiro:NAME}`; `HASH` leaves an un-overridden engine section as
+    its directive token, which is what keeps engine prose out of `prompt_hash`
+    and so out of `config_fp` (see `meltiro.prompt_partials`).
 
     Every `{reference:NAME}` placeholder is substituted with the config
     bundle's rendered reference list; an unresolvable one fails loudly.
@@ -156,7 +165,8 @@ def build_system_message(image_labels, *,
     # partial may itself carry `{reference:...}` placeholders.
     rendered = substitute_include_placeholders(
         rendered, Path(system_prompt_path).parent / "partials",
-        predicates=stage_predicates(max_checks_per_field, final_review))
+        predicates=stage_predicates(max_checks_per_field, final_review),
+        mode=mode)
     rendered = substitute_reference_placeholders(
         rendered, reference_lists,
         path=bundle_root_for_prompt(system_prompt_path))
@@ -173,17 +183,30 @@ def compute_prompt_config_hash(*, system_prompt_path,
                                 final_review=True):
     """Paper-independent hash of the system prompt CONFIG.
 
-    Renders the prompt with an empty `image_labels` list so the hash
-    reflects the prompt template + reference lists + per-field check budget
-    only, NOT the per-paper figure/table label set (nor, therefore, the
-    per-paper exhibit captions rendered beside those labels). Two extractions
-    of different papers under the same code share this hash.
+    What it covers is the HAND-AUTHORED text of the extractor's prompt as it
+    renders: the prompt file, the bundle's own partials, any engine section
+    the bundle overrides, the reference lists inlined into it, and the values
+    substituted into text of the author's own — a bundle that writes
+    `{max_checks_per_field}` into its prompt hashes the number.
 
-    Because the rendered prompt inlines the reference lists' contents, this
-    hash also captures reference-list CONTENT: editing a reference list
-    moves the prompt_hash, and hence config_fp, with it. The tool-call cap is
-    NOT an input: it has no placeholder in the prompt (see
-    `build_system_message`), so raising it never moves this hash.
+    What it leaves out is engine text and everything interpolated inside it.
+    Rendered in `HASH` mode, an un-overridden `{include:meltiro:NAME}`
+    contributes its directive TOKEN, so whatever that section says, and
+    whatever the engine substitutes into it, is outside the preimage: the
+    check budget stated in `extractor_workflow` moves this hash by exactly
+    nothing. That is the boundary, not a gap in it. The budget reaches a run's
+    identity on the structure axis instead — `structure_hash`, folded into
+    `config_fp` beside this value and into `instrument_fp` — so two runs
+    differing only in the budget carry different fingerprints while the prompt
+    hash they share correctly reports the same authored text.
+
+    Renders with an empty `image_labels` list, so the per-paper figure/table
+    label set (and the per-paper exhibit captions beside it) reaches no hash
+    and two extractions of different papers under one config share this value.
+    Reference-list CONTENT does reach it, inlined by the render: editing a
+    list moves this hash and hence `config_fp`. The tool-call cap reaches it
+    never: it has no placeholder in any prompt (see `build_system_message`),
+    so raising it and resuming is not refused as config drift.
 
     Used as the `prompt_hash` input to `config_fp`, so a consumer grouping
     runs by that fingerprint groups by config, not by paper.
@@ -194,6 +217,7 @@ def compute_prompt_config_hash(*, system_prompt_path,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
         reference_lists=reference_lists,
+        mode=HASH,
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -271,7 +295,8 @@ def build_review_system_message(image_labels, *,
                                  max_checks_per_field=2,
                                  final_review=True,
                                  reference_lists=None,
-                                 image_captions=None):
+                                 image_captions=None,
+                                 mode=WIRE):
     """Build the FINAL REVIEW system message text.
 
     `system_prompt_path` is REQUIRED; it comes from the config bundle
@@ -284,6 +309,10 @@ def build_review_system_message(image_labels, *,
     `input_schema`s, as it does the extractor. `{reference:NAME}`
     placeholders are substituted; the tool-call cap placeholders are rejected
     at config-load time (see `build_system_message`).
+
+    `mode` picks the render, on the same terms as `build_system_message`: the
+    reviewer is sent the `WIRE` text, and `review_fp` is taken over the `HASH`
+    one.
     """
     prompt_template = _load_text(system_prompt_path)
     rendered = prompt_template
@@ -291,7 +320,8 @@ def build_review_system_message(image_labels, *,
     # partial may itself carry `{reference:...}` placeholders.
     rendered = substitute_include_placeholders(
         rendered, Path(system_prompt_path).parent / "partials",
-        predicates=stage_predicates(max_checks_per_field, final_review))
+        predicates=stage_predicates(max_checks_per_field, final_review),
+        mode=mode)
     rendered = substitute_reference_placeholders(
         rendered, reference_lists,
         path=bundle_root_for_prompt(system_prompt_path))

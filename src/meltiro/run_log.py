@@ -103,13 +103,25 @@ def git_state():
     return _get_git_commit(), _git_tree_dirty()
 
 
-def _hash_tree(directory):
-    """One sha256 over every `*.py` under `directory`, or None if there is none.
+# What counts as the package's own source. The modules, and the engine prompt
+# files beside them: `engine_prompts/*.md` is prose the engine sends to a model
+# on its own authority, exactly like the framing written in the modules, and it
+# reaches no config fingerprint by design (see `meltiro.prompt_partials`). If
+# the digest below did not cover it, an edit to the engine's own contract would
+# move nothing at all and every run before and after it would claim the same
+# engine.
+_SOURCE_GLOBS = ("*.py", "engine_prompts/*.md")
+
+
+def _hash_tree(directory, globs=_SOURCE_GLOBS):
+    """One sha256 over the package's source files under `directory`, or None if
+    there are none.
 
     Files are visited in sorted relative-POSIX-path order, and each contributes
     `relpath\\x00bytes`, so the digest depends on the file names and their
     contents and on nothing else — not on filesystem walk order, not on where
-    the directory happens to sit. `__pycache__` directories and compiled `.pyc`
+    the directory happens to sit, not on which glob matched a file. Each glob
+    is matched at any depth. `__pycache__` directories and compiled `.pyc`
     files are skipped: they are derived from the source, they differ between
     interpreters, and hashing them would make one checkout report two digests.
 
@@ -123,9 +135,13 @@ def _hash_tree(directory):
         return None
     digest = hashlib.sha256()
     try:
+        matched = set()
+        for pattern in globs:
+            matched.update(
+                path for path in root.rglob(pattern)
+                if "__pycache__" not in path.parts and path.is_file())
         paths = sorted(
-            (path for path in root.rglob("*.py")
-             if "__pycache__" not in path.parts),
+            matched,
             key=lambda path: path.relative_to(root).as_posix())
         if not paths:
             return None
@@ -152,6 +168,10 @@ def source_hash():
     the repository around it, so an installed copy and the checkout it was
     built from hash the same way. Returns the token `"nosource"` when the
     package's source cannot be read, as for a frozen or zipimported copy.
+
+    Source here is the modules AND `engine_prompts/*.md` (see `_SOURCE_GLOBS`):
+    the engine's prompt sections are engine prose that reaches no config
+    fingerprint, so this digest is the only thing that names them.
 
     direktoro's own `source_hash()` is the same function over that package
     (see `direktoro.provenance`), so the two halves of the engine are named by

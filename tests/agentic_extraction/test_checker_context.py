@@ -687,10 +687,12 @@ class TestFingerprint:
         # and it is the checker's own knob rather than a pipeline toggle.
         predicates = stage_predicates(2, True)
         wide = cfg.fingerprint(synthetic_template, {"gauge_list": []},
-                               predicates=predicates)
+                               predicates=predicates,
+                               max_checks_per_field=2)
         cfg.context_chars = 0
         narrow = cfg.fingerprint(synthetic_template, {"gauge_list": []},
-                                 predicates=predicates)
+                                 predicates=predicates,
+                                 max_checks_per_field=2)
         assert wide != narrow
 
 

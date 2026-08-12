@@ -176,11 +176,13 @@ class TestCheckerUserTemplatePartials:
         assert "VERSION-A" in cfg.user_prompt_template_text(
             predicates=predicates)
         fp_a = cfg.fingerprint(template, reference_lists,
-                               predicates=predicates)
+                               predicates=predicates,
+                               max_checks_per_field=2)
 
         (partials / "ctx.md").write_text("VERSION-B", encoding="utf-8")
         assert "VERSION-B" in cfg.user_prompt_template_text(
             predicates=predicates)
         fp_b = cfg.fingerprint(template, reference_lists,
-                               predicates=predicates)
+                               predicates=predicates,
+                               max_checks_per_field=2)
         assert fp_a != fp_b

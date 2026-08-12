@@ -25,6 +25,7 @@ class TestSystemText:
         # vocabulary.
         txt = build_checker_system_text(
             system_prompt_path=checker_system_path,
+            max_checks_per_field=2,
             reference_lists={"gauge_list": []})
         assert "verdict" in txt.lower()
         assert "ok" in txt and "challenge" in txt
@@ -38,6 +39,7 @@ class TestSystemText:
         # explicitly, so putting it back has to be a deliberate act.
         txt = build_checker_system_text(
             system_prompt_path=checker_system_path,
+            max_checks_per_field=2,
             reference_lists={"gauge_list": []})
         assert "primary_aim" not in txt
         assert "outcome_category" not in txt
@@ -46,6 +48,7 @@ class TestSystemText:
                                    checker_system_path):
         txt = build_checker_system_text(
             system_prompt_path=checker_system_path,
+            max_checks_per_field=2,
             reference_lists={"gauge_list": []})
         blocks = system_message_blocks(txt)
         assert blocks[0]["cache_control"] == {"type": "ephemeral"}
