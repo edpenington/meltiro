@@ -72,7 +72,8 @@ def _orch(config, bundle, out_dir, **over):
     loop.update(over)
     checker_config = CheckerConfig.from_env(
         model_override=loop["checker_model"])
-    checker_config.temperature = float(loop.get("checker_temperature", 0.0))
+    checker_config.sampling = {
+        "temperature": float(loop.get("checker_temperature", 0.0))}
     checker_config.thinking = checker_thinking
     if checker_max_tokens is not None:
         checker_config.max_tokens = checker_max_tokens
@@ -84,7 +85,7 @@ def _orch(config, bundle, out_dir, **over):
         max_tool_calls=int(loop["max_tool_calls"]),
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop.get("final_review", True)),
-        temperature=float(loop["temperature"]),
+        sampling={"temperature": float(loop["temperature"])},
         thinking=thinking,
         review_thinking=review_thinking,
         extractor_max_tokens=int(loop["extractor_max_tokens"]),
@@ -132,7 +133,11 @@ def build(tmp_path, config_dir, bundle_minimal_dir):
         if checker_max_tokens is not None:
             checker_config.max_tokens = checker_max_tokens
         if checker_temperature is not _UNSET:
-            checker_config.temperature = checker_temperature
+            # None here means "send no temperature at all", which is the one
+            # way a temperature-accepting model can be asked to think.
+            checker_config.sampling = (
+                None if checker_temperature is None
+                else {"temperature": checker_temperature})
         return Orchestrator(
             config, bundle, tmp_path / f"runs{counter['n']}",
             extractor_model=loop["extractor_model"],
@@ -141,7 +146,7 @@ def build(tmp_path, config_dir, bundle_minimal_dir):
             max_tool_calls=int(loop["max_tool_calls"]),
             max_checks_per_field=int(loop["max_checks_per_field"]),
             final_review=bool(loop.get("final_review", True)),
-            temperature=float(loop["temperature"]),
+            sampling={"temperature": float(loop["temperature"])},
             thinking=thinking,
             review_thinking=review_thinking,
             extractor_max_tokens=int(loop["extractor_max_tokens"]),
@@ -162,9 +167,9 @@ class TestSayingNothingChangesNothing:
         # names no thinking key keeps its wire request and its fingerprints.
         for model in (OPUS_4_8, SONNET_4_6, OPUS_5, SONNET_5):
             before = resolved_decoding_params(
-                model, temperature=0.0, max_tokens=1024)
+                model, sampling={"temperature": 0.0}, max_tokens=1024)
             after = resolved_decoding_params(
-                model, temperature=0.0, max_tokens=1024, thinking=None)
+                model, sampling={"temperature": 0.0}, max_tokens=1024, thinking=None)
             assert before == after, model
             assert "thinking" not in after
             assert "output_config" not in after
@@ -204,13 +209,13 @@ class TestSayingNothingChangesNothing:
 class TestEffortReachesTheWire:
     def test_effort_becomes_an_anthropic_wire_key(self):
         dec = resolved_decoding_params(
-            OPUS_5, temperature=0.0, max_tokens=32768,
+            OPUS_5, sampling={"temperature": 0.0}, max_tokens=32768,
             thinking=Thinking(effort="max"))
         assert dec["output_config"] == {"effort": "max"}
 
     def test_adaptive_mode_becomes_an_anthropic_wire_key(self):
         dec = resolved_decoding_params(
-            OPUS_5, temperature=0.0, max_tokens=32768,
+            OPUS_5, sampling={"temperature": 0.0}, max_tokens=32768,
             thinking=Thinking(mode="adaptive"))
         assert dec["thinking"] == {"type": "adaptive"}
 
@@ -543,10 +548,9 @@ def _temperature_accepting_thinkers():
 
     Two filters, and both matter:
 
-      - accepts a temperature: no `no_temperature` quirk, and
-        `supports_sampling_params`. A model with the quirk never has the
-        conflict, because direktoro omits the temperature for every request it
-        sends.
+      - accepts a temperature: it does not name `temperature` in
+        `rejects_sampling`. A model that refuses it never has the conflict,
+        because direktoro omits it from every request it sends.
       - supports `adaptive`: `ACCEPTED_MODES` is meltiro's whole thinking
         vocabulary, so a model whose only on-mode is `budget` cannot be asked
         to think from a pipeline.yaml at all. `claude-haiku-4-5-*` is exactly
@@ -560,8 +564,7 @@ def _temperature_accepting_thinkers():
         info = model_info(m)
         if info.retired:
             continue
-        quirks = info.quirks or {}
-        if quirks.get("no_temperature") or not info.supports_sampling_params:
+        if "temperature" in info.rejects_sampling:
             continue
         support = thinking_support(m)
         if support is not None and "adaptive" in support.modes:
@@ -630,7 +633,7 @@ class TestTemperatureAndThinkingCannotBothApply:
                          checker_temperature=None,
                          checker_thinking=Thinking(mode="adaptive"))
             assert orch.checker_config.thinking == Thinking(mode="adaptive")
-            assert orch.checker_config.temperature is None
+            assert orch.checker_config.sampling is None
 
     def test_disabling_thinking_is_the_other_exit(self, build):
         # The symmetric choice: keep sampling control, do not think.
@@ -638,7 +641,7 @@ class TestTemperatureAndThinkingCannotBothApply:
             orch = build(checker_model=model, checker_max_tokens=1024,
                          checker_temperature=0.0,
                          checker_thinking=Thinking(mode="disabled"))
-            assert orch.checker_config.temperature == 0.0
+            assert orch.checker_config.sampling == {"temperature": 0.0}
 
     def test_saying_nothing_about_thinking_keeps_the_temperature_legal(
             self, build):
@@ -667,7 +670,7 @@ class TestTemperatureAndThinkingCannotBothApply:
         # `checker_temperature` would waste the one edit they make.
         with pytest.raises(ThinkingConfigError) as exc:
             build(checker_model=SONNET_4_6, checker_max_tokens=8192,
-                  checker_temperature=0.0,
+                  sampling={"temperature": 0.0},
                   checker_thinking=Thinking(mode="adaptive", effort="xhigh"))
         msg = str(exc.value)
         assert "xhigh" in msg
@@ -816,15 +819,15 @@ class TestDirektoroContract:
         assert EFFORT_LEVELS, "no effort levels to sweep"
         for level in EFFORT_LEVELS:
             thinking_mod.check_role_thinking(
-                "checker", OPUS_5, max_tokens=2048, temperature=None,
-                thinking=Thinking(mode="adaptive", effort=level))
+                "checker", OPUS_5, max_tokens=2048,
+                sampling=None, thinking=Thinking(mode="adaptive", effort=level))
             # One token below the floor is refused at that same effort, so the
             # calls above are an accepted cap rather than a guard that has
             # stopped looking.
             with pytest.raises(ThinkingConfigError):
                 thinking_mod.check_role_thinking(
-                    "checker", OPUS_5, max_tokens=2047, temperature=None,
-                    thinking=Thinking(mode="adaptive", effort=level))
+                    "checker", OPUS_5, max_tokens=2047,
+                    sampling=None, thinking=Thinking(mode="adaptive", effort=level))
 
     def test_the_working_set_really_does_think_by_default(self):
         # The premise of the whole guard, read off direktoro's registry. If this

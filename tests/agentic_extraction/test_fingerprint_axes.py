@@ -51,7 +51,7 @@ def _orch(config, bundle, out_dir, **over):
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop.get("final_review", True)),
         check_reviewer_edits=bool(loop.get("check_reviewer_edits", False)),
-        temperature=float(loop["temperature"]),
+        sampling={"temperature": float(loop["temperature"])},
         extractor_max_tokens=int(loop["extractor_max_tokens"]),
         review_max_tokens=int(loop["review_max_tokens"]),
         dry_run=True,

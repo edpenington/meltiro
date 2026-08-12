@@ -98,7 +98,6 @@ DEFAULT_EXTRACTOR_MAX_TOKENS = 32768
 # Final-review token ceiling (pipeline.yaml's review_max_tokens); defaults to
 # the extractor's.
 DEFAULT_REVIEW_MAX_TOKENS = 32768
-DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOOL_CALLS = 100
 # The final reviewer's own tool-call budget (`max_review_tool_calls` in
 # pipeline.yaml). Operational, not methodology: rides in no fingerprint,
@@ -137,8 +136,8 @@ class Orchestrator:
                  max_review_tool_calls=DEFAULT_MAX_REVIEW_TOOL_CALLS,
                  max_checks_per_field=DEFAULT_MAX_CHECKS_PER_FIELD,
                  check_reviewer_edits=False,
-                 temperature=DEFAULT_TEMPERATURE,
-                 review_temperature=None,
+                 sampling=None,
+                 review_sampling=None,
                  thinking=None,
                  review_thinking=None,
                  extractor_max_tokens=DEFAULT_EXTRACTOR_MAX_TOKENS,
@@ -202,16 +201,25 @@ class Orchestrator:
         # written, nothing any model is asked — so it rides in no fingerprint.
         # Validated here so an unknown level fails before any spend.
         self.diagnostics = validate_diagnostics(diagnostics)
-        # `temperature` is the EXTRACTOR's and the reviewer's default:
-        # `review_temperature=None` inherits it; pass an explicit float (0.0
-        # included) to decouple. The checker carries its own on CheckerConfig.
-        # Each role's value reaches only its own stage fingerprint, via that
-        # stage's resolved decoding params.
-        self.temperature = temperature
-        self.review_temperature = (
-            temperature if review_temperature is None else review_temperature)
-        # Per-role thinking (`direktoro.Thinking`, or None). Unlike
-        # temperature, `review_thinking=None` means "say nothing", NOT
+        # The sampling controls the operator specified, per role, as a
+        # `{name: value}` mapping over `direktoro.SAMPLING_PARAMS`. `sampling`
+        # is the EXTRACTOR's and the reviewer's default: `review_sampling=None`
+        # inherits it; pass an explicit mapping (`{}` included) to decouple.
+        # The checker carries its own on CheckerConfig. Each role's mapping
+        # reaches only its own stage fingerprint, via that stage's resolved
+        # decoding params.
+        #
+        # No control has a default VALUE here. An unspecified one is not sent
+        # and the model's own default applies — a fact about the provider,
+        # which may move under an unchanged config, and one this engine
+        # neither pins nor pretends to record. Specifying it is how a run fixes
+        # it.
+        self.sampling = dict(sampling or {})
+        self.review_sampling = (
+            dict(self.sampling) if review_sampling is None
+            else dict(review_sampling))
+        # Per-role thinking (`direktoro.Thinking`, or None). Unlike the
+        # sampling controls, `review_thinking=None` means "say nothing", NOT
         # "inherit the extractor's". See meltiro.thinking.
         self.thinking = thinking
         self.review_thinking = review_thinking
@@ -325,18 +333,18 @@ class Orchestrator:
         check_role_thinking(
             "extractor", self.extractor_model,
             max_tokens=self.extractor_max_tokens,
-            temperature=self.temperature, thinking=self.thinking)
+            sampling=self.sampling, thinking=self.thinking)
         if self.checker_enabled:
             check_role_thinking(
                 "checker", self.checker_config.checker_model,
                 max_tokens=self.checker_config.max_tokens,
-                temperature=self.checker_config.temperature,
+                sampling=self.checker_config.sampling,
                 thinking=self.checker_config.thinking)
         if self.final_review:
             check_role_thinking(
                 "review", self.review_model,
                 max_tokens=self.review_max_tokens,
-                temperature=self.review_temperature,
+                sampling=self.review_sampling,
                 thinking=self.review_thinking)
 
     # ----------------------------------------------------------------------
@@ -514,7 +522,7 @@ class Orchestrator:
         prompt_hash = instrument.extractor_prompt_hash()
         tool_hash = instrument.tool_set_hash()
         ext_dec = resolved_decoding_params(
-            self.extractor_model, temperature=self.temperature,
+            self.extractor_model, sampling=self.sampling,
             max_tokens=self.extractor_max_tokens, thinking=self.thinking)
         ext_call_identity = _call_identity(self.extractor_model, ext_dec)
         config_fp = instrument.extractor_fingerprint(
@@ -677,7 +685,7 @@ class Orchestrator:
         prompt_hash = instrument.extractor_prompt_hash()
         tool_hash = instrument.tool_set_hash()
         ext_dec = resolved_decoding_params(
-            self.extractor_model, temperature=self.temperature,
+            self.extractor_model, sampling=self.sampling,
             max_tokens=self.extractor_max_tokens, thinking=self.thinking)
         expected_fp = instrument.extractor_fingerprint(
             _call_identity(self.extractor_model, ext_dec),
@@ -884,27 +892,27 @@ class Orchestrator:
         The same `resolved_decoding_params` the adapters call and the stage
         fingerprints fold in, so this reports what goes on the wire rather
         than what pipeline.yaml asked for. The two differ whenever a model
-        carries a quirk: a `no_temperature` model (Opus 4.7+, the GPT-5.x
-        reasoning family) is sent no `temperature` at all, so a configured
-        temperature is silently inert for that role and moves no fingerprint.
+        declares a refusal: a model that refuses a sampling control (Opus
+        4.7+, the GPT-5.x reasoning family) is sent none of it, so a specified
+        value is silently inert for that role and moves no fingerprint.
 
         A disabled stage records None rather than a guessed dict: its model is
         not required, so it must not be resolved through the registry.
         """
         return {
             "extractor": resolved_decoding_params(
-                self.extractor_model, temperature=self.temperature,
+                self.extractor_model, sampling=self.sampling,
                 max_tokens=self.extractor_max_tokens, thinking=self.thinking),
             "checker": (
                 resolved_decoding_params(
                     self.checker_config.checker_model,
-                    temperature=self.checker_config.temperature,
+                    sampling=self.checker_config.sampling,
                     max_tokens=self.checker_config.max_tokens,
                     thinking=self.checker_config.thinking)
                 if self.checker_enabled else None),
             "review": (
                 resolved_decoding_params(
-                    self.review_model, temperature=self.review_temperature,
+                    self.review_model, sampling=self.review_sampling,
                     max_tokens=self.review_max_tokens,
                     thinking=self.review_thinking)
                 if self.final_review else None),
@@ -918,18 +926,15 @@ class Orchestrator:
         rather than nulled: its model is never resolved, so nothing can be
         said about what it would send.
         """
-        configured = {"extractor": {}}
-        if self.temperature is not None:
-            configured["extractor"]["temperature"] = self.temperature
+        def specified(mapping):
+            # A None value is "no opinion", so it never counts as configured.
+            return {k: v for k, v in (mapping or {}).items() if v is not None}
+
+        configured = {"extractor": specified(self.sampling)}
         if self.checker_enabled:
-            configured["checker"] = {}
-            if self.checker_config.temperature is not None:
-                configured["checker"]["temperature"] = \
-                    self.checker_config.temperature
+            configured["checker"] = specified(self.checker_config.sampling)
         if self.final_review:
-            configured["review"] = {}
-            if self.review_temperature is not None:
-                configured["review"]["temperature"] = self.review_temperature
+            configured["review"] = specified(self.review_sampling)
         return configured
 
     def _warn_inert_decoding_params(self):
@@ -1987,7 +1992,7 @@ class Orchestrator:
         the reviewer is on; callers guard on `final_review`.
         """
         review_dec = resolved_decoding_params(
-            self.review_model, temperature=self.review_temperature,
+            self.review_model, sampling=self.review_sampling,
             max_tokens=self.review_max_tokens, thinking=self.review_thinking)
         return _call_identity(self.review_model, review_dec)
 
@@ -2293,8 +2298,8 @@ class Orchestrator:
 
     def _call_extractor(self, adapter, tool_defs):
         """Run one extractor turn via the provider adapter and return the
-        normalised response. The adapter applies the model's temperature quirk
-        (Opus 4.7+ omit it)."""
+        normalised response. The adapter omits any sampling control this
+        model's endpoint declares it refuses."""
         response = create_message_with_retry(
             adapter,
             on_retry=self._retry_logger("extractor"),
@@ -2304,7 +2309,7 @@ class Orchestrator:
             tools=tool_defs,
             tool_choice={"type": "auto"},
             messages=self.messages,
-            temperature=self.temperature,
+            sampling=self.sampling,
             thinking=self.thinking,
         )
         self._warn_if_truncated("extractor", self.extractor_model,
@@ -2331,9 +2336,9 @@ class Orchestrator:
         usage accounting, and role provenance, against the review model, the
         review system prompt, and the reviewer's own fresh-context message
         list (not `self.messages`). The adapter applies the model's
-        temperature quirk (Opus 4.7+ omit it).
+        sampling refusals.
 
-        The temperature is the REVIEWER's own (`review_temperature`), and
+        The sampling controls are the REVIEWER's own (`review_sampling`), and
         every turn of the loop goes through here, so the value
         `_compute_review_fp` records is the value each review call actually
         sends.
@@ -2347,7 +2352,7 @@ class Orchestrator:
             tools=tool_defs,
             tool_choice={"type": "auto"},
             messages=messages,
-            temperature=self.review_temperature,
+            sampling=self.review_sampling,
             thinking=self.review_thinking,
         )
         self._warn_if_truncated("review", self.review_model,
@@ -2374,7 +2379,7 @@ class Orchestrator:
         audit callback). The resolved model is the provider's reported
         response.model, which may differ from the configured alias; the
         decoding params are what the adapter actually sent after quirks (for
-        example `temperature` omitted for models that reject it). This makes a
+        example a sampling control omitted for a model that refuses it). This makes a
         session directory self-contained for reproduction without re-reading
         pipeline.yaml at the recorded commit. Written once (and only when the
         value changes), so the per-turn extractor loop does not rewrite meta

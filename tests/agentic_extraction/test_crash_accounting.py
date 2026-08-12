@@ -49,7 +49,7 @@ def _orch(config_dir, bundle_dir, out_dir, *, cap=50, rates=RATES):
         review_model=None,
         max_checks_per_field=0, final_review=False,
         max_tool_calls=cap,
-        temperature=0.0,
+        sampling={"temperature": 0.0},
         rates=rates,
         api_key="x",
     )

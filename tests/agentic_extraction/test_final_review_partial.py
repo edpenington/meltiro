@@ -69,7 +69,7 @@ class _FakeClient:
     assert on the WIRE request and not merely on the resolved attribute or the
     fingerprint. Without it the review call site is untestable: per-role
     temperature makes `_call_review` and `_compute_review_fp` two independent
-    reads of `self.review_temperature` that can drift apart. A fingerprint
+    reads of `self.review_sampling` that can drift apart. A fingerprint
     recording one temperature while the wire sends another is precisely what
     `providers.resolved_decoding_params` promises cannot happen ("a fingerprint
     folds in exactly what is sent"), so the wire side needs pinning too.
@@ -132,7 +132,7 @@ def _review_orch(tmp_path, template, paper_text, image_labels, response,
     orch._check_counts = {}
     orch.review_model = "claude-opus-4-7"
     orch.review_max_tokens = 1024
-    orch.temperature = 0.0
+    orch.sampling = {"temperature": 0.0}
     # Review-loop bounds + turn counter (the reviewer now runs a bounded loop).
     orch.max_consecutive_text_only_turns = 3
     orch.max_consecutive_identical_failures = 5
@@ -140,7 +140,7 @@ def _review_orch(tmp_path, template, paper_text, image_labels, response,
     # The reviewer reads its own temperature, not the extractor's. __init__ is
     # bypassed here, so the inherit-when-None resolution never runs and the
     # attribute has to be set explicitly.
-    orch.review_temperature = 0.0
+    orch.review_sampling = {"temperature": 0.0}
     # Likewise the reviewer's own thinking spec, for the same reason. None is
     # the "say nothing" state every bundle that names no thinking key gets, and
     # it is what these accounting tests want: no thinking parameter reaches the
@@ -186,9 +186,9 @@ def _inspect_then_conclude():
 class TestReviewCallUsesReviewTemperature:
     """EVERY turn of the reviewer's loop must send the REVIEWER's temperature.
 
-    `_call_review` and `_compute_review_fp` read `self.review_temperature`
+    `_call_review` and `_compute_review_fp` read `self.review_sampling`
     independently. Pinning only the fingerprint (test_cli.py) leaves the call
-    site free to drift to the extractor's `self.temperature`, which would make
+    site free to drift to the extractor's `self.sampling`, which would make
     review_fp record one temperature while the wire sends another: the one
     thing `providers.resolved_decoding_params` promises cannot happen. This
     asserts the wire request itself.
@@ -211,8 +211,8 @@ class TestReviewCallUsesReviewTemperature:
         # this assertion vacuous), and two DISTINCT values so the assertion can
         # only pass by reading the reviewer's.
         orch.review_model = "claude-sonnet-4-6"
-        orch.temperature = 0.9
-        orch.review_temperature = 0.1
+        orch.sampling = {"temperature": 0.9}
+        orch.review_sampling = {"temperature": 0.1}
 
         assert orch._final_review() == "review_clean"
 
@@ -224,14 +224,15 @@ class TestReviewCallUsesReviewTemperature:
     def test_every_review_turn_omits_temperature_for_no_temperature_model(
             self, tmp_path, synthetic_template, paper_text, image_labels,
             monkeypatch):
-        # The quirk applies on the live call, not just in the fingerprint: a
-        # model that rejects temperature is sent none at all (Anthropic returns
-        # 400 for Opus 4.7+ if it is present), whatever the config asked for.
+        # The refusal applies on the live call, not just in the fingerprint:
+        # a model that refuses temperature is sent none at all (Anthropic
+        # returns 400 for Opus 4.7+ if it is present), whatever the config
+        # asked for.
         # It has to hold per turn for the same reason the value does.
         orch = _review_orch(tmp_path, synthetic_template, paper_text,
                             image_labels, _inspect_then_conclude(), monkeypatch)
         orch.review_model = "claude-opus-4-8"
-        orch.review_temperature = 0.7
+        orch.review_sampling = {"temperature": 0.7}
 
         assert orch._final_review() == "review_clean"
 

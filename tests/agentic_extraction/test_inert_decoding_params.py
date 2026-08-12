@@ -1,8 +1,7 @@
 """A decoding value the operator wrote that no model ever sends.
 
-A model may carry a registry quirk that drops a parameter outright: a
-`no_temperature` model is sent no `temperature` at all, whatever `pipeline.yaml`
-says. The value is then inert, and inert invisibly, because the stage
+A model may declare a sampling control refused, and is then sent none of it
+whatever `pipeline.yaml` says. The value is then inert, and inert invisibly, because the stage
 fingerprints fold in the RESOLVED params — the exact dict the adapter sends. So
 `temperature: 1.0` and `temperature: 0.0` produce the SAME `config_fp` for such
 a model: two bundles differing in a visible, methodologically meaningful key
@@ -28,8 +27,8 @@ from meltiro.orchestrator import Orchestrator
 
 
 # The fixture pipeline names claude-opus-4-8 for the extractor and the
-# reviewer (both carry `no_temperature`) and claude-sonnet-4-6 for the checker
-# (which accepts it). Its `temperature: 1.0` and `review_temperature: 0.0` are
+# reviewer (both refuse the sampling controls) and claude-sonnet-4-6 for the
+# checker (which takes them). Its `temperature: 1.0` and `review_temperature: 0.0` are
 # therefore inert and its `checker_temperature: 0.0` is live, which is the
 # mixed case the warning has to get right in both directions.
 NO_TEMPERATURE_MODEL = "claude-opus-4-8"
@@ -40,11 +39,14 @@ def _orch(config_dir, bundle_minimal_dir, tmp_path, **kwargs):
     loop = load_config_bundle(config_dir).pipeline
     kwargs.setdefault("extractor_model", loop["extractor_model"])
     kwargs.setdefault("review_model", loop["review_model"])
-    kwargs.setdefault("temperature", float(loop["temperature"]))
-    kwargs.setdefault("review_temperature", float(loop["review_temperature"]))
+    kwargs.setdefault(
+        "sampling", {"temperature": float(loop["temperature"])})
+    kwargs.setdefault(
+        "review_sampling",
+        {"temperature": float(loop["review_temperature"])})
     kwargs.setdefault("checker_config", CheckerConfig(
         checker_model=loop["checker_model"],
-        temperature=float(loop["checker_temperature"]), api_key="x"))
+        sampling={"temperature": float(loop["checker_temperature"])}, api_key="x"))
     return Orchestrator(
         load_config_bundle(config_dir), load_bundle(bundle_minimal_dir),
         tmp_path / "runs", api_key="x", **kwargs)
@@ -135,10 +137,10 @@ class TestTheCollisionItDiscloses:
         # a reader comparing two bundles on config_fp cannot see the
         # difference, and only the warning tells them one is there.
         hot = _orch(config_dir, bundle_minimal_dir, tmp_path / "hot",
-                    temperature=1.0)
+                    sampling={"temperature": 1.0})
         hot.prepare_new_session()
         cold = _orch(config_dir, bundle_minimal_dir, tmp_path / "cold",
-                     temperature=0.0)
+                     sampling={"temperature": 0.0})
         cold.prepare_new_session()
 
         assert hot.session.meta["config_fp"] == cold.session.meta["config_fp"]

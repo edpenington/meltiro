@@ -96,11 +96,11 @@ class TestCallIdentityComponent:
         # same model sending different params get distinct config_fps.
         cool = config_fingerprint(
             _identity("z-ai/glm-5v-turbo", resolved_decoding_params(
-                "z-ai/glm-5v-turbo", temperature=0.0, max_tokens=100)),
+                "z-ai/glm-5v-turbo", sampling={"temperature": 0.0}, max_tokens=100)),
             "p", "t")
         warm = config_fingerprint(
             _identity("z-ai/glm-5v-turbo", resolved_decoding_params(
-                "z-ai/glm-5v-turbo", temperature=0.9, max_tokens=100)),
+                "z-ai/glm-5v-turbo", sampling={"temperature": 0.9}, max_tokens=100)),
             "p", "t")
         assert cool != warm
 
@@ -322,7 +322,7 @@ def test_extractor_call_sends_the_extractors_temperature(
         checker_config=CheckerConfig(
             checker_model="claude-sonnet-4-6", api_key="x"),
         review_model="claude-opus-4-7",
-        temperature=0.3, review_temperature=0.8, api_key="x")
+        sampling={"temperature": 0.3}, review_sampling={"temperature": 0.8}, api_key="x")
     orch.prepare_new_session()
     adapter = _FakeAdapter(NormalisedResponse(
         content=[], usage=NormalisedUsage(input_tokens=10, output_tokens=1),
@@ -333,7 +333,7 @@ def test_extractor_call_sends_the_extractors_temperature(
 
     orch._call_extractor(adapter, get_tool_definitions(orch.template))
 
-    assert adapter.calls[0]["temperature"] == 0.3
+    assert adapter.calls[0]["sampling"] == {"temperature": 0.3}
 
 
 def test_extractor_call_omits_temperature_for_no_temperature_model(
@@ -344,7 +344,7 @@ def test_extractor_call_omits_temperature_for_no_temperature_model(
     orch = _prepared(config_dir, bundle_minimal_dir, tmp_path / "runs",
                      "claude-opus-4-7")
     assert resolved_decoding_params(
-        "claude-opus-4-7", temperature=orch.temperature,
+        "claude-opus-4-7", sampling=orch.sampling,
         max_tokens=orch.extractor_max_tokens) == {"max_tokens": 32768}
 
 
@@ -355,15 +355,16 @@ def test_extractor_call_omits_temperature_for_no_temperature_model(
 
 def _orch_for_fp(config_dir, bundle_dir, out_dir, *, extractor_model,
                  checker_model="claude-sonnet-4-6",
-                 review_model="claude-opus-4-7", temperature=0.0):
+                 review_model="claude-opus-4-7", sampling={"temperature": 0.0}):
     config = load_config_bundle(config_dir)
     bundle = load_bundle(bundle_dir)
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
-        checker_config=CheckerConfig(checker_model=checker_model, api_key="x"),
+        checker_config=CheckerConfig(checker_model=checker_model, api_key="x",
+                                     sampling=sampling),
         review_model=review_model,
-        temperature=temperature,
+        sampling=sampling,
         api_key="x")
     orch.prepare_new_session()
     return orch
@@ -375,9 +376,9 @@ def test_temperature_change_does_not_move_no_temperature_config_fp(
     # differing only in the config temperature send identical decoding params
     # and must share config_fp.
     a = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "a",
-                     extractor_model="claude-opus-4-7", temperature=0.0)
+                     extractor_model="claude-opus-4-7", sampling={"temperature": 0.0})
     b = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "b",
-                     extractor_model="claude-opus-4-7", temperature=0.9)
+                     extractor_model="claude-opus-4-7", sampling={"temperature": 0.9})
     assert a.session.meta["config_fp"] == b.session.meta["config_fp"]
 
 
@@ -386,34 +387,38 @@ def test_temperature_change_moves_accepting_extractor_config_fp(
     # Sonnet accepts temperature, so it is actually sent: changing it must move
     # config_fp (the sent params differ).
     a = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "a",
-                     extractor_model="claude-sonnet-4-6", temperature=0.0)
+                     extractor_model="claude-sonnet-4-6", sampling={"temperature": 0.0})
     b = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "b",
-                     extractor_model="claude-sonnet-4-6", temperature=0.9)
+                     extractor_model="claude-sonnet-4-6", sampling={"temperature": 0.9})
     assert a.session.meta["config_fp"] != b.session.meta["config_fp"]
 
 
 def test_registry_quirk_edit_moves_all_three_stage_fingerprints(
         config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
-    # All three stages on Sonnet at temperature 0.0 (sent). Flipping Sonnet's
-    # no_temperature quirk drops temperature from every stage's sent params, so
-    # editing that one registry quirk moves config_fp, checker_fp, and
-    # review_fp together. A reasoning or temperature quirk therefore cannot
-    # change the wire without moving a fingerprint.
+    # All three stages on Sonnet at temperature 0.0 (sent). Declaring the
+    # control refused drops it from every stage's sent params, so editing that
+    # one registry declaration moves config_fp, checker_fp, and review_fp
+    # together. A registry edit therefore cannot change the wire without moving
+    # a fingerprint.
     before = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "before",
                           extractor_model="claude-sonnet-4-6",
                           checker_model="claude-sonnet-4-6",
-                          review_model="claude-sonnet-4-6", temperature=0.0)
+                          review_model="claude-sonnet-4-6", sampling={"temperature": 0.0})
     b_config = before.session.meta["config_fp"]
     b_checker = before.session.meta["checker_fp"]
     b_review = before.session.meta["review_fp"]
 
+    import dataclasses
+    from direktoro.registry import MODEL_REGISTRY
     monkeypatch.setitem(
-        model_info("claude-sonnet-4-6").quirks, "no_temperature", True)
+        MODEL_REGISTRY, "claude-sonnet-4-6",
+        dataclasses.replace(model_info("claude-sonnet-4-6"),
+                            rejects_sampling=frozenset({"temperature"})))
 
     after = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "after",
                          extractor_model="claude-sonnet-4-6",
                          checker_model="claude-sonnet-4-6",
-                         review_model="claude-sonnet-4-6", temperature=0.0)
+                         review_model="claude-sonnet-4-6", sampling={"temperature": 0.0})
     assert after.session.meta["config_fp"] != b_config
     assert after.session.meta["checker_fp"] != b_checker
     assert after.session.meta["review_fp"] != b_review

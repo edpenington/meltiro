@@ -44,7 +44,7 @@ def _dry_run_orchestrator(config, bundle, out_dir):
         review_model=loop["review_model"],
         max_tool_calls=int(loop["max_tool_calls"]),
         max_checks_per_field=int(loop["max_checks_per_field"]),
-        temperature=float(loop["temperature"]),
+        sampling={"temperature": float(loop["temperature"])},
         extractor_max_tokens=int(loop["extractor_max_tokens"]),
         review_max_tokens=int(loop["review_max_tokens"]),
         dry_run=True,
@@ -129,7 +129,7 @@ class TestMatchesOrchestrator:
         meta = orch.session.meta
         loop = cb.pipeline
         ext_dec = resolved_decoding_params(
-            loop["extractor_model"], temperature=float(loop["temperature"]),
+            loop["extractor_model"], sampling={"temperature": float(loop["temperature"])},
             max_tokens=int(loop["extractor_max_tokens"]))
         # The provider-call identity block is direktoro's: model + provider +
         # base_url + Route + wire-keyed resolved decoding params. The rebuild

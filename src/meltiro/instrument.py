@@ -13,7 +13,8 @@ A run is the product of three independent things (the same line
 `fingerprint.instrument_fingerprint` draws):
 
   - the INSTRUMENT: what was asked. Owned here.
-  - the CALL: which model was asked, at what temperature, with what output cap
+  - the CALL: which model was asked, under what sampling controls, with what
+    output cap
     and what thinking spec, and whether it could see images at all.
   - the PAPER: which study, whose text and figures fill the user message.
 
@@ -260,9 +261,9 @@ class Instrument:
         The tool-call cap rides in no fingerprint (see
         fingerprint.structure_hash). `review_max_tokens` and
         `review_temperature` ride in `call_identity`, so tuning either moves
-        review_fp and only review_fp; a model carrying the `no_temperature`
-        quirk is sent no temperature, so for it `review_temperature` moves
-        nothing — the fingerprint folds in what is sent, not what was
+        review_fp and only review_fp; a model that declares a sampling control
+        refused is sent none of it, so for that model `review_temperature`
+        moves nothing — the fingerprint folds in what is sent, not what was
         configured.
         """
         if not self.final_review:

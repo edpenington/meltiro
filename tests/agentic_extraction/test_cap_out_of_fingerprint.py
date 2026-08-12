@@ -33,7 +33,7 @@ EXTRACTOR = "claude-opus-4-8"
 
 
 def _orch(config_dir, bundle_dir, out_dir, *, cap,
-          extractor=EXTRACTOR, temperature=0.0):
+          extractor=EXTRACTOR, sampling={"temperature": 0.0}):
     """An extractor-only Orchestrator (checker and reviewer off)."""
     config = load_config_bundle(config_dir)
     bundle = load_bundle(bundle_dir)
@@ -45,7 +45,7 @@ def _orch(config_dir, bundle_dir, out_dir, *, cap,
         review_model=None,
         max_checks_per_field=0, final_review=False,
         max_tool_calls=cap,
-        temperature=temperature,
+        sampling=sampling,
         api_key="x",
     )
 
@@ -110,12 +110,12 @@ def test_changed_temperature_still_refuses_resume(
     # config_fp. An in_progress session (prepared, not run) is resumable; the
     # drift gate fires before any spend.
     orch1 = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                  extractor="z-ai/glm-5v-turbo", cap=5, temperature=0.0)
+                  extractor="z-ai/glm-5v-turbo", cap=5, sampling={"temperature": 0.0})
     orch1.prepare_new_session()
     session_dir = orch1.session.session_dir
 
     orch2 = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                  extractor="z-ai/glm-5v-turbo", cap=5, temperature=0.9)
+                  extractor="z-ai/glm-5v-turbo", cap=5, sampling={"temperature": 0.9})
     with pytest.raises(ResumeRefused):
         orch2.resume_session(session_dir)
 
@@ -195,7 +195,7 @@ def test_refused_resume_does_not_mutate_meta(
     # which would make the change a fingerprint no-op), so the 0.0 -> 0.9
     # change below genuinely moves config_fp and triggers the refusal.
     orch1 = _orch(config_dir, bundle_minimal_dir, out,
-                  extractor="z-ai/glm-5v-turbo", cap=7, temperature=0.0)
+                  extractor="z-ai/glm-5v-turbo", cap=7, sampling={"temperature": 0.0})
     orch1.prepare_new_session()
     session_dir = orch1.session.session_dir
     meta_path = session_dir / "diagnostics" / "run.json"
@@ -204,7 +204,7 @@ def test_refused_resume_does_not_mutate_meta(
     events_before = events_path.read_bytes()
 
     orch2 = _orch(config_dir, bundle_minimal_dir, out,
-                  extractor="z-ai/glm-5v-turbo", cap=42, temperature=0.9)
+                  extractor="z-ai/glm-5v-turbo", cap=42, sampling={"temperature": 0.9})
     with pytest.raises(ResumeRefused):
         orch2.resume_session(session_dir)
     assert meta_path.read_bytes() == meta_before
