@@ -528,9 +528,9 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
         # the same sent dict, so neither the block nor config_fp moves. A
         # spurious split here would fork the identity of two runs the provider
         # cannot tell apart.
-        a = resolved_decoding_params("gpt-5.6-sol", temperature=0.0,
+        a = resolved_decoding_params("gpt-5.6-sol", sampling={"temperature": 0.0},
                                      max_tokens=100)
-        b = resolved_decoding_params("gpt-5.6-sol", temperature=0.9,
+        b = resolved_decoding_params("gpt-5.6-sol", sampling={"temperature": 0.9},
                                      max_tokens=100)
         assert a == b
         assert "temperature" not in a
@@ -540,9 +540,9 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
     def test_temperature_moves_fp_for_an_accepting_model(self):
         # z-ai/glm-5v-turbo (routed, Chat Completions) accepts temperature:
         # changing it changes the sent dict, the identity block, and config_fp.
-        a = resolved_decoding_params("z-ai/glm-5v-turbo", temperature=0.0,
+        a = resolved_decoding_params("z-ai/glm-5v-turbo", sampling={"temperature": 0.0},
                                      max_tokens=100)
-        b = resolved_decoding_params("z-ai/glm-5v-turbo", temperature=0.9,
+        b = resolved_decoding_params("z-ai/glm-5v-turbo", sampling={"temperature": 0.9},
                                      max_tokens=100)
         assert a != b
         assert self._config_fp("z-ai/glm-5v-turbo", a) != \
@@ -551,7 +551,7 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
     def test_reasoning_effort_is_folded_in(self):
         # gpt-5.6-sol sends reasoning effort, so it appears in the sent dict and
         # in the identity block: bumping it moves config_fp.
-        dec = resolved_decoding_params("gpt-5.6-sol", temperature=0.0,
+        dec = resolved_decoding_params("gpt-5.6-sol", sampling={"temperature": 0.0},
                                        max_tokens=100)
         assert dec["reasoning"] == {"effort": "medium"}
         bumped = dict(dec, reasoning={"effort": "high"})
@@ -563,9 +563,9 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
         # max_tokens. The cap rides under whatever key the wire uses, and
         # direktoro applies that keying inside the block.
         assert "max_output_tokens" in resolved_decoding_params(
-            "gpt-5.6-sol", temperature=0.0, max_tokens=100)
+            "gpt-5.6-sol", sampling={"temperature": 0.0}, max_tokens=100)
         assert "max_tokens" in resolved_decoding_params(
-            "z-ai/glm-5v-turbo", temperature=0.0, max_tokens=100)
+            "z-ai/glm-5v-turbo", sampling={"temperature": 0.0}, max_tokens=100)
 
 
 class TestRunFingerprint:

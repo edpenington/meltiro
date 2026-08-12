@@ -271,7 +271,7 @@ def _extractor_call_identity(bundle):
     loop = bundle.pipeline
     model = loop["extractor_model"]
     decoding = resolved_decoding_params(
-        model, temperature=float(loop["temperature"]),
+        model, sampling={"temperature": float(loop["temperature"])},
         max_tokens=int(loop["extractor_max_tokens"]), thinking=None)
     return canonical_json(call_identity_fields(
         model, route=model_info(model).route, decoding_params=decoding))

@@ -129,7 +129,7 @@ RATES = Rates(input_per_1m=3.0, output_per_1m=15.0,
 def _config(rates=RATES):
     return CheckerConfig(
         api_key="sk-test", checker_model="claude-sonnet-4-6",
-        max_tokens=1024, temperature=0.0, concurrency=4, rates=rates,
+        max_tokens=1024, sampling={"temperature": 0.0}, concurrency=4, rates=rates,
     )
 
 
@@ -217,7 +217,7 @@ class TestCheckOneField:
         # value, so a hardcoded 0.0 anywhere on the path cannot pass.
         client = _client_returning()
         config = _config()
-        config.temperature = 0.35
+        config.sampling = {"temperature": 0.35}
         check_one_field(
             system_message_blocks=[],
             user_message_blocks=[],
@@ -231,7 +231,7 @@ class TestCheckOneField:
         client = _client_returning()
         config = _config()
         config.checker_model = "claude-opus-4-8"
-        config.temperature = 0.35
+        config.sampling = {"temperature": 0.35}
         check_one_field(
             system_message_blocks=[],
             user_message_blocks=[],
@@ -428,7 +428,7 @@ class TestCheckOneFieldRoutedCost:
 
     def _config(self):
         return CheckerConfig(api_key="x", checker_model=self.ROUTED,
-                             max_tokens=1024, temperature=0.0, concurrency=4)
+                             max_tokens=1024, sampling={"temperature": 0.0}, concurrency=4)
 
     def _response(self, reported_cost, *, generation_id="gen-chk-1",
                   served="Z.AI"):
@@ -675,7 +675,7 @@ class TestCheckerConfig:
         monkeypatch.setenv("CHECKER_TEMPERATURE", "0.9")
         monkeypatch.setenv("CHECKER_MAX_TOKENS", "77")
         cfg = CheckerConfig.from_env(model_override="claude-sonnet-4-6")
-        assert cfg.temperature == 0.0
+        assert cfg.sampling is None
         assert cfg.max_tokens == 1024
 
     def test_from_env_refuses_a_zero_concurrency_override(self, monkeypatch):

@@ -67,7 +67,6 @@ from meltiro.orchestrator import (
     DEFAULT_MAX_REVIEW_TOOL_CALLS,
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_REVIEW_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
     Orchestrator,
 )
 from meltiro.rates import Rates, parse_rates
@@ -309,16 +308,23 @@ MIN_TEMPERATURE = 0.0
 MAX_TEMPERATURE = 2.0
 
 
-def _checked_temperature(label, value):
-    """Return `value` if it is a usable decoding temperature, else exit 1.
+def _checked_sampling(label, mapping):
+    """Return `mapping` if every control in it is usable, else exit 1.
 
     Checked at startup rather than left to the provider: a role whose model
-    carries the `no_temperature` quirk is never SENT a temperature (see
+    declares a control refused is never SENT it (see
     direktoro.resolved_decoding_params), so startup is the only place a bad
     value can be caught at all; and where the provider would catch it, the
-    reviewer's temperature is not exercised until a full extraction and
-    checker fan-out have already been billed.
+    reviewer's controls are not exercised until a full extraction and checker
+    fan-out have already been billed.
+
+    Only `temperature` has a bound to check today. A control with no stated
+    band is passed through rather than guessed at — inventing one here would
+    refuse a value some provider accepts.
     """
+    value = (mapping or {}).get("temperature")
+    if value is None:
+        return mapping
     if not MIN_TEMPERATURE <= value <= MAX_TEMPERATURE:
         print(
             f"{label} must be between {MIN_TEMPERATURE} and "
@@ -329,7 +335,7 @@ def _checked_temperature(label, value):
             f"the first call. Fix pipeline.yaml.",
             file=sys.stderr)
         raise SystemExit(1)
-    return value
+    return mapping
 
 
 def _checked_max_tokens(label, value):
@@ -571,9 +577,9 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     # `checker_temperature: 0.0`, the common value, is honoured rather than
     # skipped.
     if loop_cfg.get("checker_temperature") is not None:
-        checker_config.temperature = float(loop_cfg["checker_temperature"])
-    checker_config.temperature = _checked_temperature(
-        "checker_temperature", checker_config.temperature)
+        checker_config.sampling = _checked_sampling(
+            "checker_temperature",
+            {"temperature": float(loop_cfg["checker_temperature"])})
 
     # Characters of surrounding paper text the checker sees on each side of a
     # matched quote. Strict about the type as well as the range: a float or a
@@ -595,15 +601,24 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
             raise SystemExit(1)
         checker_config.context_chars = context_chars
 
-    # Per-role decoding temperature. `temperature` is the EXTRACTOR's, and is
-    # the reviewer's default when `review_temperature` is absent. `is not
-    # None` so an explicit `review_temperature: 0.0` decouples the reviewer
-    # from a sampled extractor rather than being swallowed as absent. None
-    # here means "inherit"; the Orchestrator resolves it.
-    review_temperature = None
+    # Per-role sampling controls. `temperature` is the EXTRACTOR's, and is the
+    # reviewer's default when `review_temperature` is absent. `is not None` so
+    # an explicit `review_temperature: 0.0` decouples the reviewer from a
+    # sampled extractor rather than being swallowed as absent. None here means
+    # "inherit"; the Orchestrator resolves it.
+    #
+    # A key absent from pipeline.yaml stays absent all the way to the wire:
+    # nothing substitutes a value for it, so the model's own default applies
+    # and the run records that it specified none. Pin a control by writing it.
+    review_sampling = None
     if loop_cfg.get("review_temperature") is not None:
-        review_temperature = _checked_temperature(
-            "review_temperature", float(loop_cfg["review_temperature"]))
+        review_sampling = _checked_sampling(
+            "review_temperature",
+            {"temperature": float(loop_cfg["review_temperature"])})
+    sampling = {}
+    if loop_cfg.get("temperature") is not None:
+        sampling = _checked_sampling(
+            "temperature", {"temperature": float(loop_cfg["temperature"])})
 
     # The rate cards `rates:` gives per role, if any. Optional: a role the block
     # does not name takes its rates from direktoro's price table below. A block
@@ -656,10 +671,8 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
             max_review_tool_calls=max_review_tool_calls,
             max_checks_per_field=max_checks_per_field,
             check_reviewer_edits=check_reviewer_edits,
-            temperature=_checked_temperature(
-                "temperature",
-                float(loop_cfg.get("temperature", DEFAULT_TEMPERATURE))),
-            review_temperature=review_temperature,
+            sampling=sampling,
+            review_sampling=review_sampling,
             thinking=thinking,
             review_thinking=review_thinking,
             extractor_max_tokens=_checked_max_tokens(

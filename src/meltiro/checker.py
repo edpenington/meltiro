@@ -73,7 +73,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never executed at runtime
 
 
 DEFAULT_MAX_TOKENS = 1024
-DEFAULT_TEMPERATURE = 0.0
 DEFAULT_CONCURRENCY = 10
 # Characters of surrounding paper text shown on EACH side of a matched quote
 # in the per-field checker message (pipeline.yaml's `checker_context_chars`).
@@ -130,7 +129,13 @@ class CheckerConfig:
     # construct a config and set the model explicitly.
     checker_model: str = None
     max_tokens: int = DEFAULT_MAX_TOKENS
-    temperature: float = DEFAULT_TEMPERATURE
+    # The sampling controls the operator specified for the checker, as a
+    # `{name: value}` mapping over `direktoro.SAMPLING_PARAMS`, or None for
+    # "specified none". There is deliberately no default value for any of them:
+    # a number nobody chose is indistinguishable from a number somebody did,
+    # and it would be reported as inert against a model that refuses it. An
+    # unspecified control is not sent, and the model's own default applies.
+    sampling: dict = None
     concurrency: int = DEFAULT_CONCURRENCY
     # Characters of surrounding paper text the checker sees on each side of a
     # matched quote. Config identity, not an operational budget: it changes
@@ -150,7 +155,7 @@ class CheckerConfig:
     # config bundle only (pipeline.yaml's `checker_thinking_mode` /
     # `checker_thinking_effort`), so the same tree yields the same checker_fp
     # under any shell; it rides the same `resolved_decoding_params` call as
-    # `temperature` and `max_tokens`. Declared after the fields above so
+    # the sampling controls and `max_tokens`. Declared after the fields above so
     # positional construction of them is unaffected. See `meltiro.thinking`:
     # the cap hazard it guards is sharpest on this role, whose whole output
     # is a small JSON verdict under a small cap.
@@ -185,7 +190,7 @@ class CheckerConfig:
             api_key = os.environ.get(model_info(model).api_key_env, "")
         else:
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        # The checker's decoding knobs (max_tokens, temperature) and its
+        # The checker's decoding knobs (max_tokens, the sampling controls) and its
         # quote-context width are NOT read from the environment: they come
         # from the config bundle via the CLI, so a tagged bundle fully
         # specifies what the checker is asked and the same tree yields the
@@ -308,8 +313,8 @@ class CheckerConfig:
         params, built by direktoro, which owns that block. It folds into
         `checker_fp` so the same checker model run on two providers gets two
         fingerprints, a resume that switches the checker's
-        provider/endpoint/route is refused, and a temperature the checker model
-        rejects moves nothing.
+        provider/endpoint/route is refused, and a sampling control the checker
+        model refuses moves nothing.
 
         Exposed as its own method because the orchestrator also hashes it on
         its own into `checker_call_fp`, the call axis for this role. Both come
@@ -323,7 +328,7 @@ class CheckerConfig:
         from direktoro import call_identity_fields, canonical_json
         info = model_info(self.checker_model)
         checker_dec = resolved_decoding_params(
-            self.checker_model, temperature=self.temperature,
+            self.checker_model, sampling=self.sampling,
             max_tokens=self.max_tokens, thinking=self.thinking)
         return canonical_json(call_identity_fields(
             self.checker_model, route=info.route,
@@ -536,7 +541,7 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
                     messages=[{"role": "user", "content": blocks}],
                     tools=tools,
                     tool_choice=tool_choice,
-                    temperature=config.temperature,
+                    sampling=config.sampling,
                     thinking=config.thinking,
                 )
                 break

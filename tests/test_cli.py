@@ -614,15 +614,17 @@ class TestCheckerTemperatureWiring:
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg["checker_temperature"] = 0.7
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.checker_config.temperature == 0.7
+        assert orch.checker_config.sampling == {"temperature": 0.7}
 
-    def test_default_checker_temperature_is_zero(
+    def test_an_unwritten_checker_temperature_is_specified_nowhere(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # No checker_temperature key: the dataclass default (0.0) stands.
+        # No checker_temperature key: the checker specifies none, so none is
+        # sent and the model's own default applies. The dataclass carries no
+        # default value to stand in for one nobody wrote.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg.pop("checker_temperature", None)
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.checker_config.temperature == 0.0
+        assert orch.checker_config.sampling is None
 
     def test_environment_does_not_feed_checker_decoding(
             self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
@@ -636,7 +638,7 @@ class TestCheckerTemperatureWiring:
         loop_cfg.pop("checker_temperature", None)
         loop_cfg.pop("checker_max_tokens", None)
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.checker_config.temperature == 0.0
+        assert orch.checker_config.sampling is None
         assert orch.checker_config.max_tokens == 1024
 
 
@@ -728,17 +730,17 @@ class TestPerRoleTemperatureWiring:
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg["temperature"] = 0.4
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.temperature == 0.4
+        assert orch.sampling == {"temperature": 0.4}
 
     def test_review_temperature_from_pipeline_is_wired(
             self, config_dir, bundle_minimal_dir, tmp_path):
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg["review_temperature"] = 0.6
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.review_temperature == 0.6
+        assert orch.review_sampling == {"temperature": 0.6}
         # And it does not leak into the other two roles.
-        assert orch.temperature == loop_cfg["temperature"]
-        assert orch.checker_config.temperature == 0.0
+        assert orch.sampling == {"temperature": loop_cfg["temperature"]}
+        assert orch.checker_config.sampling == {"temperature": 0.0}
 
     def test_absent_review_temperature_inherits_extractor(
             self, config_dir, bundle_minimal_dir, tmp_path):
@@ -749,7 +751,7 @@ class TestPerRoleTemperatureWiring:
         loop_cfg.pop("review_temperature", None)
         loop_cfg["temperature"] = 0.3
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.review_temperature == 0.3
+        assert orch.review_sampling == {"temperature": 0.3}
 
     def test_explicit_zero_review_temperature_is_honoured(
             self, config_dir, bundle_minimal_dir, tmp_path):
@@ -760,26 +762,30 @@ class TestPerRoleTemperatureWiring:
         loop_cfg["temperature"] = 0.3
         loop_cfg["review_temperature"] = 0.0
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.review_temperature == 0.0
+        assert orch.review_sampling == {"temperature": 0.0}
 
-    def test_default_temperature_is_zero(
+    def test_an_unwritten_temperature_is_specified_nowhere(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # Neither key present: both fall to the engine default.
+        # Neither key present: nothing is specified, so nothing is sent and
+        # each model's own default applies. There is deliberately no engine
+        # default value — one would be indistinguishable from an operator's
+        # choice, and would be reported as inert against a model that refuses
+        # it.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg.pop("temperature", None)
         loop_cfg.pop("review_temperature", None)
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.temperature == 0.0
-        assert orch.review_temperature == 0.0
+        assert orch.sampling == {}
+        assert orch.review_sampling == {}
 
     @pytest.mark.parametrize("key", [
         "temperature", "review_temperature", "checker_temperature"])
     @pytest.mark.parametrize("bad", [-0.1, -1, 2.1, 5.0, 100])
     def test_out_of_range_temperature_rejected(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys, key, bad):
-        # Range-checked at startup for every role. For a no_temperature model
-        # the provider never sees the value to reject it, so startup is the only
-        # place it can be caught at all.
+        # Range-checked at startup for every role. For a model that refuses
+        # the control the provider never sees the value to reject it, so
+        # startup is the only place it can be caught at all.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg[key] = bad
         with pytest.raises(SystemExit) as excinfo:
@@ -800,11 +806,11 @@ class TestPerRoleTemperatureWiring:
         loop_cfg[key] = ok
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         resolved = {
-            "temperature": lambda o: o.temperature,
-            "review_temperature": lambda o: o.review_temperature,
-            "checker_temperature": lambda o: o.checker_config.temperature,
+            "temperature": lambda o: o.sampling,
+            "review_temperature": lambda o: o.review_sampling,
+            "checker_temperature": lambda o: o.checker_config.sampling,
         }[key](orch)
-        assert resolved == ok
+        assert resolved == {"temperature": ok}
 
 
 class TestPerRoleThinkingWiring:

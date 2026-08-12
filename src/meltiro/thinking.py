@@ -275,7 +275,7 @@ def _cap_sizing_advice(keys, support, thinking):
         f"actually emits, plus room for a think, and then tuned.")
 
 
-def _temperature_exit(role, model, max_tokens, temperature, thinking):
+def _sampling_exit(role, model, max_tokens, sampling, thinking):
     """The extra sentence for a shape that is illegal ONLY because of its
     temperature, or `""` when the temperature is not what broke it.
 
@@ -295,11 +295,11 @@ def _temperature_exit(role, model, max_tokens, temperature, thinking):
     """
     from direktoro import ThinkingUnsupported, resolved_decoding_params
 
-    if temperature is None:
+    if not sampling:
         return ""
     try:
         resolved_decoding_params(
-            model, temperature=None, max_tokens=max_tokens, thinking=thinking)
+            model, max_tokens=max_tokens, thinking=thinking)
     except ThinkingUnsupported:
         # Something other than the temperature is wrong (an effort level this
         # model does not have, a mode it does not accept). Naming the
@@ -319,7 +319,7 @@ def _temperature_exit(role, model, max_tokens, temperature, thinking):
         f"exactly the quiet wrongness this guard exists to prevent.")
 
 
-def check_role_thinking(role, model, *, max_tokens, temperature, thinking):
+def check_role_thinking(role, model, *, max_tokens, sampling, thinking):
     """Refuse, before any spend, a role whose thinking configuration cannot work.
 
     Two refusals, in the order a call would hit them:
@@ -351,13 +351,13 @@ def check_role_thinking(role, model, *, max_tokens, temperature, thinking):
         return
     try:
         resolved_decoding_params(
-            model, temperature=temperature, max_tokens=max_tokens,
+            model, sampling=sampling, max_tokens=max_tokens,
             thinking=thinking)
     except ThinkingUnsupported as exc:
         raise ThinkingConfigError(
             f"{role} role ({keys['model']}: {model!r}) asks for a thinking "
             f"shape this model's endpoint would reject: {exc}"
-            f"{_temperature_exit(role, model, max_tokens, temperature, thinking)} "
+            f"{_sampling_exit(role, model, max_tokens, sampling, thinking)} "
             f"Fix {keys['mode']} / {keys['effort']} in pipeline.yaml.") from exc
 
     if not will_think(model, thinking):
