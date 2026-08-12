@@ -39,6 +39,7 @@ def _orch(config_dir, bundle_minimal_dir, tmp_path):
         extractor_model="claude-opus-4-8",
         review_model=None,
         max_checks_per_field=0, final_review=False,
+        extractor_max_tokens=4096,
         api_key="x")
     orch.prepare_new_session()
     return orch

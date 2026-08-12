@@ -66,14 +66,15 @@ from meltiro.checker_prompts import (
     system_message_blocks as checker_sys_blocks,
 )
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, validate_diagnostics
-from meltiro.errors import AgenticExtractionError
+from meltiro.errors import AgenticExtractionError, truncation_report
 from meltiro.extraction_record import ROLE_REVIEW
 from meltiro.fingerprint import (
     call_fingerprint as _call_fp,
     engine_fingerprint as _engine_fp,
     run_fingerprint as _run_fp)
 from meltiro.instrument import Instrument
-from direktoro import create_message_with_retry, resolved_decoding_params
+from direktoro import (
+    create_message_with_retry, is_known_model, resolved_decoding_params)
 from meltiro.prompt_builder import (
     EMPTY_ASSISTANT_PLACEHOLDER, EXTRACTOR_TOOL_REPROMPT,
     REVIEW_TOOL_REPROMPT,
@@ -87,17 +88,12 @@ from meltiro.run_entry import append_session_entry
 from meltiro.run_log import engine_identity, git_state
 from meltiro.session import Session, result_to_model_text
 from meltiro.statuses import CONSIDERED_STATUSES, VALIDATED_STATUSES
-from meltiro.thinking import check_role_thinking, truncation_message
 from meltiro.tools import (
     MUTATING_TOOLS, ToolDispatcher, canonical_checker_tool_json,
     get_tool_definitions)
 from meltiro.validators import missing_required_fields
 
 
-DEFAULT_EXTRACTOR_MAX_TOKENS = 32768
-# Final-review token ceiling (pipeline.yaml's review_max_tokens); defaults to
-# the extractor's.
-DEFAULT_REVIEW_MAX_TOKENS = 32768
 DEFAULT_MAX_TOOL_CALLS = 100
 # The final reviewer's own tool-call budget (`max_review_tool_calls` in
 # pipeline.yaml). Operational, not methodology: rides in no fingerprint,
@@ -115,6 +111,28 @@ DEFAULT_MAX_CONSECUTIVE_IDENTICAL_FAILURES = 5
 # provider layer; re-exported here because callers and tests import it from
 # this module.
 from meltiro.config_bundle import DEFAULT_MAX_CHECKS_PER_FIELD  # noqa: E402
+
+
+def _required_cap(param, value):
+    """`value` as a role's output-token cap, or refuse before it can spend.
+
+    A cap has no default: the number bounds what one call may spend and what
+    it may answer within, and one this engine invented would sit in a run
+    record looking exactly like one the operator wrote. Type-strict for the
+    same reason the caps in a bundle are — a bool is not a budget, and a float
+    or a numeric string would coerce into a number nobody chose.
+
+    Demanded per ENABLED role, in the constructor, so every entry point is
+    refused on the same terms before a session directory exists or a token is
+    billed. A stage that makes no calls needs no budget for them.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise AgenticExtractionError(
+            f"{param} must be a positive integer, got {value!r}. It is the "
+            f"output-token cap for that role's calls and has no default. A "
+            f"role whose stage is off states none: the reviewer's is off at "
+            f"final_review=False, the checker's at max_checks_per_field=0.")
+    return value
 
 
 class Orchestrator:
@@ -140,8 +158,8 @@ class Orchestrator:
                  review_sampling=None,
                  thinking=None,
                  review_thinking=None,
-                 extractor_max_tokens=DEFAULT_EXTRACTOR_MAX_TOKENS,
-                 review_max_tokens=DEFAULT_REVIEW_MAX_TOKENS,
+                 extractor_max_tokens=None,
+                 review_max_tokens=None,
                  final_review=True,
                  rates=None,
                  diagnostics=DEFAULT_DIAGNOSTICS,
@@ -202,29 +220,44 @@ class Orchestrator:
         # Validated here so an unknown level fails before any spend.
         self.diagnostics = validate_diagnostics(diagnostics)
         # The sampling controls the operator specified, per role, as a
-        # `{name: value}` mapping over `direktoro.SAMPLING_PARAMS`. `sampling`
-        # is the EXTRACTOR's and the reviewer's default: `review_sampling=None`
-        # inherits it; pass an explicit mapping (`{}` included) to decouple.
-        # The checker carries its own on CheckerConfig. Each role's mapping
-        # reaches only its own stage fingerprint, via that stage's resolved
-        # decoding params.
+        # `{name: value}` mapping over `direktoro.SAMPLING_PARAMS`. Each role
+        # stands alone: `sampling` is the EXTRACTOR's and `review_sampling` the
+        # reviewer's, neither taken from the other, and the checker carries its
+        # own on CheckerConfig. Each role's mapping reaches only its own stage
+        # fingerprint, via that stage's resolved decoding params.
         #
         # No control has a default VALUE here. An unspecified one is not sent
         # and the model's own default applies — a fact about the provider,
         # which may move under an unchanged config, and one this engine
         # neither pins nor pretends to record. Specifying it is how a run fixes
         # it.
-        self.sampling = dict(sampling or {})
+        #
+        # "Specified nothing" is None on every role, matching what
+        # `direktoro.split_decoding_config` returns for a block that names no
+        # sampling control and what `CheckerConfig.sampling` already carried.
+        # An empty mapping beside a None would be a second spelling of one
+        # state, and the two would have to be kept equivalent everywhere they
+        # are read.
+        self.sampling = dict(sampling) if sampling else None
         self.review_sampling = (
-            dict(self.sampling) if review_sampling is None
-            else dict(review_sampling))
-        # Per-role thinking (`direktoro.Thinking`, or None). Unlike the
-        # sampling controls, `review_thinking=None` means "say nothing", NOT
-        # "inherit the extractor's". See meltiro.thinking.
+            dict(review_sampling) if review_sampling else None)
+        # Per-role thinking (`direktoro.Thinking`, or None). None says nothing
+        # and leaves the model's own default thinking behaviour in force.
         self.thinking = thinking
         self.review_thinking = review_thinking
-        self.extractor_max_tokens = extractor_max_tokens
-        self.review_max_tokens = review_max_tokens
+        # One output cap per ENABLED role (see `_required_cap`), the
+        # checker's included: `CheckerConfig` alone is constructible without
+        # one (its own entry points re-refuse for direct callers), but an
+        # Orchestrator that will run checks demands it here, where the
+        # refusal lands before a session directory exists — not after the
+        # whole extractor loop has been billed.
+        self.extractor_max_tokens = _required_cap(
+            "extractor_max_tokens", extractor_max_tokens)
+        self.review_max_tokens = (
+            _required_cap("review_max_tokens", review_max_tokens)
+            if self.final_review else review_max_tokens)
+        if self.checker_enabled:
+            _required_cap("checker_max_tokens", self.checker_config.max_tokens)
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self.dry_run = dry_run
         # Engine constants, not config (see the constants above).
@@ -254,6 +287,14 @@ class Orchestrator:
         self.image_captions = {label.strip().lower(): caption
                                for label, caption in bundle.exhibits.items()}
 
+        # Refuse a call the registry says cannot be made, in the constructor,
+        # so every entry point (CLI, resume, programmatic) fails before a
+        # session directory exists or a token is billed. Runs before any
+        # other registry lookup, so an unknown model id fails HERE, naming
+        # its role, rather than as a bare registry error from whichever
+        # lookup happens to run first.
+        self._refuse_unworkable_decoding()
+
         # Declared per-role image capability, from the registry. A text-only
         # extractor gets no image parts, `{image_labels_list}` renders the
         # none-available state, and its dispatcher validates against an empty
@@ -261,11 +302,6 @@ class Orchestrator:
         # label. Checker and reviewer guard on their own role models.
         self.extractor_supports_images = model_supports_images(
             self.extractor_model)
-
-        # Refuse an unworkable thinking configuration in the constructor, so
-        # every entry point (CLI, resume, programmatic) fails before a session
-        # directory exists or a token is billed.
-        self._validate_role_thinking()
 
         # Cost / token accumulators across all calls in the session.
         # `_input_tokens` matches Anthropic usage.input_tokens semantics:
@@ -316,36 +352,53 @@ class Orchestrator:
         self._summary_mismatch_advised = False
 
     # ----------------------------------------------------------------------
-    # Thinking / reasoning effort
+    # Pre-spend feasibility
     # ----------------------------------------------------------------------
 
-    def _validate_role_thinking(self):
-        """Refuse an unworkable per-role thinking configuration, before spend.
+    def _refuse_unworkable_decoding(self):
+        """Refuse, before any spend, a role whose call cannot be made.
 
-        Runs once per ENABLED role: a disabled stage makes no calls, so there
-        is no shape to reject and no cap to size. Per role, `meltiro.thinking`
-        checks that the requested shape is one the model's endpoint accepts
-        (no 400 on a paid call) and that the output cap can hold a think plus
-        an answer when the role will think — including a config that says
-        nothing while the model thinks anyway (Opus 5, Sonnet 5). Raises
-        `ThinkingConfigError`.
+        One `direktoro.resolved_decoding_params` per ENABLED role — the same
+        call the adapters make and the stage fingerprints fold in, so this
+        asks the real question rather than a copy of it: does this model's
+        endpoint accept this block at this cap. A value outside the model's
+        documented band, a mode or an effort level it does not have, a
+        sampling control on a request that also turns thinking on where the
+        endpoint takes only one of the two, a cap a thinking call cannot
+        answer within — each raises an `AgenticExtractionError` naming the
+        role whose block it came from.
+
+        A disabled stage is skipped: it makes no calls, so there is no shape
+        to reject and no cap to size. An enabled role whose model the
+        registry does not know is refused here too, naming the role — no
+        call can be resolved for an unknown id, and every later lookup would
+        raise a bare registry error with no role attached. A RETIRED id
+        resolves: the registry's provenance rule is that a past run's model
+        must keep resolving, and refusing retired ids for NEW runs is the
+        caller's gate (the CLI applies it before building an Orchestrator).
         """
-        check_role_thinking(
-            "extractor", self.extractor_model,
-            max_tokens=self.extractor_max_tokens,
-            sampling=self.sampling, thinking=self.thinking)
+        roles = [("extractor", self.extractor_model,
+                  self.extractor_max_tokens, self.sampling, self.thinking)]
         if self.checker_enabled:
-            check_role_thinking(
-                "checker", self.checker_config.checker_model,
-                max_tokens=self.checker_config.max_tokens,
-                sampling=self.checker_config.sampling,
-                thinking=self.checker_config.thinking)
+            roles.append(("checker", self.checker_config.checker_model,
+                          self.checker_config.max_tokens,
+                          self.checker_config.sampling,
+                          self.checker_config.thinking))
         if self.final_review:
-            check_role_thinking(
-                "review", self.review_model,
-                max_tokens=self.review_max_tokens,
-                sampling=self.review_sampling,
-                thinking=self.review_thinking)
+            roles.append(("review", self.review_model, self.review_max_tokens,
+                          self.review_sampling, self.review_thinking))
+        for role, model, max_tokens, sampling, thinking in roles:
+            if not model or not is_known_model(model):
+                raise AgenticExtractionError(
+                    f"{role} role ({role}_model: {model!r}): the registry "
+                    f"knows no such model id, so no call can be resolved "
+                    f"for it.")
+            try:
+                resolved_decoding_params(model, max_tokens=max_tokens,
+                                         sampling=sampling, thinking=thinking)
+            except ValueError as exc:
+                raise AgenticExtractionError(
+                    f"{role} role ({role}_model: {model!r}): {exc}") from exc
 
     # ----------------------------------------------------------------------
     # The instrument
@@ -448,25 +501,20 @@ class Orchestrator:
                 file=sys.stderr,
             )
 
-    def _warn_if_truncated(self, role, model, max_tokens, response, *,
-                           thinking):
+    def _warn_if_truncated(self, role, max_tokens, response):
         """Say so, loudly, when a role's response stopped on `max_tokens`.
 
-        On a thinking model the output cap covers reasoning plus answer, so a
-        legal cap can still be spent thinking and cut off mid-answer. Without
-        this, a truncated extractor turn looks like a tool-free turn, gets
-        re-prompted as one, and burns to a stall guard with the cause nowhere
-        in the record.
+        Truncation has to be named where it happens. Unnamed, a cut-off
+        extractor turn looks like a tool-free turn, gets re-prompted as one,
+        and burns to a stall guard with the cause nowhere in the record.
 
-        `thinking` is the role's OWN spec — the diagnosis turns on whether
-        THIS call thought — keyword-only with no default so a call site cannot
-        forget it. Written to both stderr and `meta.warnings` (deduplicated by
-        `Session.add_warning`).
+        The message names the cap and the pipeline.yaml key that set it, which
+        is the line an operator would edit. Written to both stderr and
+        `meta.warnings` (deduplicated by `Session.add_warning`).
         """
         if getattr(response, "stop_reason", None) != "max_tokens":
             return
-        message = truncation_message(role, model, max_tokens,
-                                     thinking=thinking)
+        message = truncation_report(max_tokens, f"{role}_max_tokens")
         print(f"WARNING: {message}", file=sys.stderr)
         if self.session is not None:
             self.session.add_warning(message)
@@ -2312,9 +2360,8 @@ class Orchestrator:
             sampling=self.sampling,
             thinking=self.thinking,
         )
-        self._warn_if_truncated("extractor", self.extractor_model,
-                                self.extractor_max_tokens, response,
-                                thinking=self.thinking)
+        self._warn_if_truncated(
+            "extractor", self.extractor_max_tokens, response)
         # Verbatim API audit log: canonical request + response, plus the
         # provider/endpoint and the resolved wire model.
         self.session.log_api_call(
@@ -2355,9 +2402,8 @@ class Orchestrator:
             sampling=self.review_sampling,
             thinking=self.review_thinking,
         )
-        self._warn_if_truncated("review", self.review_model,
-                                self.review_max_tokens, response,
-                                thinking=self.review_thinking)
+        self._warn_if_truncated(
+            "review", self.review_max_tokens, response)
         # Verbatim API audit log, with provider/endpoint and resolved model.
         self.session.log_api_call(
             "final_review", response.raw_request, response.raw_response,

@@ -106,7 +106,7 @@ def test_importing_checker_does_not_pull_direktoro():
         import sys
         from meltiro.checker import CheckerConfig, DEFAULT_CONTEXT_CHARS
         assert "direktoro" not in sys.modules
-        c = CheckerConfig(checker_model="whatever")
+        c = CheckerConfig(max_tokens=1024, checker_model="whatever")
         assert c.thinking is None
         assert DEFAULT_CONTEXT_CHARS
         print("OK")

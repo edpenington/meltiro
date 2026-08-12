@@ -2,8 +2,8 @@
 
 The system message is the LARGE cacheable block: review context, workflow
 description, evidence convention, image-label list, rendered reference lists.
-The field catalogue is NOT in it; it lives in the tool `input_schema`s (see the
-`template` argument in `build_system_message`).
+The field catalogue is NOT in it; it lives in the tool `input_schema`s, which
+are built from the extraction template (see `meltiro.tools`).
 The initial user message is also cached: paper text + every cropped
 image. Both get `cache_control: ephemeral` markers so turns 2..N pay the
 0.1x cache-read rate on the bulk of the prompt.
@@ -124,7 +124,7 @@ def _render_image_labels(image_labels, captions=None):
     return "\n".join(lines)
 
 
-def build_system_message(template, image_labels, *,
+def build_system_message(image_labels, *,
                          system_prompt_path,
                          max_checks_per_field=2,
                          final_review=True,
@@ -165,15 +165,10 @@ def build_system_message(template, image_labels, *,
         _render_image_labels(image_labels, image_captions))
     rendered = rendered.replace("{max_checks_per_field}",
                                 str(max_checks_per_field))
-    # `template` is unused here: the field catalogue reaches the model
-    # through the tool input_schemas, not through a prompt placeholder. The
-    # parameter stays so the orchestrator call site does not have to know
-    # which of the two carries it.
-    _ = template  # noqa: F841
     return rendered
 
 
-def compute_prompt_config_hash(template, *, system_prompt_path,
+def compute_prompt_config_hash(*, system_prompt_path,
                                 max_checks_per_field, reference_lists,
                                 final_review=True):
     """Paper-independent hash of the system prompt CONFIG.
@@ -194,7 +189,7 @@ def compute_prompt_config_hash(template, *, system_prompt_path,
     runs by that fingerprint groups by config, not by paper.
     """
     text = build_system_message(
-        template, image_labels=[],
+        image_labels=[],
         system_prompt_path=system_prompt_path,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
@@ -271,7 +266,7 @@ def build_initial_user_blocks(study_id, paper_text, figures):
     return blocks
 
 
-def build_review_system_message(template, image_labels, *,
+def build_review_system_message(image_labels, *,
                                  system_prompt_path,
                                  max_checks_per_field=2,
                                  final_review=True,
@@ -305,7 +300,6 @@ def build_review_system_message(template, image_labels, *,
         _render_image_labels(image_labels, image_captions))
     rendered = rendered.replace("{max_checks_per_field}",
                                 str(max_checks_per_field))
-    _ = template  # noqa: F841  (still accepted for API stability)
     return rendered
 
 

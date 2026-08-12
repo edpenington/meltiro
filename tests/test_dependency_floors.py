@@ -16,6 +16,12 @@ So the floor is pinned three ways, none of them a hand-copied number:
      install's metadata is a snapshot from install time and goes stale the
      moment the dependency's floor moves).
 
+direktoro carries a floor of its own here, checked the same way against the
+version actually resolved. It is the layer that splits a decoding block,
+resolves what reaches the wire, and supplies the shapes every fingerprint
+folds in, so an install below the floor does not merely compute different
+numbers — it raises on the call meltiro makes.
+
 Offline: signature inspection and file reads only, no client, no network.
 """
 
@@ -90,6 +96,20 @@ def test_floor_is_at_least_direktoros():
     assert _version_tuple(ours) >= _version_tuple(theirs), (
         f"meltiro declares anthropic>={ours} but direktoro, which sends the "
         f"thinking parameters, declares anthropic>={theirs}")
+
+
+def test_installed_direktoro_satisfies_the_declared_floor():
+    # The same read as the two SDK floors, against the package that owns
+    # `split_decoding_config`, `resolved_decoding_params` and
+    # `call_identity_fields`. `direktoro.__version__` is the distribution's
+    # own version attribute and the figure a run records as
+    # `direktoro_version`, so what is checked here is what a run would report.
+    import direktoro
+
+    floor = _declared_floor(REPO_ROOT / "pyproject.toml", "direktoro")
+    assert _version_tuple(direktoro.__version__) >= _version_tuple(floor), (
+        f"direktoro {direktoro.__version__} is below meltiro's declared "
+        f"floor of {floor}; the decoding seam meltiro calls is not there")
 
 
 def test_installed_openai_sdk_has_the_namespace_the_adapter_calls():

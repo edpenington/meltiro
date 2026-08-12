@@ -332,17 +332,35 @@ or not its branch is taken. Prompts may also cite a reference list with
 | `check_reviewer_edits` | `false` | check the Reviewer's own edits |
 | `max_tool_calls` | `100` | per study; pauses, does not fail |
 | `max_review_tool_calls` | `30` | |
-| `temperature` | `0.0` | extractor |
-| `review_temperature` | inherits `temperature` | |
-| `checker_temperature` | `0.0` | |
-| `extractor_max_tokens` | `32768` | |
-| `review_max_tokens` | `32768` | |
-| `checker_max_tokens` | `1024` | |
+| `{extractor,review,checker}_decoding` | unset | that role's decoding parameters (below); nothing is inherited between roles |
+| `extractor_max_tokens` | *required* | |
+| `review_max_tokens` | required if the reviewer is on | |
+| `checker_max_tokens` | required if the checker is on | |
 | `checker_concurrency` | `10` | |
 | `checker_context_chars` | `1000` | paper text either side of a quote |
-| `{extractor,checker,review}_thinking_mode` | unset | `adaptive` / `disabled` |
-| `{extractor,checker,review}_thinking_effort` | unset | |
 | `rates` | unset | a USD rate card per role; unnamed roles take the price table's |
+
+A `<role>_decoding` block is a mapping of decoding parameter names to values,
+and meltiro reads no name inside it. The block goes whole to direktoro's
+`split_decoding_config`, which is the authority on which names are legal and
+which of them is what: the sampling controls `temperature`, `top_p` and
+`top_k`, and the thinking fields `thinking_mode`, `thinking_effort`,
+`thinking_budget_tokens` and `thinking_display`. A parameter that layer gains
+is usable from `pipeline.yaml` with no edit here, and a name it does not know
+is reported as an error rather than dropped. A key set to null reads as
+unspecified, exactly like an absent one, so a bundle may carry a fixed key set
+and leave values empty.
+
+```yaml
+extractor_decoding:
+  thinking_mode: adaptive
+  thinking_effort: high
+checker_decoding:
+  temperature: 0.0
+```
+
+A role with no block specifies nothing: each model's own defaults apply, and
+the run records that the role pinned none of them.
 
 The whole bundle is validated before anything reaches a provider, in two layers
 a library consumer needs to tell apart:
@@ -352,9 +370,24 @@ a library consumer needs to tell apart:
   `{reference:…}`, a banned placeholder — and raises `ConfigBundleError`.
 - The **CLI** checks what only the model registry and the numeric domains can
   settle, as `extract` starts and still before any spend: an unknown or retired
-  model, an out-of-range temperature, a non-positive output-token cap or
-  checker concurrency, a malformed `rates:` block. Each exits non-zero with the
-  offending key named.
+  model, a missing output-token cap for a role that will call, a cap or checker
+  concurrency that is not a positive integer, a malformed `rates:` block, and
+  each enabled role's whole call resolved against the registry — an unknown key
+  in its decoding block, a value outside the band that model's registry entry
+  documents for a control it accepts, a thinking mode, effort level or display
+  its entry does not declare, and a cap too small for a call that will reason to
+  answer within. Each exits non-zero with the offending key named. The
+  call-level half of that is not the CLI's alone: `Orchestrator.__init__` makes
+  the same resolution, so a run started from Python is refused on the same
+  terms, and the CLI's gate is what turns the refusal into one line and an
+  exit code.
+
+One thing is reported rather than refused: a sampling control a model declares
+it refuses OUTRIGHT is never sent, whatever value the block gives it, so there
+is no request that could fail. The run starts, and says on stderr and in
+`meta.warnings` that the configured value reaches nothing and moves no
+fingerprint — which is the only fact about it that is true, and one no
+fingerprint comparison would otherwise reveal.
 
 The split matters because the second layer is not reachable from the library
 surface below. A bundle naming a model that does not exist **loads clean**, and

@@ -179,7 +179,7 @@ class Instrument:
         gets the bundle's real labels and the captions beside them.
         """
         return build_system_message(
-            self.template, image_labels,
+            image_labels,
             system_prompt_path=self.config.extractor_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
@@ -195,7 +195,6 @@ class Instrument:
         model is actually sent keeps the real labels.
         """
         return compute_prompt_config_hash(
-            self.template,
             system_prompt_path=self.config.extractor_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
@@ -238,7 +237,7 @@ class Instrument:
         than by two call sites agreeing.
         """
         return build_review_system_message(
-            self.template, image_labels,
+            image_labels,
             system_prompt_path=self.config.review_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
@@ -259,12 +258,12 @@ class Instrument:
         nowhere, yet they change what the reviewer's tool calls may write and
         how they canonicalise (see fingerprint.review_config_fingerprint).
         The tool-call cap rides in no fingerprint (see
-        fingerprint.structure_hash). `review_max_tokens` and
-        `review_temperature` ride in `call_identity`, so tuning either moves
-        review_fp and only review_fp; a model that declares a sampling control
-        refused is sent none of it, so for that model `review_temperature`
-        moves nothing — the fingerprint folds in what is sent, not what was
-        configured.
+        fingerprint.structure_hash). `review_max_tokens` and the reviewer's
+        own `review_decoding` block ride in `call_identity`, so tuning either
+        moves review_fp and only review_fp; a model that declares a sampling
+        control refused is sent none of it, so for that model the block's
+        value for it moves nothing — the fingerprint folds in what is sent,
+        not what was configured.
         """
         if not self.final_review:
             return None
@@ -292,7 +291,6 @@ class Instrument:
         captured copy and the sent copy come off one function.
         """
         return build_checker_system_text(
-            self.template,
             predicates=self.predicates(),
             system_prompt_path=self.config.checker_system_path,
             reference_lists=self.reference_lists,

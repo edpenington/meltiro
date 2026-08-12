@@ -408,7 +408,7 @@ class TestPromptBuildingOverRealBundle:
         template = load_template(config.template_path)
         b = load_bundle(bundle_tables_dir)
         txt = build_system_message(
-            template, image_labels=set(b.figures),
+            image_labels=set(b.figures),
             system_prompt_path=config.extractor_system_path,
             reference_lists=config.reference_lists,
         )

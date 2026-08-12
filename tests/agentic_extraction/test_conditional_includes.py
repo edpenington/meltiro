@@ -66,7 +66,7 @@ def bundle(tmp_path, config_dir):
 
 def _render(root, *, max_checks_per_field, final_review=True):
     return build_system_message(
-        load_template(root / "extraction_template.yaml"), [],
+        [],
         system_prompt_path=root / "prompts" / "extractor_system.md",
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
@@ -310,7 +310,7 @@ def _checker_config(root):
     # A real registry id: checker_fp folds in the model's provider and
     # base_url, so an unregistered id fails model resolution.
     config = load_config_bundle(root)
-    return CheckerConfig(
+    return CheckerConfig(max_tokens=1024, 
         checker_model="claude-sonnet-4-6",
         system_prompt_path=str(config.checker_system_path),
         user_prompt_template_path=str(config.checker_user_template_path))

@@ -41,7 +41,8 @@ NONE_AVAILABLE = "(no figures or tables were cropped for this study)"
 TEXT_ONLY_MODEL = "synthetic-text-only"
 _SYNTHETIC_TEXT_ONLY = Model(
     PROVIDER_OPENAI, "https://synthetic.invalid/v1", "OPENAI_API_KEY",
-    wire_api=WIRE_CHAT_COMPLETIONS, supports_images=False)
+    wire_api=WIRE_CHAT_COMPLETIONS, supports_images=False,
+    forced_tool_choice=True)
 
 
 @pytest.fixture(autouse=True)
@@ -62,10 +63,12 @@ def _orch(config_dir, bundle_dir, out_dir, *, extractor_model,
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
-        checker_config=CheckerConfig(checker_model=checker_model, api_key="x"),
+        checker_config=CheckerConfig(max_tokens=1024, checker_model=checker_model, api_key="x"),
         review_model=review_model,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
+        extractor_max_tokens=4096,
+        review_max_tokens=4096,
         api_key="x",
     )
 

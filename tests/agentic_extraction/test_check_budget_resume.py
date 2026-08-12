@@ -44,11 +44,12 @@ def _orch(config_dir, bundle_dir, out_dir, *, cap, max_checks_per_field=1):
     return Orchestrator(
         load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
         extractor_model="claude-opus-4-8",
-        checker_config=CheckerConfig(checker_model="claude-sonnet-4-6",
+        checker_config=CheckerConfig(max_tokens=1024, checker_model="claude-sonnet-4-6",
                                      api_key="x"),
         review_model=None,
         max_checks_per_field=max_checks_per_field, final_review=False,
         max_tool_calls=cap,
+        extractor_max_tokens=4096,
         api_key="x",
     )
 

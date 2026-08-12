@@ -44,13 +44,14 @@ def _orch(config_dir, bundle_dir, out_dir, *, cap=50, rates=RATES):
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model=EXTRACTOR,
-        checker_config=CheckerConfig(checker_model="claude-sonnet-4-6",
+        checker_config=CheckerConfig(max_tokens=1024, checker_model="claude-sonnet-4-6",
                                      api_key="x"),
         review_model=None,
         max_checks_per_field=0, final_review=False,
         max_tool_calls=cap,
         sampling={"temperature": 0.0},
         rates=rates,
+        extractor_max_tokens=4096,
         api_key="x",
     )
 

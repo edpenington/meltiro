@@ -24,7 +24,7 @@ class TestSystemText:
         # checker's role, the inputs it receives, and the verdict
         # vocabulary.
         txt = build_checker_system_text(
-            synthetic_template, system_prompt_path=checker_system_path,
+            system_prompt_path=checker_system_path,
             reference_lists={"gauge_list": []})
         assert "verdict" in txt.lower()
         assert "ok" in txt and "challenge" in txt
@@ -37,7 +37,7 @@ class TestSystemText:
         # outside the one under review). Its absence is asserted
         # explicitly, so putting it back has to be a deliberate act.
         txt = build_checker_system_text(
-            synthetic_template, system_prompt_path=checker_system_path,
+            system_prompt_path=checker_system_path,
             reference_lists={"gauge_list": []})
         assert "primary_aim" not in txt
         assert "outcome_category" not in txt
@@ -45,7 +45,7 @@ class TestSystemText:
     def test_cache_control_wrapper(self, synthetic_template,
                                    checker_system_path):
         txt = build_checker_system_text(
-            synthetic_template, system_prompt_path=checker_system_path,
+            system_prompt_path=checker_system_path,
             reference_lists={"gauge_list": []})
         blocks = system_message_blocks(txt)
         assert blocks[0]["cache_control"] == {"type": "ephemeral"}

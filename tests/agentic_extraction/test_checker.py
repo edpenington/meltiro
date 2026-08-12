@@ -209,7 +209,7 @@ class TestCheckOneField:
         assert result["verdict"] == "challenge"
         assert result["rationale"] == "the quote gives no denominator"
 
-    def test_call_sends_the_configured_checker_temperature(self):
+    def test_call_sends_the_checkers_own_configured_sampling(self):
         # The WIRE side of the checker's decoding contract. checker_fp folds in
         # the checker's resolved decoding params, and that promise ("a
         # fingerprint folds in exactly what is sent") only holds while the call
@@ -335,14 +335,18 @@ class TestCheckOneField:
 
     def test_truncation_is_named_and_not_reasked(self):
         # A cap that truncated once will truncate again, so the ask is not
-        # repeated; the message names the cap rather than the model.
+        # repeated. The message carries the CHECKER's cap and the pipeline.yaml
+        # key that set it, which is the line an operator would edit; naming the
+        # model instead would point at the wrong thing entirely.
         client = _client_returning_content(
             [_Thinking()], stop_reason="max_tokens")
-        with pytest.raises(CheckerError, match="max_tokens"):
+        with pytest.raises(CheckerError) as exc:
             check_one_field(
                 system_message_blocks=[], user_message_blocks=[],
                 config=_config(), client=client,
             )
+        assert "1024" in str(exc.value)
+        assert "checker_max_tokens" in str(exc.value)
         assert client.messages.stream.call_count == 1
 
     def test_cache_read_discount_applied(self):
@@ -493,7 +497,7 @@ class TestRunCheckerBatch:
             ],
             config=CheckerConfig(
                 api_key="x", checker_model="claude-sonnet-4-6",
-                concurrency=1),
+                max_tokens=1024, concurrency=1),
             client=client,
         )
         assert results["study.bad"]["verdict"] == "challenge"  # wrapped error
@@ -581,7 +585,7 @@ class TestCheckerConfig:
         sys_path.write_text("you are a checker", encoding="utf-8")
         user_path = tmp_path / "user.md"
         user_path.write_text("template", encoding="utf-8")
-        cfg = CheckerConfig(
+        cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
@@ -599,7 +603,7 @@ class TestCheckerConfig:
         user_path.write_text("template", encoding="utf-8")
 
         sys_path.write_text("v1", encoding="utf-8")
-        cfg1 = CheckerConfig(
+        cfg1 = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
@@ -608,7 +612,7 @@ class TestCheckerConfig:
         fp1 = cfg1.fingerprint(synthetic_template, predicates=PREDICATES)
 
         sys_path.write_text("v2", encoding="utf-8")
-        cfg2 = CheckerConfig(
+        cfg2 = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
@@ -629,7 +633,7 @@ class TestCheckerConfig:
             encoding="utf-8")
         user_path = tmp_path / "user.md"
         user_path.write_text("template", encoding="utf-8")
-        cfg = CheckerConfig(
+        cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
@@ -652,7 +656,7 @@ class TestCheckerConfig:
         sys_path.write_text("you are a checker", encoding="utf-8")
         user_path = tmp_path / "user.md"
         user_path.write_text("template", encoding="utf-8")
-        cfg = CheckerConfig(
+        cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
@@ -669,14 +673,14 @@ class TestCheckerConfig:
     def test_from_env_ignores_checker_decoding_env_vars(self, monkeypatch):
         # The checker's decoding knobs come from the config bundle and NOT the
         # environment: CHECKER_TEMPERATURE and CHECKER_MAX_TOKENS are not read
-        # at all, so from_env returns the dataclass defaults whatever the shell
+        # at all, so from_env leaves both unspecified whatever the shell
         # holds. Reading them would let checker_fp differ between two machines
         # running the same config bundle.
         monkeypatch.setenv("CHECKER_TEMPERATURE", "0.9")
         monkeypatch.setenv("CHECKER_MAX_TOKENS", "77")
         cfg = CheckerConfig.from_env(model_override="claude-sonnet-4-6")
         assert cfg.sampling is None
-        assert cfg.max_tokens == 1024
+        assert cfg.max_tokens is None
 
     def test_from_env_refuses_a_zero_concurrency_override(self, monkeypatch):
         # 0 workers is not a thread pool and not a way to disable the checker.

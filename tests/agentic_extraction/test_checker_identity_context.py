@@ -199,6 +199,8 @@ class TestStartupGuard:
             extractor_model="claude-opus-4-7",
             review_model="claude-opus-4-7",
             max_checks_per_field=0,
+            extractor_max_tokens=4096,
+            review_max_tokens=4096,
             api_key="")
         orch.template["role_fields"] = {}  # no role:summary field either
         orch.prepare_new_session()
@@ -211,16 +213,24 @@ class TestStartupGuard:
         # BEFORE any API spend. Construct the missing-both case in the test
         # (bundle with no summary + template with the role field removed),
         # never by breaking the fixture on disk.
+        from meltiro.checker import CheckerConfig
         from meltiro.config_bundle import load_config_bundle
         config = load_config_bundle(config_dir)
         bundle = load_bundle(bundle_minimal_dir)
         bundle = dataclasses.replace(bundle, summary=None)
         # Models are required keyword args (no hardcoded default); the guard
         # fires before any API call, so the specific ids are immaterial here.
+        # The checker must be ENABLED and fully configured — the guard under
+        # test exists for the checker's context, and the constructor demands
+        # an enabled checker's model and cap.
         orch = Orchestrator(
             config, bundle, tmp_path / "runs",
             extractor_model="claude-opus-4-7",
             review_model="claude-opus-4-7",
+            checker_config=CheckerConfig(checker_model="claude-sonnet-4-6",
+                                         max_tokens=4096),
+            extractor_max_tokens=4096,
+            review_max_tokens=4096,
             api_key="")
         orch.template["role_fields"] = {}  # simulate no role:summary field
         with pytest.raises(AgenticExtractionError,
@@ -522,6 +532,7 @@ class TestResolvedMismatchLeavesNoFalseWarning:
             extractor_model="claude-opus-4-8",
             review_model=None,
             max_checks_per_field=0, final_review=False,
+            extractor_max_tokens=4096,
             api_key="x")
         orch.prepare_new_session()
         return orch

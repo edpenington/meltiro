@@ -60,10 +60,11 @@ def _orch(config_dir, bundle_dir, out_dir, *, rates, extractor=EXTRACTOR):
     return Orchestrator(
         load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
         extractor_model=extractor,
-        checker_config=CheckerConfig(checker_model=CHECKER, api_key="x"),
+        checker_config=CheckerConfig(max_tokens=1024, checker_model=CHECKER, api_key="x"),
         review_model=None,
         max_checks_per_field=0, final_review=False,
         rates=rates,
+        extractor_max_tokens=4096,
         api_key="x",
     )
 
@@ -367,10 +368,10 @@ class TestMixedPricingAcrossRoles:
         orch = Orchestrator(
             load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
             extractor_model=EXTRACTOR,
-            checker_config=CheckerConfig(checker_model=CHECKER, api_key="x"),
+            checker_config=CheckerConfig(max_tokens=1024, checker_model=CHECKER, api_key="x"),
             review_model=None,
             max_checks_per_field=2, final_review=False,
-            rates=rates, api_key="x",
+            rates=rates, extractor_max_tokens=4096, api_key="x",
         )
         orch.prepare_new_session()
         orch._accumulate_usage(_usage(), EXTRACTOR, "extractor")
@@ -617,9 +618,10 @@ class TestDerivedViews:
         orch = Orchestrator(
             load_config_bundle(config_dir), load_bundle(bundle_minimal_dir),
             out, extractor_model=EXTRACTOR,
-            checker_config=CheckerConfig(checker_model=CHECKER, api_key="x"),
+            checker_config=CheckerConfig(max_tokens=1024, checker_model=CHECKER, api_key="x"),
             review_model=ROUTED_EXTRACTOR,
             max_checks_per_field=0, final_review=True,
+            extractor_max_tokens=4096, review_max_tokens=4096,
             rates={"extractor": CARD, "review": None}, api_key="x")
         orch.prepare_new_session()
         orch._accumulate_usage(_usage(), EXTRACTOR, "extractor")

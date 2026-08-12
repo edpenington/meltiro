@@ -57,20 +57,19 @@ from meltiro.bundle import load_bundle, validate_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, DIAGNOSTICS_LEVELS
-from direktoro import is_known_model, known_models, model_info
+from direktoro import (
+    is_known_model, known_models, model_info, resolved_decoding_params,
+    split_decoding_config)
 from meltiro.errors import (
     AgenticExtractionError, BundleError, ConfigBundleError, RatesConfigError,
-    ResumeRefused, SessionError, ThinkingConfigError)
+    ResumeRefused, SessionError)
 from meltiro.orchestrator import (
-    DEFAULT_EXTRACTOR_MAX_TOKENS,
     DEFAULT_MAX_CHECKS_PER_FIELD,
     DEFAULT_MAX_REVIEW_TOOL_CALLS,
     DEFAULT_MAX_TOOL_CALLS,
-    DEFAULT_REVIEW_MAX_TOKENS,
     Orchestrator,
 )
 from meltiro.rates import Rates, parse_rates
-from meltiro.thinking import build_thinking
 from meltiro.reference_lists import load_reference_list_labels
 from meltiro.render_template import render_template
 from meltiro.session import Session
@@ -297,61 +296,39 @@ def _parse_args(argv=None):
 # extract
 # ---------------------------------------------------------------------------
 
-# Cross-provider sanity bounds for a decoding temperature. Deliberately COARSE,
-# not per-provider: a negative temperature is meaningless everywhere, and no
-# provider in the registry documents a ceiling above 2.0 (Anthropic documents
-# 0.0 to 1.0; the OpenAI wire tops out at 2.0). The band catches sign slips
-# and scale slips (-1, 5.0, a percentage like 20) while staying inside what
-# each provider's own docs allow; it is NOT each provider's exact ceiling, so
-# 1.5 is accepted here and still rejected by Anthropic at the first call.
-MIN_TEMPERATURE = 0.0
-MAX_TEMPERATURE = 2.0
+def _required_max_tokens(loop_cfg, key):
+    """The cap `key` states, else exit 1.
 
+    Required rather than defaulted: the cap bounds what one call may spend and
+    what it may answer within, and both are decisions about the run. A number
+    meltiro chose would look in the run record exactly like a number the
+    operator chose.
 
-def _checked_sampling(label, mapping):
-    """Return `mapping` if every control in it is usable, else exit 1.
-
-    Checked at startup rather than left to the provider: a role whose model
-    declares a control refused is never SENT it (see
-    direktoro.resolved_decoding_params), so startup is the only place a bad
-    value can be caught at all; and where the provider would catch it, the
-    reviewer's controls are not exercised until a full extraction and checker
-    fan-out have already been billed.
-
-    Only `temperature` has a bound to check today. A control with no stated
-    band is passed through rather than guessed at — inventing one here would
-    refuse a value some provider accepts.
+    Strict about the type as well as the range, on the same terms as
+    `checker_context_chars` below: a bool is not a budget, and a float or a
+    quoted string would coerce silently into a cap the bundle does not say and
+    ride into the run record as one the operator wrote. Zero and negatives
+    are not budgets either — they reach the provider as-is and fail at the
+    role's first call, which for the reviewer is after a whole extraction and
+    checker fan-out have been billed.
     """
-    value = (mapping or {}).get("temperature")
+    value = loop_cfg.get(key)
     if value is None:
-        return mapping
-    if not MIN_TEMPERATURE <= value <= MAX_TEMPERATURE:
         print(
-            f"{label} must be between {MIN_TEMPERATURE} and "
-            f"{MAX_TEMPERATURE}, got {value}. This is a coarse cross-provider "
-            f"bound: a value outside it is rejected by every provider. Note "
-            f"each provider's own ceiling may be lower (Anthropic documents "
-            f"0.0 to 1.0), so a value inside this band can still be refused at "
-            f"the first call. Fix pipeline.yaml.",
+            f"pipeline.yaml must set {key}. It is the output-token cap for "
+            f"that role's calls, and it has no default: the number bounds "
+            f"what the role may spend and what it may answer within, so it is "
+            f"the operator's to state. A role whose stage is off needs no cap "
+            f"(the checker's stage is off at max_checks_per_field: 0, the "
+            f"reviewer's at final_review: false).",
             file=sys.stderr)
         raise SystemExit(1)
-    return mapping
-
-
-def _checked_max_tokens(label, value):
-    """Return `value` if it is a usable output cap, else exit 1.
-
-    Every role's cap is optional in pipeline.yaml and defaults when absent,
-    so a number that IS written is deliberate. Zero and negatives are not
-    budgets: they reach the provider as-is and fail at the role's first
-    call — for the reviewer, after a whole extraction and checker fan-out
-    have been billed.
-    """
-    if value < 1:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         print(
-            f"{label} must be a positive integer, got {value}. A zero or "
-            f"negative token cap is not a valid output budget. "
-            f"Fix pipeline.yaml.",
+            f"{key} must be a positive integer, got {value!r}. It is the "
+            f"output-token cap for that role's calls: a zero or negative "
+            f"number is not an output budget, and a decimal or a quoted "
+            f"number is not the cap the run would record. Fix pipeline.yaml.",
             file=sys.stderr)
         raise SystemExit(1)
     return value
@@ -566,20 +543,14 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
             f"(or the CHECKER_CONCURRENCY environment variable).",
             file=sys.stderr)
         raise SystemExit(1)
-    # `is not None` (not a truthy check) so an explicit 0 reaches the guard
-    # rather than reading as absent and quietly restoring the default.
-    if loop_cfg.get("checker_max_tokens") is not None:
-        checker_config.max_tokens = _checked_max_tokens(
-            "checker_max_tokens", int(loop_cfg["checker_max_tokens"]))
-    # The checker's decoding knobs come only from the bundle, never from the
-    # environment, so the same tree yields the same checker_fp under any
-    # shell. `is not None` (not a truthy check) so an explicit
-    # `checker_temperature: 0.0`, the common value, is honoured rather than
-    # skipped.
-    if loop_cfg.get("checker_temperature") is not None:
-        checker_config.sampling = _checked_sampling(
-            "checker_temperature",
-            {"temperature": float(loop_cfg["checker_temperature"])})
+    # One output cap per ENABLED role, each stated in pipeline.yaml. A cap
+    # bounds what a call may spend and what it may answer within, so there is
+    # no number meltiro could supply for an operator who did not write one.
+    # A disabled stage makes no calls, so it needs none.
+    caps = {role: _required_max_tokens(loop_cfg, f"{role}_max_tokens")
+            for role, _ in enabled_roles}
+    if checker_enabled:
+        checker_config.max_tokens = caps["checker"]
 
     # Characters of surrounding paper text the checker sees on each side of a
     # matched quote. Strict about the type as well as the range: a float or a
@@ -601,24 +572,55 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
             raise SystemExit(1)
         checker_config.context_chars = context_chars
 
-    # Per-role sampling controls. `temperature` is the EXTRACTOR's, and is the
-    # reviewer's default when `review_temperature` is absent. `is not None` so
-    # an explicit `review_temperature: 0.0` decouples the reviewer from a
-    # sampled extractor rather than being swallowed as absent. None here means
-    # "inherit"; the Orchestrator resolves it.
+    # One decoding block per role, each an opaque mapping of decoding
+    # parameter names to values. meltiro reads no key inside a block: it hands
+    # the whole mapping to direktoro's `split_decoding_config`, which knows
+    # which name is a sampling control and which is a thinking field, and
+    # returns the pair its resolver takes. A block naming something direktoro
+    # does not emit fails here, before a session or a bill, rather than being
+    # silently dropped from the wire and from the fingerprint that records it.
     #
-    # A key absent from pipeline.yaml stays absent all the way to the wire:
-    # nothing substitutes a value for it, so the model's own default applies
-    # and the run records that it specified none. Pin a control by writing it.
-    review_sampling = None
-    if loop_cfg.get("review_temperature") is not None:
-        review_sampling = _checked_sampling(
-            "review_temperature",
-            {"temperature": float(loop_cfg["review_temperature"])})
-    sampling = {}
-    if loop_cfg.get("temperature") is not None:
-        sampling = _checked_sampling(
-            "temperature", {"temperature": float(loop_cfg["temperature"])})
+    # Every role's block is split, enabled or not, so a typo in a stage this
+    # run happens to leave off is still named. A key absent from a block stays
+    # absent all the way to the wire: nothing substitutes a value for it, and
+    # nothing is taken from another role, so the model's own default applies
+    # and the run records that this role specified none. Pin a parameter by
+    # writing it in that role's own block.
+    blocks = {}
+    for role in ("extractor", "review", "checker"):
+        key = f"{role}_decoding"
+        try:
+            blocks[role] = split_decoding_config(loop_cfg.get(key))
+        except ValueError as e:
+            print(f"{key}: {e} Fix pipeline.yaml.", file=sys.stderr)
+            raise SystemExit(1)
+    checker_config.sampling, checker_config.thinking = blocks["checker"]
+
+    # Each enabled role's call resolved against the registry, before a client
+    # exists and before any spend. It is the same `resolved_decoding_params`
+    # the adapters and the stage fingerprints call, so this asks the real
+    # question: whether the model's endpoint accepts this block at this cap.
+    # A value outside the model's documented band, an effort or a mode it does
+    # not have, a cap a thinking call cannot answer within — each fails here
+    # rather than on a paid call, and from HERE so `--resume` (whose
+    # _build_orchestrator call sits outside its own try) is covered on the
+    # same terms as a fresh run. Pure registry arithmetic: no client, no
+    # network.
+    #
+    # Ahead of the pricing lines below, so a refused run prints its refusal
+    # and nothing else: a rate report for calls that will never be made reads
+    # as a run about to start.
+    for role, model in enabled_roles:
+        sampling, thinking = blocks[role]
+        try:
+            resolved_decoding_params(model, max_tokens=caps[role],
+                                     sampling=sampling, thinking=thinking)
+        except ValueError as e:
+            print(
+                f"{role} role ({role}_model: {model!r}): {e} Fix "
+                f"{role}_decoding / {role}_max_tokens in pipeline.yaml.",
+                file=sys.stderr)
+            raise SystemExit(1)
 
     # The rate cards `rates:` gives per role, if any. Optional: a role the block
     # does not name takes its rates from direktoro's price table below. A block
@@ -637,75 +639,38 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     for line in pricing_report:
         print(line)
 
-    # Per-role thinking / reasoning effort. Both keys are optional per role;
-    # a role naming neither gets `None`, which emits nothing and leaves the
-    # wire request and every fingerprint exactly as they were. There is no
-    # CLI flag: a thinking mode changes what the model is asked to do, so it
-    # is methodology and belongs in the fingerprinted bundle. Faults surface
-    # as the same one-line startup failure as every other guard here, before
-    # a session or a bill.
-    try:
-        thinking = build_thinking(
-            "extractor",
-            loop_cfg.get("extractor_thinking_mode"),
-            loop_cfg.get("extractor_thinking_effort"))
-        review_thinking = build_thinking(
-            "review",
-            loop_cfg.get("review_thinking_mode"),
-            loop_cfg.get("review_thinking_effort"))
-        checker_config.thinking = build_thinking(
-            "checker",
-            loop_cfg.get("checker_thinking_mode"),
-            loop_cfg.get("checker_thinking_effort"))
-    except ThinkingConfigError as e:
-        print(str(e), file=sys.stderr)
-        raise SystemExit(1)
-
-    try:
-        return Orchestrator(
-            config, bundle, out_dir,
-            extractor_model=extractor_model,
-            checker_config=checker_config,
-            review_model=review_model,
-            max_tool_calls=max_tool_calls,
-            max_review_tool_calls=max_review_tool_calls,
-            max_checks_per_field=max_checks_per_field,
-            check_reviewer_edits=check_reviewer_edits,
-            sampling=sampling,
-            review_sampling=review_sampling,
-            thinking=thinking,
-            review_thinking=review_thinking,
-            extractor_max_tokens=_checked_max_tokens(
-                "extractor_max_tokens",
-                int(loop_cfg.get("extractor_max_tokens",
-                                DEFAULT_EXTRACTOR_MAX_TOKENS))),
-            # Same presence/absence contract as extractor_max_tokens. The
-            # reviewer's OWN cap, wired into the final-review call and
-            # review_fp, so the reviewer is never sized by the extractor's
-            # number.
-            review_max_tokens=_checked_max_tokens(
-                "review_max_tokens",
-                int(loop_cfg.get("review_max_tokens",
-                                DEFAULT_REVIEW_MAX_TOKENS))),
-            final_review=final_review,
-            # Commercial, not methodological, so it reaches no fingerprint
-            # (see meltiro.rates). One card per role, keyed by role name;
-            # the Orchestrator hands the checker's to the checker.
-            rates=rates,
-            # Operational, so it comes from the command line only and never
-            # from the config bundle: it changes which diagnostics files a run
-            # writes and nothing about what any model is asked, so it must not
-            # be able to ride into a fingerprint via pipeline.yaml.
-            diagnostics=args.diagnostics,
-            dry_run=args.dry_run,
-        )
-    except ThinkingConfigError as e:
-        # The per-role cap and capability guards (meltiro.thinking). Reported
-        # like every other startup guard — one stderr line, exit 1 — and from
-        # HERE so `--resume` (whose _build_orchestrator call sits outside its
-        # own try) is covered on the same terms as a fresh run.
-        print(str(e), file=sys.stderr)
-        raise SystemExit(1)
+    extractor_sampling, extractor_thinking = blocks["extractor"]
+    review_sampling, review_thinking = blocks["review"]
+    return Orchestrator(
+        config, bundle, out_dir,
+        extractor_model=extractor_model,
+        checker_config=checker_config,
+        review_model=review_model,
+        max_tool_calls=max_tool_calls,
+        max_review_tool_calls=max_review_tool_calls,
+        max_checks_per_field=max_checks_per_field,
+        check_reviewer_edits=check_reviewer_edits,
+        sampling=extractor_sampling,
+        review_sampling=review_sampling,
+        thinking=extractor_thinking,
+        review_thinking=review_thinking,
+        extractor_max_tokens=caps["extractor"],
+        # The reviewer's OWN cap, wired into the final-review call and
+        # review_fp, so the reviewer is never sized by the extractor's
+        # number.
+        review_max_tokens=caps.get("review"),
+        final_review=final_review,
+        # Commercial, not methodological, so it reaches no fingerprint
+        # (see meltiro.rates). One card per role, keyed by role name;
+        # the Orchestrator hands the checker's to the checker.
+        rates=rates,
+        # Operational, so it comes from the command line only and never
+        # from the config bundle: it changes which diagnostics files a run
+        # writes and nothing about what any model is asked, so it must not
+        # be able to ride into a fingerprint via pipeline.yaml.
+        diagnostics=args.diagnostics,
+        dry_run=args.dry_run,
+    )
 
 
 def _print_run_summary(orch, status):

@@ -1,4 +1,10 @@
-"""Exceptions for the agentic extraction pipeline."""
+"""Exceptions for the agentic extraction pipeline, and the reports two roles
+must word identically.
+
+`truncation_report` lives here because a cut-off response is a warning in one
+role and a raised `CheckerError` in another, and the sentence an operator reads
+has to be the same either way; this is the module both sides already import.
+"""
 
 
 class AgenticExtractionError(Exception):
@@ -71,17 +77,6 @@ class BundleError(AgenticExtractionError):
         super().__init__(prefix + "; ".join(self.problems))
 
 
-class ThinkingConfigError(AgenticExtractionError):
-    """Raised when a role's thinking / reasoning-effort config cannot work.
-
-    Three faults share this class, all refused at startup before any spend: a
-    mode or effort meltiro does not accept, a shape the model's endpoint would
-    reject with a 400 (direktoro's `ThinkingUnsupported`, re-raised with the
-    role attached), and an output cap too small to hold a think plus its
-    answer. See `meltiro.thinking`.
-    """
-
-
 class RatesConfigError(AgenticExtractionError):
     """Raised when `pipeline.yaml`'s `rates:` block cannot price a run.
 
@@ -103,3 +98,21 @@ class ConfigBundleError(AgenticExtractionError):
         prefix = f"Invalid config bundle at {path}: " if path else \
             "Invalid config bundle: "
         super().__init__(prefix + "; ".join(self.problems))
+
+
+# ---------------------------------------------------------------------------
+# Shared reports
+# ---------------------------------------------------------------------------
+
+def truncation_report(cap, key):
+    """The one sentence a response that stopped on its output cap gets.
+
+    `cap` is the number in force and `key` the pipeline.yaml key that set it,
+    which names the role by its prefix and is the line an operator would edit.
+    One wording for every role: a truncated extractor turn is a warning and a
+    truncated checker reply is a raised error, and two spellings of the same
+    fact would read as two different faults in a run's warnings.
+    """
+    role = key.removesuffix("_max_tokens")
+    return (f"{role} response stopped at the max_tokens cap ({cap}, set by "
+            f"{key} in pipeline.yaml), so the output is incomplete.")

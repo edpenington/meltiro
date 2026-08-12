@@ -96,11 +96,13 @@ class TestCallIdentityComponent:
         # same model sending different params get distinct config_fps.
         cool = config_fingerprint(
             _identity("z-ai/glm-5v-turbo", resolved_decoding_params(
-                "z-ai/glm-5v-turbo", sampling={"temperature": 0.0}, max_tokens=100)),
+                "z-ai/glm-5v-turbo", sampling={"temperature": 0.0},
+                max_tokens=4096)),
             "p", "t")
         warm = config_fingerprint(
             _identity("z-ai/glm-5v-turbo", resolved_decoding_params(
-                "z-ai/glm-5v-turbo", sampling={"temperature": 0.9}, max_tokens=100)),
+                "z-ai/glm-5v-turbo", sampling={"temperature": 0.9},
+                max_tokens=4096)),
             "p", "t")
         assert cool != warm
 
@@ -116,8 +118,10 @@ def _prepared(config_dir, bundle_dir, out_dir, extractor_model):
         config, bundle, out_dir,
         extractor_model=extractor_model,
         checker_config=CheckerConfig(
-            checker_model="claude-sonnet-4-6", api_key="x"),
+            checker_model="claude-sonnet-4-6", api_key="x", max_tokens=1024),
         review_model="claude-opus-4-7",
+        extractor_max_tokens=32768,
+        review_max_tokens=32768,
         api_key="x",
     )
     orch.prepare_new_session()
@@ -225,8 +229,10 @@ def _prepared_full(config_dir, bundle_dir, out_dir, *,
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
-        checker_config=CheckerConfig(checker_model=checker_model, api_key="x"),
+        checker_config=CheckerConfig(max_tokens=4096, checker_model=checker_model, api_key="x"),
         review_model=review_model,
+        extractor_max_tokens=4096,
+        review_max_tokens=4096,
         api_key="x",
     )
     orch.prepare_new_session()
@@ -319,9 +325,10 @@ def test_extractor_call_sends_the_extractors_temperature(
     orch = Orchestrator(
         config, bundle, tmp_path / "runs",
         extractor_model="claude-sonnet-4-6",
-        checker_config=CheckerConfig(
+        checker_config=CheckerConfig(max_tokens=4096, 
             checker_model="claude-sonnet-4-6", api_key="x"),
         review_model="claude-opus-4-7",
+        extractor_max_tokens=4096, review_max_tokens=4096,
         sampling={"temperature": 0.3}, review_sampling={"temperature": 0.8}, api_key="x")
     orch.prepare_new_session()
     adapter = _FakeAdapter(NormalisedResponse(
@@ -361,10 +368,16 @@ def _orch_for_fp(config_dir, bundle_dir, out_dir, *, extractor_model,
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
-        checker_config=CheckerConfig(checker_model=checker_model, api_key="x",
+        checker_config=CheckerConfig(max_tokens=4096, checker_model=checker_model, api_key="x",
                                      sampling=sampling),
         review_model=review_model,
+        # Every role states the same controls. Nothing is inherited between
+        # roles, so a role left unset would send nothing and the registry edit
+        # below would have nothing to drop from its params.
         sampling=sampling,
+        review_sampling=sampling,
+        extractor_max_tokens=4096,
+        review_max_tokens=4096,
         api_key="x")
     orch.prepare_new_session()
     return orch
@@ -413,7 +426,8 @@ def test_registry_quirk_edit_moves_all_three_stage_fingerprints(
     monkeypatch.setitem(
         MODEL_REGISTRY, "claude-sonnet-4-6",
         dataclasses.replace(model_info("claude-sonnet-4-6"),
-                            rejects_sampling=frozenset({"temperature"})))
+                            rejects_sampling=frozenset({"temperature"}),
+                            sampling_bands={}))
 
     after = _orch_for_fp(config_dir, bundle_minimal_dir, tmp_path / "after",
                          extractor_model="claude-sonnet-4-6",

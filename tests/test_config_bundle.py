@@ -24,9 +24,9 @@ exact-substring quote matching is part of the measurement instrument rather
 than a tunable, and `post_mark_complete_cap_bonus` is rejected rather than
 read as extra extractor headroom that nothing would grant.
 
-The bundle is the ONLY source for what it owns. Decoding knobs such as
-`checker_temperature` and `review_temperature` are per-role bundle keys rather
-than environment variables, so a run's configuration is readable from the
+The bundle is the ONLY source for what it owns. Decoding parameters are
+per-role bundle keys (`checker_decoding`, `review_decoding`) rather than
+environment variables, so a run's configuration is readable from the
 directory that produced it. The tool-call cap is the deliberate exception in
 the other direction: its placeholders are refused in prompts, because a cap
 rendered into a prompt would fold an operational budget into prompt_hash and
@@ -124,39 +124,39 @@ class TestPipelineKeys:
         assert unknown == set()
 
     def test_unknown_key_rejected(self, good_config):
-        # A typo like `temperatur:` would be silently ignored without the
+        # A typo like `checker_decodin:` would be silently ignored without the
         # allowlist; instead it must fail loudly.
         pipeline = good_config / "pipeline.yaml"
         pipeline.write_text(
-            pipeline.read_text(encoding="utf-8") + "\ntemperatur: 0.9\n",
+            pipeline.read_text(encoding="utf-8") + "\nchecker_decodin: {}\n",
             encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(good_config)
         msg = str(excinfo.value)
         assert "unknown key" in msg
-        assert "temperatur" in msg
+        assert "checker_decodin" in msg
         # The error also lists the known keys.
-        assert "temperature" in msg
+        assert "checker_decoding" in msg
 
-    def test_checker_temperature_is_allowed(self, good_config):
-        # checker_temperature is a config-bundle knob, NOT an environment
+    def test_checker_decoding_is_allowed(self, good_config):
+        # A role's decoding block is a config-bundle knob, NOT an environment
         # variable, so it must be on the allowlist rather than rejected as
         # unknown. Declared in the shipped config, so it is asserted there
         # rather than appended: appending would duplicate the key, which
         # strict_load rejects.
         from meltiro.config_bundle import KNOWN_PIPELINE_KEYS
-        assert "checker_temperature" in KNOWN_PIPELINE_KEYS
+        assert "checker_decoding" in KNOWN_PIPELINE_KEYS
         cb = load_config_bundle(good_config)  # must not raise
-        assert cb.pipeline["checker_temperature"] == 0.0
+        assert cb.pipeline["checker_decoding"] == {"temperature": 0.0}
 
-    def test_review_temperature_is_allowed(self, good_config):
-        # The reviewer's temperature is independently tunable: the key must be
+    def test_review_decoding_is_allowed(self, good_config):
+        # The reviewer's decoding is independently tunable: the key must be
         # on the allowlist rather than rejected as unknown. Declared in the
         # shipped config, so assert it there.
         from meltiro.config_bundle import KNOWN_PIPELINE_KEYS
-        assert "review_temperature" in KNOWN_PIPELINE_KEYS
+        assert "review_decoding" in KNOWN_PIPELINE_KEYS
         cb = load_config_bundle(good_config)  # must not raise
-        assert cb.pipeline["review_temperature"] == 0.0
+        assert cb.pipeline["review_decoding"] == {"temperature": 0.0}
 
     def test_review_max_tokens_is_allowed(self, good_config):
         # Declared in the shipped config and wired into the CLI / review_fp;

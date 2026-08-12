@@ -524,7 +524,7 @@ class TestRetiredModelRejection:
         from direktoro import registry
         m = registry.Model(
             registry.PROVIDER_ANTHROPIC, None, registry.ANTHROPIC_KEY_ENV,
-            retired=retired)
+            forced_tool_choice=True, retired=retired)
         monkeypatch.setitem(registry.MODEL_REGISTRY, model_id, m)
 
     def test_retired_extractor_model_exit_1(
@@ -589,9 +589,9 @@ class TestRetiredModelRejection:
         assert "retired model" not in err
 
 
-class TestCheckerTemperatureWiring:
+class TestCheckerDecodingWiring:
     """The config bundle, plus CLI flags, is the SINGLE source for the
-    checker's decoding params. `checker_temperature` in pipeline.yaml wires
+    checker's decoding params. `checker_decoding` in pipeline.yaml wires
     through to CheckerConfig, and the environment does not feed it at all."""
 
     def _args(self):
@@ -609,22 +609,32 @@ class TestCheckerTemperatureWiring:
         return cli._build_orchestrator(
             config, bundle, tmp_path / "runs", loop_cfg, self._args())
 
-    def test_checker_temperature_from_pipeline_is_wired(
+    def test_checker_decoding_from_pipeline_is_wired(
             self, config_dir, bundle_minimal_dir, tmp_path):
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["checker_temperature"] = 0.7
+        loop_cfg["checker_decoding"] = {"temperature": 0.7}
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.checker_config.sampling == {"temperature": 0.7}
 
-    def test_an_unwritten_checker_temperature_is_specified_nowhere(
+    def test_an_unwritten_checker_block_is_specified_nowhere(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # No checker_temperature key: the checker specifies none, so none is
-        # sent and the model's own default applies. The dataclass carries no
+        # No checker_decoding key: the checker specifies none, so none is
+        # sent and the model's own defaults apply. The dataclass carries no
         # default value to stand in for one nobody wrote.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg.pop("checker_temperature", None)
+        loop_cfg.pop("checker_decoding", None)
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.checker_config.sampling is None
+        assert orch.checker_config.thinking is None
+
+    def test_an_explicit_zero_in_the_block_is_honoured(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # 0.0 is the value a checker is most often given, and a truthy read of
+        # the block would drop it and leave the model sampling.
+        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
+        loop_cfg["checker_decoding"] = {"temperature": 0.0}
+        orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
+        assert orch.checker_config.sampling == {"temperature": 0.0}
 
     def test_environment_does_not_feed_checker_decoding(
             self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
@@ -635,19 +645,17 @@ class TestCheckerTemperatureWiring:
         monkeypatch.setenv("CHECKER_TEMPERATURE", "0.9")
         monkeypatch.setenv("CHECKER_MAX_TOKENS", "77")
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg.pop("checker_temperature", None)
-        loop_cfg.pop("checker_max_tokens", None)
+        loop_cfg.pop("checker_decoding", None)
+        loop_cfg["checker_max_tokens"] = 1024
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.checker_config.sampling is None
         assert orch.checker_config.max_tokens == 1024
 
 
 class TestCheckerMaxTokensWiring:
-    """`checker_max_tokens` from pipeline.yaml wires through to CheckerConfig
-    under an `is not None` presence contract, NOT a truthy one: a truthy check
-    treats an explicit 0 as absent and silently substitutes the default. A zero
-    or negative cap is instead rejected loudly at startup, rather than falling
-    back to the default or being shipped to the provider as 0."""
+    """`checker_max_tokens` from pipeline.yaml wires through to CheckerConfig,
+    and is required whenever the checker stage is on. A zero or negative cap
+    is rejected loudly at startup rather than shipped to the provider as 0."""
 
     def _args(self):
         from types import SimpleNamespace
@@ -671,19 +679,22 @@ class TestCheckerMaxTokensWiring:
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.checker_config.max_tokens == 2048
 
-    def test_default_checker_max_tokens_is_1024(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        # No checker_max_tokens key: the dataclass default (1024) stands.
+    def test_a_missing_checker_max_tokens_is_refused(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # No checker_max_tokens key, checker on: there is no cap to run under
+        # and none for meltiro to invent, so the run is refused at startup
+        # naming the key rather than started under a number nobody chose.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg.pop("checker_max_tokens", None)
-        orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.checker_config.max_tokens == 1024
+        with pytest.raises(SystemExit) as excinfo:
+            self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
+        assert excinfo.value.code == 1
+        assert "checker_max_tokens" in capsys.readouterr().err
 
     def test_zero_checker_max_tokens_rejected(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        # A zero token cap is never a valid checker budget. A truthy presence
-        # check would fall back to 1024 silently; `is not None` lets the 0
-        # reach a loud validation that fails at startup, before any spend.
+        # A zero token cap is never a valid checker budget, and it fails at
+        # startup, before any spend.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
         loop_cfg["checker_max_tokens"] = 0
         with pytest.raises(SystemExit) as excinfo:
@@ -703,12 +714,11 @@ class TestCheckerMaxTokensWiring:
         assert "checker_max_tokens" in err
 
 
-class TestPerRoleTemperatureWiring:
-    """Each role's temperature is independently tunable and reaches only its own
-    stage. `temperature` is the extractor's (and the reviewer's default);
-    `review_temperature` decouples the reviewer; the checker never inherits
-    either. An explicit 0.0 is honoured under the `is not None` presence
-    contract rather than swallowed as absent."""
+class TestPerRoleDecodingWiring:
+    """Each role's decoding block is independently tunable and reaches only its
+    own stage. Nothing is inherited: a role whose block is absent specifies
+    nothing, whatever the other roles say. An explicit 0.0 inside a block is
+    honoured rather than swallowed."""
 
     def _args(self):
         from types import SimpleNamespace
@@ -725,245 +735,94 @@ class TestPerRoleTemperatureWiring:
         return cli._build_orchestrator(
             config, bundle, tmp_path / "runs", loop_cfg, self._args())
 
-    def test_temperature_is_the_extractors(
+    def test_the_extractor_block_is_the_extractors(
             self, config_dir, bundle_minimal_dir, tmp_path):
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["temperature"] = 0.4
+        loop_cfg["extractor_decoding"] = {"temperature": 0.4}
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.sampling == {"temperature": 0.4}
 
-    def test_review_temperature_from_pipeline_is_wired(
+    def test_the_review_block_is_the_reviewers_alone(
             self, config_dir, bundle_minimal_dir, tmp_path):
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["review_temperature"] = 0.6
+        loop_cfg["review_decoding"] = {"temperature": 0.6}
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.review_sampling == {"temperature": 0.6}
         # And it does not leak into the other two roles.
-        assert orch.sampling == {"temperature": loop_cfg["temperature"]}
+        assert orch.sampling == {"temperature": 1.0}
         assert orch.checker_config.sampling == {"temperature": 0.0}
 
-    def test_absent_review_temperature_inherits_extractor(
+    def test_an_absent_review_block_inherits_nothing(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # No review_temperature key: the reviewer inherits `temperature`, which
-        # is what it got unconditionally before the key existed. Adding the key
-        # must not silently change an existing config's reviewer.
+        # No review_decoding key: the reviewer specifies nothing and its
+        # model's own defaults apply. It does NOT take the extractor's block —
+        # the two roles do different work, and a control copied silently
+        # between them would be recorded as the reviewer's own choice.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg.pop("review_temperature", None)
-        loop_cfg["temperature"] = 0.3
+        loop_cfg.pop("review_decoding", None)
+        loop_cfg["extractor_decoding"] = {"temperature": 0.3}
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.review_sampling == {"temperature": 0.3}
+        assert orch.review_sampling is None
+        assert orch.sampling == {"temperature": 0.3}
 
-    def test_explicit_zero_review_temperature_is_honoured(
+    def test_explicit_zero_in_the_review_block_is_honoured(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # The point of `is not None` over a truthy check: an explicit 0.0 must
-        # keep the reviewer greedy while the extractor samples, not be swallowed
-        # as absent and inherit the extractor's 0.3.
+        # A truthy read of the block would drop the 0.0 and leave the reviewer
+        # specifying nothing while pipeline.yaml says it is greedy.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["temperature"] = 0.3
-        loop_cfg["review_temperature"] = 0.0
+        loop_cfg["extractor_decoding"] = {"temperature": 0.3}
+        loop_cfg["review_decoding"] = {"temperature": 0.0}
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert orch.review_sampling == {"temperature": 0.0}
 
     def test_an_unwritten_temperature_is_specified_nowhere(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # Neither key present: nothing is specified, so nothing is sent and
-        # each model's own default applies. There is deliberately no engine
+        # No block names it anywhere: nothing is specified, so nothing is sent
+        # and each model's own default applies. There is deliberately no engine
         # default value — one would be indistinguishable from an operator's
         # choice, and would be reported as inert against a model that refuses
         # it.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg.pop("temperature", None)
-        loop_cfg.pop("review_temperature", None)
+        loop_cfg.pop("extractor_decoding", None)
+        loop_cfg.pop("review_decoding", None)
+        loop_cfg.pop("checker_decoding", None)
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.sampling == {}
-        assert orch.review_sampling == {}
+        # None on every role: one spelling of "specified nothing", the same
+        # one direktoro's split returns for a block that names no control.
+        assert orch.sampling is None
+        assert orch.review_sampling is None
+        assert orch.checker_config.sampling is None
 
-    @pytest.mark.parametrize("key", [
-        "temperature", "review_temperature", "checker_temperature"])
-    @pytest.mark.parametrize("bad", [-0.1, -1, 2.1, 5.0, 100])
-    def test_out_of_range_temperature_rejected(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys, key, bad):
-        # Range-checked at startup for every role. For a model that refuses
-        # the control the provider never sees the value to reject it, so
-        # startup is the only place it can be caught at all.
+    @pytest.mark.parametrize("bad", [-0.1, 1.1, 5.0, 100])
+    def test_a_value_outside_the_models_band_is_refused_at_startup(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys, bad):
+        # The checker's model documents a temperature band, and a value outside
+        # it is a 400 on a paid call. Refused at startup instead, naming the
+        # role and the block to edit.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg[key] = bad
+        loop_cfg["checker_decoding"] = {"temperature": bad}
         with pytest.raises(SystemExit) as excinfo:
             self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert excinfo.value.code == 1
-        assert key in capsys.readouterr().err
+        assert "checker_decoding" in capsys.readouterr().err
 
-    @pytest.mark.parametrize("key", [
-        "temperature", "review_temperature", "checker_temperature"])
-    @pytest.mark.parametrize("ok", [0.0, 0.2, 1.0, 2.0])
-    def test_in_range_temperature_accepted(
-            self, config_dir, bundle_minimal_dir, tmp_path, key, ok):
-        # The band is inclusive at both ends and must not reject a usable
-        # value. The accepted value is read back off the built orchestrator, so
-        # this pins that it was carried through rather than only that nothing
-        # raised on the way.
+    @pytest.mark.parametrize("ok", [0.0, 0.2, 1.0])
+    def test_a_value_inside_the_band_is_carried_through(
+            self, config_dir, bundle_minimal_dir, tmp_path, ok):
+        # The band is inclusive at both ends. The accepted value is read back
+        # off the built orchestrator, so this pins that it was carried through
+        # rather than only that nothing raised on the way.
         loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg[key] = ok
+        loop_cfg["checker_decoding"] = {"temperature": ok}
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        resolved = {
-            "temperature": lambda o: o.sampling,
-            "review_temperature": lambda o: o.review_sampling,
-            "checker_temperature": lambda o: o.checker_config.sampling,
-        }[key](orch)
-        assert resolved == {"temperature": ok}
+        assert orch.checker_config.sampling == {"temperature": ok}
 
 
-class TestPerRoleThinkingWiring:
-    """The six `<role>_thinking_mode` / `<role>_thinking_effort` keys reach the
-    role they name and nothing else, and a bad value fails at startup.
-
-    The per-role plumbing is the thing under test here; what the values then DO
-    (reach the wire, move the fingerprints, force a cap floor) is pinned in
-    tests/agentic_extraction/test_thinking.py against the real engine.
-    """
-
-    def _args(self):
-        from types import SimpleNamespace
-        return SimpleNamespace(
-            max_tool_calls=None, max_checks_per_field=None, final_review=None,
-            extractor_model=None, review_model=None, checker_model=None,
-            diagnostics="standard", dry_run=True)
-
-    def _orch(self, config_dir, bundle_minimal_dir, tmp_path, loop_cfg):
-        from meltiro.bundle import load_bundle
-        from meltiro.config_bundle import load_config_bundle
-        config = load_config_bundle(config_dir)
-        bundle = load_bundle(str(bundle_minimal_dir))
-        return cli._build_orchestrator(
-            config, bundle, tmp_path / "runs", loop_cfg, self._args())
-
-    def test_no_thinking_keys_means_no_spec_on_any_role(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        # The shipped example names none of the six, and must keep behaving
-        # exactly as it did: three roles, no thinking spec anywhere.
-        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.thinking is None
-        assert orch.review_thinking is None
-        assert orch.checker_config.thinking is None
-
-    def test_each_role_reads_its_own_two_keys(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        from direktoro import Thinking
-        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["extractor_thinking_mode"] = "adaptive"
-        loop_cfg["extractor_thinking_effort"] = "max"
-        loop_cfg["review_thinking_effort"] = "low"
-        loop_cfg["checker_thinking_mode"] = "disabled"
-        orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.thinking == Thinking(mode="adaptive", effort="max")
-        assert orch.review_thinking == Thinking(effort="low")
-        assert orch.checker_config.thinking == Thinking(mode="disabled")
-
-    def test_the_reviewer_does_not_inherit_the_extractors_spec(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        # Deliberately unlike `review_temperature`, which inherits when absent.
-        # Inheriting would make "no spec" inexpressible for the reviewer, and a
-        # thinking mode is not a dial to copy silently between roles that do
-        # different work.
-        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["extractor_thinking_effort"] = "max"
-        orch = self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert orch.review_thinking is None
-        assert orch.checker_config.thinking is None
-
-    @pytest.mark.parametrize("key,bad", [
-        ("extractor_thinking_mode", "sometimes"),
-        ("checker_thinking_mode", "budget"),
-        ("review_thinking_effort", "maximum"),
-        ("checker_thinking_effort", "HIGH"),
-    ])
-    def test_a_bad_value_fails_at_startup_naming_its_key(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys, key, bad):
-        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg[key] = bad
-        with pytest.raises(SystemExit) as excinfo:
-            self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert excinfo.value.code == 1
-        assert key in capsys.readouterr().err
-
-    def test_a_thinking_checker_with_the_shipped_cap_fails_at_startup(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        # The cap hazard, reached through the CLI: the shipped
-        # `checker_max_tokens: 1024` cannot hold a think plus a verdict, so
-        # asking the checker to think is refused with a one-line startup error
-        # rather than a traceback or a truncated run.
-        #
-        # The checker is repointed at Opus 4.8 to ask that question in
-        # isolation. On the shipped `claude-sonnet-4-6` this configuration is
-        # refused one step EARLIER, for pairing `checker_temperature` with
-        # active thinking (the test below), so it never reaches the cap. Opus
-        # 4.8 rejects the temperature parameter outright, so direktoro omits it
-        # and the cap is the only thing left to fail on.
-        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        loop_cfg["checker_model"] = "claude-opus-4-8"
-        loop_cfg["checker_thinking_mode"] = "adaptive"
-        loop_cfg["checker_max_tokens"] = 1024
-        with pytest.raises(SystemExit) as excinfo:
-            self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert excinfo.value.code == 1
-        err = capsys.readouterr().err
-        assert "checker_max_tokens" in err
-        assert "2048" in err
-
-    def test_thinking_on_the_shipped_checker_is_refused_for_its_temperature(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        # The shipped bundle's own constraint, at the CLI, on its own values.
-        #
-        # The bundle declares `checker_model: claude-sonnet-4-6` and
-        # `checker_temperature: 0.0`. Both are fine, and the bundle AS SHIPPED
-        # is legal because it names no thinking key. But Sonnet 4.6 rejects a
-        # request that carries a temperature and turns thinking on, so adding
-        # `checker_thinking_mode: adaptive` makes it a 400. That is one line,
-        # and a natural line for an author to add. Refused at startup,
-        # unbilled, naming the role, the model and BOTH keys, so the operator
-        # can see that dropping `checker_temperature` is as valid an answer as
-        # giving up the thinking.
-        #
-        # No cap involved: `checker_max_tokens` is raised well clear of the
-        # floor so the temperature conflict is unambiguously what fired.
-        loop_cfg = dict(load_config_bundle_pipeline(config_dir))
-        assert loop_cfg["checker_model"] == "claude-sonnet-4-6"
-        assert loop_cfg["checker_temperature"] is not None
-        loop_cfg["checker_thinking_mode"] = "adaptive"
-        loop_cfg["checker_max_tokens"] = 8192
-        with pytest.raises(SystemExit) as excinfo:
-            self._orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        assert excinfo.value.code == 1
-        err = capsys.readouterr().err
-        assert "checker role" in err
-        assert "claude-sonnet-4-6" in err
-        assert "checker_temperature" in err
-        assert "checker_thinking_mode" in err
-
-    def test_an_unknown_thinking_key_is_still_rejected_by_the_allowlist(
-            self, config_dir, tmp_path):
-        # The six keys are on the allowlist; a seventh (a typo) is not, and the
-        # config bundle refuses it at load, before any of this runs.
-        from meltiro.config_bundle import load_config_bundle
-        from meltiro.errors import ConfigBundleError
-        import shutil
-        dest = tmp_path / "cfg"
-        shutil.copytree(config_dir, dest)
-        pipeline = dest / "pipeline.yaml"
-        pipeline.write_text(
-            pipeline.read_text(encoding="utf-8")
-            + "\nextractor_thinking_efort: high\n", encoding="utf-8")
-        with pytest.raises(ConfigBundleError) as exc:
-            load_config_bundle(dest)
-        assert "extractor_thinking_efort" in str(exc.value)
-
-
-class TestPerRoleTemperatureFingerprints:
-    """A per-role temperature moves that role's stage fingerprint and no other,
-    but only for a model that actually accepts temperature: the fingerprint
-    folds in what is SENT, so a no_temperature model's fingerprint is inert to
-    it."""
+class TestPerRoleDecodingFingerprints:
+    """A per-role decoding block moves that role's stage fingerprint and no
+    other, but only for a model that actually accepts what it names: the
+    fingerprint folds in what is SENT, so a model that refuses a control has a
+    fingerprint inert to it."""
 
     def _args(self, **over):
         from types import SimpleNamespace
@@ -985,20 +844,20 @@ class TestPerRoleTemperatureFingerprints:
             self._args(**args_over))
         return orch._build_fingerprints()
 
-    def test_checker_temperature_moves_only_checker_fp(
+    def test_the_checker_block_moves_only_checker_fp(
             self, config_dir, bundle_minimal_dir, tmp_path):
         # claude-sonnet-4-6 (the shipped checker) accepts temperature, so this
         # is a live knob and must move checker_fp alone.
         base_cfg = dict(load_config_bundle_pipeline(config_dir))
         base = self._fps(config_dir, bundle_minimal_dir, tmp_path, base_cfg)
         hot_cfg = dict(base_cfg)
-        hot_cfg["checker_temperature"] = 0.5
+        hot_cfg["checker_decoding"] = {"temperature": 0.5}
         hot = self._fps(config_dir, bundle_minimal_dir, tmp_path, hot_cfg)
         assert hot["checker_fp"] != base["checker_fp"]
         assert hot["config_fp"] == base["config_fp"]
         assert hot["review_fp"] == base["review_fp"]
 
-    def test_review_temperature_moves_only_review_fp(
+    def test_the_review_block_moves_only_review_fp(
             self, config_dir, bundle_minimal_dir, tmp_path):
         # Repointed at a temperature-accepting review model, since the shipped
         # claude-opus-4-8 rejects temperature and would move nothing.
@@ -1007,27 +866,26 @@ class TestPerRoleTemperatureFingerprints:
         base = self._fps(config_dir, bundle_minimal_dir, tmp_path, base_cfg,
                          **over)
         hot_cfg = dict(base_cfg)
-        hot_cfg["review_temperature"] = 0.5
+        hot_cfg["review_decoding"] = {"temperature": 0.5}
         hot = self._fps(config_dir, bundle_minimal_dir, tmp_path, hot_cfg,
                         **over)
         assert hot["review_fp"] != base["review_fp"]
         assert hot["config_fp"] == base["config_fp"]
         assert hot["checker_fp"] == base["checker_fp"]
 
-    def test_extractor_temperature_moves_only_config_fp(
+    def test_the_extractor_block_moves_only_config_fp(
             self, config_dir, bundle_minimal_dir, tmp_path):
         # Both the extractor and the reviewer are repointed at a
         # temperature-accepting model, so that review_fp holding proves the
-        # reviewer does NOT ride the extractor's temperature, rather than
-        # merely proving the review model ignores it.
+        # reviewer does NOT ride the extractor's block, rather than merely
+        # proving the review model ignores it.
         over = {"extractor_model": "claude-sonnet-4-6",
                 "review_model": "claude-sonnet-4-6"}
         base_cfg = dict(load_config_bundle_pipeline(config_dir))
-        base_cfg["review_temperature"] = 0.0
         base = self._fps(config_dir, bundle_minimal_dir, tmp_path, base_cfg,
                          **over)
         hot_cfg = dict(base_cfg)
-        hot_cfg["temperature"] = 0.5
+        hot_cfg["extractor_decoding"] = {"temperature": 0.5}
         hot = self._fps(config_dir, bundle_minimal_dir, tmp_path, hot_cfg,
                         **over)
         assert hot["config_fp"] != base["config_fp"]
@@ -1043,8 +901,8 @@ class TestPerRoleTemperatureFingerprints:
         base_cfg = dict(load_config_bundle_pipeline(config_dir))
         base = self._fps(config_dir, bundle_minimal_dir, tmp_path, base_cfg)
         hot_cfg = dict(base_cfg)
-        hot_cfg["temperature"] = 1.0
-        hot_cfg["review_temperature"] = 1.0
+        hot_cfg["extractor_decoding"] = {"temperature": 0.5}
+        hot_cfg["review_decoding"] = {"temperature": 0.5}
         hot = self._fps(config_dir, bundle_minimal_dir, tmp_path, hot_cfg)
         assert hot["config_fp"] == base["config_fp"]
         assert hot["review_fp"] == base["review_fp"]
@@ -1077,9 +935,9 @@ class TestPerRoleTemperatureFingerprints:
         config = load_config_bundle(config_dir)
         bundle = load_bundle(str(bundle_minimal_dir))
         loop_cfg = dict(config.pipeline)
-        loop_cfg["temperature"] = 0.2
-        loop_cfg["review_temperature"] = 0.7
-        loop_cfg["checker_temperature"] = 0.4
+        loop_cfg["extractor_decoding"] = {"temperature": 0.2}
+        loop_cfg["review_decoding"] = {"temperature": 0.7}
+        loop_cfg["checker_decoding"] = {"temperature": 0.4}
         orch = cli._build_orchestrator(
             config, bundle, tmp_path / "runs", loop_cfg,
             self._args(extractor_model="claude-sonnet-4-6",

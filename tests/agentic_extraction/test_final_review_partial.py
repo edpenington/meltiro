@@ -201,7 +201,7 @@ class TestReviewCallUsesReviewTemperature:
     thereafter.
     """
 
-    def test_every_review_turn_sends_review_temperature_not_extractors(
+    def test_every_review_turn_sends_the_reviewers_temperature_not_the_extractors(
             self, tmp_path, synthetic_template, paper_text, image_labels,
             monkeypatch):
         orch = _review_orch(tmp_path, synthetic_template, paper_text,

@@ -57,11 +57,13 @@ def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field, final_review
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model=EXTRACTOR,
-        checker_config=CheckerConfig(checker_model=checker_model,
+        checker_config=CheckerConfig(max_tokens=4096, checker_model=checker_model,
                                      api_key=api_key),
         review_model=review_model,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
+        extractor_max_tokens=4096,
+        review_max_tokens=4096,
         api_key=api_key, dry_run=dry_run,
     )
 

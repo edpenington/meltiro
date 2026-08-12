@@ -9,6 +9,7 @@ returns canned responses, so nothing touches the network.
 import dataclasses
 from types import SimpleNamespace
 
+from direktoro import NormalisedResponse, NormalisedUsage
 from meltiro.bundle import load_bundle
 from meltiro.config_bundle import load_config_bundle
 from meltiro.extraction_record import ExtractionRecord
@@ -724,5 +725,56 @@ class TestImageLabelNormalisation:
             config, bundle, tmp_path / "runs",
             extractor_model="claude-opus-4-7",
             review_model="claude-opus-4-7",
+            extractor_max_tokens=4096,
+            review_max_tokens=4096,
+            # The checker is not this test's subject, and enabled it would
+            # demand a configured model and cap.
+            max_checks_per_field=0,
             api_key="")
         assert orch.image_labels == {"figure_01", "table_02"}
+
+
+# ---------------------------------------------------------------------------
+# Truncation is named where it happens
+# ---------------------------------------------------------------------------
+
+class _TruncatedAdapter:
+    """A provider adapter whose one response stopped on the cap."""
+
+    def create_message(self, **kwargs):
+        return NormalisedResponse(
+            content=[], usage=NormalisedUsage(input_tokens=10, output_tokens=1),
+            resolved_model="claude-opus-4-7", provider="anthropic",
+            stop_reason="max_tokens",
+            raw_request={"model": "claude-opus-4-7"}, raw_response={},
+            decoding_params={"max_tokens": 4096})
+
+
+class TestTruncationNamesTheCapAndTheKey:
+    """A cut-off extractor turn says which number cut it off.
+
+    Unnamed, it reaches the loop as an ordinary tool-free turn and is
+    re-prompted as one until the stall guard fires, with the cause nowhere in
+    the record. The report carries THIS role's cap and the pipeline.yaml key
+    that set it, which is the line an operator would edit.
+    """
+
+    def test_the_extractor_call_reports_its_own_cap_and_key(
+            self, tmp_path, config_dir, bundle_minimal_dir, capsys):
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_minimal_dir),
+            tmp_path / "runs",
+            extractor_model="claude-opus-4-7",
+            review_model="claude-opus-4-7",
+            max_checks_per_field=0, final_review=False,
+            extractor_max_tokens=8192,
+            api_key="x")
+        orch.prepare_new_session()
+
+        orch._call_extractor(_TruncatedAdapter(), tool_defs=[])
+
+        message = next(w for w in orch.session.meta["warnings"]
+                       if "max_tokens cap" in w)
+        assert "8192" in message
+        assert "extractor_max_tokens" in message
+        assert "WARNING: extractor response stopped" in capsys.readouterr().err

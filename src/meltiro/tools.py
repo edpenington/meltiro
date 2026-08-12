@@ -322,7 +322,7 @@ def _slim_value_subschema(field):
     return _field_value_subschema(field)
 
 
-def _field_description(field, section_instr=None):
+def _field_description(field):
     """Compose the property description from the field's published
     `description` plus any `extraction_instruction`. allow_other option
     lists, reference-list notes, and evidence-optional notes append. Parts
@@ -332,10 +332,7 @@ def _field_description(field, section_instr=None):
     Section-level guidance is *not* prepended here; it lives at the
     parent-object description level (assembled by `_section_guidance`)
     so it appears once per section rather than blanketing every field.
-    The `section_instr` parameter is retained for call-site compatibility
-    but ignored.
     """
-    del section_instr  # see docstring
     parts = []
     parts.append((field.get("description") or "").strip())
     instr = (field.get("extraction_instruction") or "").strip()
@@ -376,7 +373,7 @@ def _field_description(field, section_instr=None):
     return " · ".join(p for p in parts if p)
 
 
-def _envelope_property_schema(field, section_instr=None):
+def _envelope_property_schema(field):
     """Schema for ONE envelope-wrapped field: {value, evidence, notes}.
 
     The evidence string carries all three concerns (verbatim quote, image
@@ -403,7 +400,7 @@ def _envelope_property_schema(field, section_instr=None):
     """
     return {
         "type": "object",
-        "description": _field_description(field, section_instr),
+        "description": _field_description(field),
         "properties": {
             "value": _field_value_subschema(field),
             # No `description` on `evidence`; the full format spec
@@ -442,11 +439,11 @@ def _slim_envelope_property_schema(field):
     }
 
 
-def _bare_value_property_schema(field, section_instr=None):
+def _bare_value_property_schema(field):
     """Schema for ONE non-enveloped field (initial_check / quality_check
     fields are plain {variable: value} maps, no envelope)."""
     schema = dict(_field_value_subschema(field))
-    schema["description"] = _field_description(field, section_instr)
+    schema["description"] = _field_description(field)
     return schema
 
 
@@ -493,7 +490,6 @@ def _properties_from_sections(sections, *, envelope, exclude_vars=(),
     """
     props = {}
     for section in sections:
-        section_instr = section.get("extraction_instruction")
         for f in section["fields"]:
             var = f["variable"]
             if var in exclude_vars:
@@ -502,9 +498,9 @@ def _properties_from_sections(sections, *, envelope, exclude_vars=(),
                 if slim:
                     props[var] = _slim_envelope_property_schema(f)
                 else:
-                    props[var] = _envelope_property_schema(f, section_instr)
+                    props[var] = _envelope_property_schema(f)
             else:
-                props[var] = _bare_value_property_schema(f, section_instr)
+                props[var] = _bare_value_property_schema(f)
     return props
 
 

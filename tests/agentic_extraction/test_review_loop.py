@@ -121,7 +121,7 @@ def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field=2,
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model=EXTRACTOR,
-        checker_config=CheckerConfig(checker_model=CHECKER, api_key="x"),
+        checker_config=CheckerConfig(max_tokens=1024, checker_model=CHECKER, api_key="x"),
         review_model=REVIEWER,
         max_checks_per_field=max_checks_per_field,
         max_review_tool_calls=max_review_tool_calls,
@@ -132,6 +132,8 @@ def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field=2,
         rates={role: Rates(input_per_1m=15.0, output_per_1m=75.0,
                            cache_read_per_1m=1.5, cache_write_per_1m=18.75)
                for role in ("extractor", "checker", "review")},
+        extractor_max_tokens=4096,
+        review_max_tokens=4096,
         api_key="x",
     )
 

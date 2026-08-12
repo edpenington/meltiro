@@ -55,7 +55,6 @@ from meltiro.prompt_partials import (
 )
 from meltiro.reference_lists import load_reference_lists, referenced_names
 from meltiro.template import iter_fields, load_template
-from meltiro.thinking import PIPELINE_KEYS
 from meltiro.yaml_strict import strict_load
 
 
@@ -71,14 +70,20 @@ KNOWN_PIPELINE_KEYS = frozenset({
     "checker_concurrency",
     "checker_context_chars",
     "checker_max_tokens",
-    "checker_temperature",
-    "review_temperature",
     "extractor_max_tokens",
     "review_max_tokens",
     "max_tool_calls",
     "max_review_tool_calls",
     "max_checks_per_field",
-    "temperature",
+    # One decoding block per role: an opaque mapping of decoding parameter
+    # names to values, handed whole to direktoro's `split_decoding_config`,
+    # which is what knows which key inside is a sampling control and which is
+    # a thinking field. meltiro reads none of them. Optional per role; a role
+    # with no block sends nothing and takes the model's own defaults. Decoding
+    # params ride in their own role's stage fingerprint, never the instrument.
+    "extractor_decoding",
+    "review_decoding",
+    "checker_decoding",
     # Pipeline-structure toggles. `final_review: false` disables the reviewer
     # stage; the checker is disabled by `max_checks_per_field: 0` (no separate
     # key). `check_reviewer_edits: true` extends the checker to the reviewer's
@@ -90,11 +95,6 @@ KNOWN_PIPELINE_KEYS = frozenset({
     # where the CLI reads it; rationale in `meltiro.rates`. Rates reach no
     # fingerprint.
     "rates",
-    # Per-role thinking keys (`<role>_thinking_mode` / `_thinking_effort`),
-    # spliced from `meltiro.thinking.PIPELINE_KEYS` so the allowlist cannot
-    # drift from what the CLI reads. All optional. Decoding params: they ride
-    # in their own role's stage fingerprint, never the instrument.
-    *PIPELINE_KEYS,
 })
 
 # The TOTAL number of checker calls one field may receive across the whole

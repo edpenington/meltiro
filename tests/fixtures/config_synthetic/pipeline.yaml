@@ -17,12 +17,19 @@ extractor_model: claude-opus-4-8
 checker_model: claude-sonnet-4-6
 review_model: claude-opus-4-8
 
-# Decoding. Temperature is per role. With the models above, `temperature` and
-# `review_temperature` are inert: claude-opus-4-8 rejects the parameter, so the
-# adapter omits it. Only `checker_temperature` reaches the wire.
-temperature: 1.0
-review_temperature: 0.0
-checker_temperature: 0.0
+# Decoding. One block per role, each standing alone: nothing here is taken
+# from another role. With the models above, the extractor's and the reviewer's
+# temperatures are inert: claude-opus-4-8 rejects the parameter, so the adapter
+# omits it. Only the checker's reaches the wire.
+extractor_decoding:
+  temperature: 1.0
+review_decoding:
+  temperature: 0.0
+checker_decoding:
+  temperature: 0.0
+
+# Output-token caps. One per role, and required for every role whose stage is
+# on: the number bounds what a call may spend and what it may answer within.
 extractor_max_tokens: 32768
 checker_max_tokens: 1024
 review_max_tokens: 32768

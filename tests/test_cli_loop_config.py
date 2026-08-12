@@ -18,11 +18,9 @@ import pytest
 from meltiro import cli
 from meltiro.checker import DEFAULT_CONCURRENCY
 from meltiro.orchestrator import (
-    DEFAULT_EXTRACTOR_MAX_TOKENS,
     DEFAULT_MAX_CHECKS_PER_FIELD,
     DEFAULT_MAX_REVIEW_TOOL_CALLS,
     DEFAULT_MAX_TOOL_CALLS,
-    DEFAULT_REVIEW_MAX_TOKENS,
 )
 
 
@@ -65,9 +63,6 @@ class TestAbsentKeysFallBackToTheDeclaredDefaults:
          DEFAULT_MAX_CHECKS_PER_FIELD),
         ("max_review_tool_calls", "max_review_tool_calls",
          DEFAULT_MAX_REVIEW_TOOL_CALLS),
-        ("extractor_max_tokens", "extractor_max_tokens",
-         DEFAULT_EXTRACTOR_MAX_TOKENS),
-        ("review_max_tokens", "review_max_tokens", DEFAULT_REVIEW_MAX_TOKENS),
     ])
     def test_an_absent_key_takes_the_orchestrator_constant(
             self, config_dir, bundle_minimal_dir, tmp_path, key, attr,
@@ -164,11 +159,11 @@ class TestCheckerConcurrencyWiring:
 
 
 class TestOutputCapsAreUsableBudgets:
-    """Every role's output cap is optional and defaults when absent, so a
-    number that IS written is deliberate. Zero and negatives are not budgets:
-    they reach the provider as `max_tokens=0` and fail at that role's first
-    call, which for the reviewer is after a whole extraction has been billed.
-    All three roles are guarded on the same terms."""
+    """Every enabled role states its own output cap, so the number in a run
+    record is one the operator wrote. Zero and negatives are not budgets: they
+    reach the provider as `max_tokens=0` and fail at that role's first call,
+    which for the reviewer is after a whole extraction has been billed. All
+    three roles are guarded on the same terms."""
 
     @pytest.mark.parametrize("key", ["extractor_max_tokens",
                                      "review_max_tokens",

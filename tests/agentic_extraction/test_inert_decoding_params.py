@@ -20,6 +20,7 @@ of the values they wrote will not be acted on, per role and per key.
 
 import pytest
 
+from direktoro import split_decoding_config
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
@@ -28,25 +29,31 @@ from meltiro.orchestrator import Orchestrator
 
 # The fixture pipeline names claude-opus-4-8 for the extractor and the
 # reviewer (both refuse the sampling controls) and claude-sonnet-4-6 for the
-# checker (which takes them). Its `temperature: 1.0` and `review_temperature: 0.0` are
-# therefore inert and its `checker_temperature: 0.0` is live, which is the
-# mixed case the warning has to get right in both directions.
+# checker (which takes them). The temperature in its `extractor_decoding` and
+# `review_decoding` blocks is therefore inert and the one in
+# `checker_decoding` is live, which is the mixed case the warning has to get
+# right in both directions.
 NO_TEMPERATURE_MODEL = "claude-opus-4-8"
 TEMPERATURE_MODEL = "claude-sonnet-4-6"
+
+
+def _sampling(loop, role):
+    """The sampling controls that role's block specifies, split the way the
+    CLI splits it, so what the test calls "configured" is what a run would."""
+    return split_decoding_config(loop[f"{role}_decoding"])[0]
 
 
 def _orch(config_dir, bundle_minimal_dir, tmp_path, **kwargs):
     loop = load_config_bundle(config_dir).pipeline
     kwargs.setdefault("extractor_model", loop["extractor_model"])
     kwargs.setdefault("review_model", loop["review_model"])
-    kwargs.setdefault(
-        "sampling", {"temperature": float(loop["temperature"])})
-    kwargs.setdefault(
-        "review_sampling",
-        {"temperature": float(loop["review_temperature"])})
+    kwargs.setdefault("sampling", _sampling(loop, "extractor"))
+    kwargs.setdefault("review_sampling", _sampling(loop, "review"))
     kwargs.setdefault("checker_config", CheckerConfig(
-        checker_model=loop["checker_model"],
-        sampling={"temperature": float(loop["checker_temperature"])}, api_key="x"))
+        checker_model=loop["checker_model"], max_tokens=1024,
+        sampling=_sampling(loop, "checker"), api_key="x"))
+    kwargs.setdefault("extractor_max_tokens", 4096)
+    kwargs.setdefault("review_max_tokens", 4096)
     return Orchestrator(
         load_config_bundle(config_dir), load_bundle(bundle_minimal_dir),
         tmp_path / "runs", api_key="x", **kwargs)
@@ -117,6 +124,24 @@ class TestTheWarningFires:
         orch = _orch(config_dir, bundle_minimal_dir, tmp_path)
         orch.prepare_new_session()
         assert orch.session.meta["status"] == "in_progress"
+
+    def test_a_wild_value_on_a_refusing_model_is_reported_inert_not_refused(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # 100 is outside every documented temperature band, and on a model that
+        # TAKES the control it is refused at startup before any spend. This
+        # model refuses the control outright, so nothing is sent and there is
+        # no band for the value to be outside of: the run starts, and what the
+        # operator is owed is the one thing that is true — the value they wrote
+        # reaches nothing. Refusing it instead would name a range this call
+        # never touches and block a run that will work.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                     sampling={"temperature": 100})
+        orch.prepare_new_session()
+
+        message = next(w for w in _inert(orch) if "extractor" in w)
+        assert "100" in message
+        assert orch._decoding_params_meta()["extractor"] == {
+            "max_tokens": 4096}
 
     def test_a_disabled_stage_is_not_reported(
             self, config_dir, bundle_minimal_dir, tmp_path):

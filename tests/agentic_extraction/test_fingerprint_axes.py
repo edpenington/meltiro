@@ -22,6 +22,7 @@ import pytest
 
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig, DEFAULT_CONTEXT_CHARS
+from direktoro import split_decoding_config
 from meltiro.config_bundle import load_config_bundle
 from meltiro.fingerprint import (
     engine_fingerprint,
@@ -39,6 +40,7 @@ def _orch(config, bundle, out_dir, **over):
     loop.update(over)
     checker_config = CheckerConfig.from_env(
         model_override=loop["checker_model"])
+    checker_config.max_tokens = int(loop["checker_max_tokens"])
     orch = Orchestrator(
         config, bundle, out_dir,
         # Parsed from the (overridable) pipeline mapping exactly as the CLI
@@ -51,7 +53,7 @@ def _orch(config, bundle, out_dir, **over):
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop.get("final_review", True)),
         check_reviewer_edits=bool(loop.get("check_reviewer_edits", False)),
-        sampling={"temperature": float(loop["temperature"])},
+        sampling=split_decoding_config(loop["extractor_decoding"])[0],
         extractor_max_tokens=int(loop["extractor_max_tokens"]),
         review_max_tokens=int(loop["review_max_tokens"]),
         dry_run=True,

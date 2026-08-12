@@ -23,7 +23,6 @@ def test_system_message_includes_key_sections(synthetic_template,
     # the reference list substituted for the {reference:gauge_list}
     # placeholder.
     txt = build_system_message(
-        synthetic_template,
         image_labels={"table_01", "figure_01"},
         system_prompt_path=extractor_system_path,
         max_checks_per_field=3,
@@ -56,7 +55,6 @@ def test_image_labels_render_with_their_captions(synthetic_template,
     # declared caption is rendered beside it, with the label kept alone in
     # backticks because it is what an <img>label</img> citation carries.
     txt = build_system_message(
-        synthetic_template,
         image_labels={"table_01", "figure_01"},
         system_prompt_path=extractor_system_path,
         reference_lists={"gauge_list": []},
@@ -72,7 +70,6 @@ def test_image_labels_render_with_their_captions(synthetic_template,
 def test_reviewer_sees_the_same_captions(synthetic_template,
                                           review_system_path):
     txt = build_review_system_message(
-        synthetic_template,
         image_labels={"table_01"},
         system_prompt_path=review_system_path,
         reference_lists={"gauge_list": []},
@@ -86,7 +83,6 @@ def test_label_without_a_caption_renders_bare(synthetic_template,
     # No caption map at all (a fingerprint render, or a caller with no
     # bundle): each label renders bare, with no trailing colon.
     txt = build_system_message(
-        synthetic_template,
         image_labels={"table_01"},
         system_prompt_path=extractor_system_path,
         reference_lists={"gauge_list": []},
@@ -98,7 +94,6 @@ def test_label_without_a_caption_renders_bare(synthetic_template,
 def test_system_message_blocks_carries_cache_control(synthetic_template,
                                                      extractor_system_path):
     txt = build_system_message(
-        synthetic_template,
         image_labels=set(), reference_lists={"gauge_list": []},
         system_prompt_path=extractor_system_path,
     )
@@ -115,7 +110,6 @@ def test_unresolvable_reference_placeholder_fails_loudly(
     # ship a prompt with a dangling placeholder.
     with pytest.raises(ConfigBundleError) as excinfo:
         build_system_message(
-            synthetic_template,
             image_labels=set(), reference_lists={},
             system_prompt_path=extractor_system_path,
         )

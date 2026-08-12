@@ -66,7 +66,8 @@ fingerprint, including the `ABSENT_STAGE` sentinel an ablated stage adds.
 import pytest
 
 from direktoro import (
-    call_identity_fields, canonical_json, model_info, resolved_decoding_params)
+    call_identity_fields, canonical_json, model_info, resolved_decoding_params,
+    split_decoding_config)
 from meltiro.checker import CheckerConfig
 from meltiro.checker_prompts import build_checker_system_text
 from meltiro.config_bundle import load_config_bundle
@@ -221,7 +222,6 @@ def _pipeline_structure(bundle, *, supports_images=True):
 def _extractor_prompt_hash(bundle, template):
     loop = bundle.pipeline
     return compute_prompt_config_hash(
-        template,
         system_prompt_path=bundle.extractor_system_path,
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop["final_review"]),
@@ -238,7 +238,7 @@ def _checker_config(bundle):
     `_pipeline_predicates` below supplies from the same pipeline.yaml.
     """
     loop = bundle.pipeline
-    return CheckerConfig(
+    return CheckerConfig(max_tokens=1024, 
         system_prompt_path=str(bundle.checker_system_path),
         user_prompt_template_path=str(bundle.checker_user_template_path),
         context_chars=int(loop["checker_context_chars"]),
@@ -257,7 +257,7 @@ def _review_system_text(bundle, template):
     # value is paper-independent.
     loop = bundle.pipeline
     return build_review_system_message(
-        template, image_labels=[],
+        image_labels=[],
         system_prompt_path=bundle.review_system_path,
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop["final_review"]),
@@ -270,9 +270,10 @@ def _extractor_call_identity(bundle):
     extractor model, built the way the orchestrator builds it."""
     loop = bundle.pipeline
     model = loop["extractor_model"]
+    sampling, thinking = split_decoding_config(loop["extractor_decoding"])
     decoding = resolved_decoding_params(
-        model, sampling={"temperature": float(loop["temperature"])},
-        max_tokens=int(loop["extractor_max_tokens"]), thinking=None)
+        model, sampling=sampling,
+        max_tokens=int(loop["extractor_max_tokens"]), thinking=thinking)
     return canonical_json(call_identity_fields(
         model, route=model_info(model).route, decoding_params=decoding))
 
@@ -494,7 +495,6 @@ class TestStageFingerprintComposition:
         checker = _checker_config(bundle)
         predicates = _pipeline_predicates(bundle)
         system_text = build_checker_system_text(
-            template,
             system_prompt_path=bundle.checker_system_path,
             reference_lists=bundle.reference_lists,
             predicates=predicates,

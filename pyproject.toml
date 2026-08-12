@@ -52,16 +52,18 @@ dependencies = [
     # stage fingerprint; `resolved_decoding_params` decides which of those
     # params reach it; `model_supports_images` feeds `structure_hash`. A
     # release that changes the shape of any of those moves every fingerprint
-    # this project has published, with no config edit to explain it. 0.2.0 is
+    # this project has published, with no config edit to explain it. 0.3.0 is
     # the version whose shapes the recorded goldens were computed against, so
     # an install below it would recompute published numbers differently — and
-    # 0.2.0 is also where `resolved_decoding_params` began taking the sampling
-    # controls as a mapping, which meltiro passes it, so an older install does
-    # not merely fingerprint differently: it raises.
+    # 0.3.0 is also where a role's decoding block is split and validated by
+    # direktoro (`split_decoding_config`), where reasoning effort became
+    # caller-specifiable, and where feasibility — documented value bands, and a
+    # cap a thinking call cannot answer within — is refused before spend. An
+    # older install does not merely fingerprint differently: it raises.
     # Runs record the resolved version too (`direktoro_version` in run.json and
     # in each run-log entry, folded into `engine_fp`), so the declaration here
     # and the artefact agree on which direktoro produced a given run.
-    "direktoro>=0.2.0",
+    "direktoro>=0.3.0",
     # anthropic and openai are direktoro's runtime deps too, but meltiro
     # constructs clients directly (lazily, in orchestrator/checker), so they
     # are declared here in their own right.

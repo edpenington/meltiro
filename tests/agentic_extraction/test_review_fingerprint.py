@@ -35,7 +35,7 @@ def _prepared_orch(config_dir, bundle_dir, out_dir, *,
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model="claude-opus-4-7",
-        checker_config=CheckerConfig(
+        checker_config=CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6", api_key="x"),
         review_model=review_model,
         review_max_tokens=review_max_tokens,

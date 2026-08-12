@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from meltiro.errors import CheckerError
+from meltiro.errors import CheckerError, truncation_report
 from meltiro.fingerprint import (
     checker_config_fingerprint,
     structure_hash,
@@ -50,7 +50,6 @@ from meltiro.fingerprint import (
     reference_lists_hash,
     tool_set_hash,
 )
-from meltiro.thinking import truncation_message
 from meltiro.tools import (
     CHECKER_VERDICT_TOOL_NAME,
     CHECKER_VERDICTS,
@@ -72,7 +71,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never executed at runtime
     from direktoro import Thinking
 
 
-DEFAULT_MAX_TOKENS = 1024
 DEFAULT_CONCURRENCY = 10
 # Characters of surrounding paper text shown on EACH side of a matched quote
 # in the per-field checker message (pipeline.yaml's `checker_context_chars`).
@@ -128,7 +126,14 @@ class CheckerConfig:
     # and review models). The None default lets tests and programmatic use
     # construct a config and set the model explicitly.
     checker_model: str = None
-    max_tokens: int = DEFAULT_MAX_TOKENS
+    # The checker's output-token cap. No default value, on the same terms as
+    # the model above: the number bounds what one check may spend and what it
+    # may answer within, so a real run states it (the CLI requires
+    # `checker_max_tokens` from pipeline.yaml whenever the checker stage is
+    # on). The None default lets a caller construct a config and set it
+    # explicitly; `_require_cap` refuses a config that still carries None when
+    # a call is about to be made.
+    max_tokens: int | None = None
     # The sampling controls the operator specified for the checker, as a
     # `{name: value}` mapping over `direktoro.SAMPLING_PARAMS`, or None for
     # "specified none". There is deliberately no default value for any of them:
@@ -152,13 +157,11 @@ class CheckerConfig:
     user_prompt_template_path: str = None
     # The checker's own thinking / reasoning-effort spec, or None to say
     # nothing and leave the model doing whatever its default is. From the
-    # config bundle only (pipeline.yaml's `checker_thinking_mode` /
-    # `checker_thinking_effort`), so the same tree yields the same checker_fp
+    # config bundle only (the thinking fields of pipeline.yaml's
+    # `checker_decoding` block), so the same tree yields the same checker_fp
     # under any shell; it rides the same `resolved_decoding_params` call as
-    # the sampling controls and `max_tokens`. Declared after the fields above so
-    # positional construction of them is unaffected. See `meltiro.thinking`:
-    # the cap hazard it guards is sharpest on this role, whose whole output
-    # is a small JSON verdict under a small cap.
+    # the sampling controls and `max_tokens`. Declared after the fields above
+    # so positional construction of them is unaffected.
     thinking: Thinking | None = None
     # The CHECKER's USD rate card (`meltiro.rates.Rates`), or None to run the
     # checker unpriced. The Orchestrator takes it out of the run's per-role
@@ -274,7 +277,6 @@ class CheckerConfig:
         # precaution against future coupling).
         from meltiro.checker_prompts import build_checker_system_text
         system_text = build_checker_system_text(
-            template,
             system_prompt_path=self.system_prompt_path,
             reference_lists=reference_lists,
             predicates=predicates,
@@ -464,6 +466,25 @@ def _build_checker_adapter(config, client=None):
         client, provider=info.provider, base_url=info.base_url)
 
 
+def _require_cap(config):
+    """Refuse a check that states no output cap, before the call is made.
+
+    `CheckerConfig.max_tokens` has no default value, on the same terms as the
+    model: the number bounds what one check may spend and what it may answer
+    within, so a run states it. Guarded on both entry points rather than only
+    where the config is built, so a library caller that constructs its own
+    `CheckerConfig` is refused here instead of at the endpoint, after the
+    extractor turn that produced the field has already been billed.
+    """
+    if config.max_tokens is None:
+        raise CheckerError(
+            "the checker has no output cap: CheckerConfig.max_tokens is None "
+            "and there is no default for it, because the number bounds what "
+            "one check may spend and what it may answer within. Set "
+            "checker_max_tokens in pipeline.yaml, or set it on the config "
+            "directly; a run with no checker sets max_checks_per_field: 0.")
+
+
 # ---------------------------------------------------------------------------
 # Single-call: check one field
 # ---------------------------------------------------------------------------
@@ -491,6 +512,7 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     from direktoro import (ProviderError, ProviderRateLimitError,
                            ProviderRetryableError, extract_tool_call,
                            model_info, tool_choice_named)
+    _require_cap(config)
     if adapter is None:
         adapter = _build_checker_adapter(config, client)
     if adapter is None:
@@ -578,19 +600,15 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
                 # Audit-side errors must not abort the checker call.
                 pass
 
-        # Truncation, named. On a thinking model the cap covers the reasoning
-        # too (see `meltiro.thinking`), so the whole budget can go on
-        # reasoning and the turn end before the tool call is emitted; unnamed,
-        # that arrives here as an ordinary tool-free reply, which points at
-        # the model's willingness rather than at the cap. The startup guard in
-        # meltiro.thinking refuses caps that cannot fit a think plus an
-        # answer, but adaptive thinking can still spend a legal cap, so
-        # truncation stays possible. Not re-asked: a cap that truncated once
-        # will truncate again, and the message names the fix.
+        # Truncation, named. Unnamed, a turn that ended before the tool call
+        # was emitted arrives here as an ordinary tool-free reply, which
+        # points at the model's willingness rather than at the cap. The
+        # message names the cap and the key that set it, which is the line an
+        # operator would edit. Not re-asked: a cap that truncated once will
+        # truncate again.
         if getattr(response, "stop_reason", None) == "max_tokens":
             raise CheckerError(
-                truncation_message("checker", config.checker_model,
-                                   config.max_tokens, thinking=config.thinking),
+                truncation_report(config.max_tokens, "checker_max_tokens"),
                 spent=_spend(config, responses))
 
         # Read the verdict off the response by BLOCK TYPE rather than by
@@ -704,6 +722,10 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
     still fires in completion order (the accumulation is commutative, so order
     is irrelevant there); only the returned mapping is sorted.
     """
+    # Refused for the batch rather than per field: with no cap every call in
+    # the fan-out fails the same way, and degrading each field to a challenge
+    # would turn one configuration fault into a whole run of false challenges.
+    _require_cap(config)
     # Build one adapter (and its underlying client) and share it across the
     # whole fan-out, so a single provider connection serves every field.
     if adapter is None:

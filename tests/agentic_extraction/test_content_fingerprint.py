@@ -28,7 +28,8 @@ from meltiro.fingerprint import (
 from meltiro.checker import DEFAULT_CONTEXT_CHARS
 from meltiro.orchestrator import DEFAULT_MAX_CHECKS_PER_FIELD, Orchestrator
 from direktoro import (
-    call_identity_fields, canonical_json, model_info, resolved_decoding_params)
+    call_identity_fields, canonical_json, model_info, resolved_decoding_params,
+    split_decoding_config)
 from meltiro.template import load_template
 from meltiro.tools import all_tool_definitions
 
@@ -37,6 +38,7 @@ def _dry_run_orchestrator(config, bundle, out_dir):
     loop = config.pipeline
     checker_config = CheckerConfig.from_env(
         model_override=loop["checker_model"])
+    checker_config.max_tokens = int(loop["checker_max_tokens"])
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=loop["extractor_model"],
@@ -44,7 +46,7 @@ def _dry_run_orchestrator(config, bundle, out_dir):
         review_model=loop["review_model"],
         max_tool_calls=int(loop["max_tool_calls"]),
         max_checks_per_field=int(loop["max_checks_per_field"]),
-        sampling={"temperature": float(loop["temperature"])},
+        sampling=split_decoding_config(loop["extractor_decoding"])[0],
         extractor_max_tokens=int(loop["extractor_max_tokens"]),
         review_max_tokens=int(loop["review_max_tokens"]),
         dry_run=True,
@@ -129,7 +131,8 @@ class TestMatchesOrchestrator:
         meta = orch.session.meta
         loop = cb.pipeline
         ext_dec = resolved_decoding_params(
-            loop["extractor_model"], sampling={"temperature": float(loop["temperature"])},
+            loop["extractor_model"],
+            sampling=split_decoding_config(loop["extractor_decoding"])[0],
             max_tokens=int(loop["extractor_max_tokens"]))
         # The provider-call identity block is direktoro's: model + provider +
         # base_url + Route + wire-keyed resolved decoding params. The rebuild

@@ -678,7 +678,7 @@ class TestFingerprint:
                                                    checker_user_template_path):
         from meltiro.checker import CheckerConfig
         from meltiro.prompt_partials import stage_predicates
-        cfg = CheckerConfig(
+        cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(checker_system_path),
             user_prompt_template_path=str(checker_user_template_path),
@@ -810,13 +810,14 @@ class TestRunJson:
             load_config_bundle(config_dir), load_bundle(str(bundle_dir)),
             out_dir,
             extractor_model="claude-opus-4-8",
-            checker_config=CheckerConfig(
+            checker_config=CheckerConfig(max_tokens=1024, 
                 checker_model=("claude-sonnet-4-6"
                                if max_checks_per_field else None),
                 context_chars=context_chars, api_key="x"),
             review_model=None,
             max_checks_per_field=max_checks_per_field,
             final_review=False,
+            extractor_max_tokens=4096,
             api_key="x",
         )
         orch.prepare_new_session()

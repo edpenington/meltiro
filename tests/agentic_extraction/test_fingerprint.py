@@ -540,10 +540,12 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
     def test_temperature_moves_fp_for_an_accepting_model(self):
         # z-ai/glm-5v-turbo (routed, Chat Completions) accepts temperature:
         # changing it changes the sent dict, the identity block, and config_fp.
+        # Its cap clears what a thinking call needs, since this model thinks
+        # unless told not to and a cap below that is refused outright.
         a = resolved_decoding_params("z-ai/glm-5v-turbo", sampling={"temperature": 0.0},
-                                     max_tokens=100)
+                                     max_tokens=4096)
         b = resolved_decoding_params("z-ai/glm-5v-turbo", sampling={"temperature": 0.9},
-                                     max_tokens=100)
+                                     max_tokens=4096)
         assert a != b
         assert self._config_fp("z-ai/glm-5v-turbo", a) != \
             self._config_fp("z-ai/glm-5v-turbo", b)
@@ -565,7 +567,7 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
         assert "max_output_tokens" in resolved_decoding_params(
             "gpt-5.6-sol", sampling={"temperature": 0.0}, max_tokens=100)
         assert "max_tokens" in resolved_decoding_params(
-            "z-ai/glm-5v-turbo", sampling={"temperature": 0.0}, max_tokens=100)
+            "z-ai/glm-5v-turbo", sampling={"temperature": 0.0}, max_tokens=4096)
 
 
 class TestRunFingerprint:

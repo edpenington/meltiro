@@ -66,7 +66,7 @@ def _load(path):
     return Path(path).read_text(encoding="utf-8").strip()
 
 
-def build_checker_system_text(template, *, system_prompt_path,
+def build_checker_system_text(*, system_prompt_path,
                               reference_lists=None, predicates=None):
     """Render the checker's system prompt text.
 
@@ -75,14 +75,12 @@ def build_checker_system_text(template, *, system_prompt_path,
 
     The system prompt is generic across all per-field calls; every
     field-specific detail lives in the per-field user message built by
-    `build_checker_user_message`. `template` is retained for signature
-    stability but is not currently used.
+    `build_checker_user_message`.
 
     Every `{reference:NAME}` placeholder is substituted with the rendered
     reference list (same blocks the extractor and reviewer see) so the
     checker has the canonical names in context.
     """
-    _ = template  # noqa: F841 (accepted for API stability)
     text = _load(system_prompt_path)
     # Expand `{include:NAME}` partials BEFORE reference substitution, so a
     # partial may itself carry `{reference:...}` placeholders.

@@ -8,7 +8,6 @@ from meltiro.prompt_builder import (
 
 def test_review_system_message_renders(synthetic_template, review_system_path):
     txt = build_review_system_message(
-        synthetic_template,
         image_labels={"table_01", "figure_01"},
         system_prompt_path=review_system_path,
         reference_lists={"gauge_list": [{"tool_name": "WDS-9"}]},

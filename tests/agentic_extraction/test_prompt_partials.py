@@ -87,7 +87,7 @@ class TestBuilderIntegration:
                     "</review_context>"},
         )
         txt = build_system_message(
-            synthetic_template, image_labels=[],
+            image_labels=[],
             system_prompt_path=system_path,
             reference_lists={"gauge_list": [
                 {"tool_name": "WDS-9"}, {"tool_name": "CRT-HD"}]},
@@ -103,7 +103,7 @@ class TestBuilderIntegration:
             tmp_path, "<top>\n{include:ghost}\n</top>", {})
         with pytest.raises(ConfigBundleError) as excinfo:
             build_system_message(
-                synthetic_template, image_labels=[],
+                image_labels=[],
                 system_prompt_path=system_path, reference_lists={})
         assert "ghost" in str(excinfo.value)
 
@@ -125,7 +125,7 @@ class TestFingerprintMovesOnPartialEdit:
 
         def fp():
             prompt_hash = compute_prompt_config_hash(
-                synthetic_template, system_prompt_path=system_path,
+                system_prompt_path=system_path,
                 max_checks_per_field=3, reference_lists={})
             return config_fingerprint(
                 "claude-opus-4-7", prompt_hash, "template-hash",
@@ -164,7 +164,7 @@ class TestCheckerUserTemplatePartials:
 
         # A real registry id: checker_fp folds in the model's provider and
         # base_url, so an unregistered id fails model resolution.
-        cfg = CheckerConfig(
+        cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(checker_system_path),
             user_prompt_template_path=str(user_tmpl),

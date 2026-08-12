@@ -53,9 +53,11 @@ def _orch(config_dir, bundle_dir, out_dir):
     orch = Orchestrator(
         config, load_bundle(bundle_dir), out_dir,
         extractor_model=loop["extractor_model"],
-        checker_config=CheckerConfig(
+        checker_config=CheckerConfig(max_tokens=1024, 
             checker_model=loop["checker_model"], api_key="x"),
         review_model=loop["review_model"],
+        extractor_max_tokens=4096,
+        review_max_tokens=4096,
         api_key="x",
         dry_run=True,
     )
