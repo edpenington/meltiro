@@ -118,11 +118,10 @@ def _prepared(config_dir, bundle_dir, out_dir, extractor_model):
         config, bundle, out_dir,
         extractor_model=extractor_model,
         checker_config=CheckerConfig(
-            checker_model="claude-sonnet-4-6", api_key="x", max_tokens=1024),
+            checker_model="claude-sonnet-4-6", max_tokens=1024),
         review_model="claude-opus-4-7",
         extractor_max_tokens=32768,
         review_max_tokens=32768,
-        api_key="x",
     )
     orch.prepare_new_session()
     return orch
@@ -229,18 +228,18 @@ def _prepared_full(config_dir, bundle_dir, out_dir, *,
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
-        checker_config=CheckerConfig(max_tokens=4096, checker_model=checker_model, api_key="x"),
+        checker_config=CheckerConfig(
+            max_tokens=4096, checker_model=checker_model),
         review_model=review_model,
         extractor_max_tokens=4096,
         review_max_tokens=4096,
-        api_key="x",
     )
     orch.prepare_new_session()
     return orch
 
 
 def test_each_role_selects_its_provider_adapter(
-        config_dir, bundle_minimal_dir, tmp_path):
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
     # Three roles, three providers: GPT extractor (OpenAI), Claude checker
     # (Anthropic), routed GLM reviewer (OpenRouter gateway). Each role resolves
     # the right adapter and endpoint from the registry, offline. The routed
@@ -258,9 +257,11 @@ def test_each_role_selects_its_provider_adapter(
     m = orch.session.meta
     assert len({m["config_fp"], m["checker_fp"], m["review_fp"]}) == 3
 
-    # Stub the underlying client constructors so no network/SDK is needed.
-    orch._anthropic_client = lambda: "ANTHROPIC_CLIENT"
-    orch._openai_client = lambda info: ("OPENAI_CLIENT", info.base_url)
+    # Each role's key variable is the one its own model names, so the two
+    # roles are keyed independently and nothing here reaches the network: a
+    # client is constructed, no call is made.
+    for model in ("gpt-5.6-sol", "z-ai/glm-5v-turbo"):
+        monkeypatch.setenv(model_info(model).api_key_env, "not-a-real-key")
 
     ext = orch._adapter_for_role("extractor")
     assert isinstance(ext, OpenAIAdapter)
@@ -325,11 +326,11 @@ def test_extractor_call_sends_the_extractors_temperature(
     orch = Orchestrator(
         config, bundle, tmp_path / "runs",
         extractor_model="claude-sonnet-4-6",
-        checker_config=CheckerConfig(max_tokens=4096, 
-            checker_model="claude-sonnet-4-6", api_key="x"),
+        checker_config=CheckerConfig(
+            max_tokens=4096, checker_model="claude-sonnet-4-6"),
         review_model="claude-opus-4-7",
         extractor_max_tokens=4096, review_max_tokens=4096,
-        sampling={"temperature": 0.3}, review_sampling={"temperature": 0.8}, api_key="x")
+        sampling={"temperature": 0.3}, review_sampling={"temperature": 0.8})
     orch.prepare_new_session()
     adapter = _FakeAdapter(NormalisedResponse(
         content=[], usage=NormalisedUsage(input_tokens=10, output_tokens=1),
@@ -374,7 +375,7 @@ def _orch_for_fp(config_dir, bundle_dir, out_dir, *, extractor_model,
         config, bundle, out_dir,
         extractor_model=extractor_model,
         checker_config=CheckerConfig(max_tokens=4096,
-                                     checker_model=checker_model, api_key="x",
+                                     checker_model=checker_model,
                                      sampling=dict(sampling)),
         review_model=review_model,
         # Every role states the same controls. Nothing is inherited between
@@ -383,8 +384,7 @@ def _orch_for_fp(config_dir, bundle_dir, out_dir, *, extractor_model,
         sampling=dict(sampling),
         review_sampling=dict(sampling),
         extractor_max_tokens=4096,
-        review_max_tokens=4096,
-        api_key="x")
+        review_max_tokens=4096)
     orch.prepare_new_session()
     return orch
 

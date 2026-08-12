@@ -15,6 +15,8 @@ reachable from here either.
 
 from types import SimpleNamespace
 
+from direktoro import build_adapter
+
 import meltiro.instrument as instrument_mod
 import meltiro.orchestrator as orch_mod
 from meltiro.extraction_record import ExtractionRecord
@@ -150,7 +152,11 @@ def _review_orch(tmp_path, template, paper_text, image_labels, response,
     # One client instance, held on the orchestrator, so a test can read back the
     # kwargs of the review call it made (`orch._fake_client.calls`).
     orch._fake_client = _FakeClient(response)
-    orch._anthropic_client = lambda: orch._fake_client
+    # The adapter is direktoro's, wrapped around the fake client: what is
+    # faked is the SDK below the adapter, so the request the adapter builds is
+    # the real one and `_fake_client.calls` records the wire kwargs.
+    orch._adapter_for_role = lambda role: build_adapter(
+        orch._role_model(role), client=orch._fake_client)
     # Keep the test to the accounting under study: stub the prompt builders,
     # usage accounting, verbatim API log, and the per-field checker fan-out.
     # The reviewer's system prompt is rendered by the instrument and its user

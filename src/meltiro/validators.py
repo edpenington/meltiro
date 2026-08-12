@@ -113,11 +113,11 @@ def _check_value_type(value, field_spec, path):
 
     Null is allowed for every type except boolean: a boolean field answers a
     yes/no question and null is neither, so a null boolean is a type error.
-    This is enforced here, not only in the tool schema: the Anthropic tool
-    schema rejects a null boolean server-side, but the OpenAI-compatible tools
-    run in strict:false mode, so without this check a null boolean would pass
-    runtime validation and be stored. Categorical values must match one of the
-    declared options exactly.
+    This is enforced here, not only in the tool schema: direktoro's canonical
+    tool contract says a boolean field in a tool call's input must not arrive
+    null — not every wire catches it, so this validator enforces it, and
+    without the check a null boolean would pass runtime validation and be
+    stored. Categorical values must match one of the declared options exactly.
     """
     ft = field_spec["field_type"]
     errors = []

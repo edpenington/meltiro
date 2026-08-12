@@ -53,7 +53,8 @@ import sys
 from pathlib import Path
 
 from direktoro import is_known_model, model_info
-from direktoro import PROVIDER_ANTHROPIC, model_supports_images
+from direktoro import model_supports_images
+from direktoro import MissingAPIKey, build_adapter
 from direktoro import supports_forced_tool_choice
 from meltiro.template import iter_fields
 
@@ -163,7 +164,7 @@ class Orchestrator:
                  decoding_specified=None,
                  rates=None,
                  diagnostics=DEFAULT_DIAGNOSTICS,
-                 api_key=None, dry_run=False):
+                 dry_run=False):
         # config: meltiro.config_bundle.ConfigBundle, the review-specific
         # schema, prompts, and reference lists.
         # bundle: meltiro.bundle.PaperBundle, one paper's inputs.
@@ -271,7 +272,6 @@ class Orchestrator:
             if self.final_review else review_max_tokens)
         if self.checker_enabled:
             _required_cap("checker_max_tokens", self.checker_config.max_tokens)
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self.dry_run = dry_run
         # Engine constants, not config (see the constants above).
         self.max_consecutive_text_only_turns = (
@@ -1936,41 +1936,33 @@ class Orchestrator:
     def _stage_key_status(self):
         """(stage, model, key_present) for every enabled stage, in spend order.
 
-        Each stage's key comes from the same source its adapter reads: the
-        extractor and reviewer take an Anthropic key from self.api_key
-        (ANTHROPIC_API_KEY or the constructor) and an OpenAI-family key from
-        the provider's env var; the checker takes its key from
-        checker_config.api_key (which CheckerConfig.from_env populated from the
-        resolved provider's env var).
+        Each stage is checked against its OWN model, because that is what
+        decides which key the call needs: naming a GPT reviewer beside a Claude
+        extractor makes the run need two variables, and a run is short of a key
+        the moment any one enabled stage is.
         """
         out = [("extractor", self.extractor_model,
-                self._provider_key_present(self.extractor_model,
-                                           anthropic_key=self.api_key))]
+                self._provider_key_present(self.extractor_model))]
         if self.checker_enabled:
             out.append((
                 "checker", self.checker_config.checker_model,
                 self._provider_key_present(
-                    self.checker_config.checker_model,
-                    anthropic_key=self.checker_config.api_key,
-                    openai_key=self.checker_config.api_key)))
+                    self.checker_config.checker_model)))
         if self.final_review:
             out.append((
                 "review", self.review_model,
-                self._provider_key_present(self.review_model,
-                                           anthropic_key=self.api_key)))
+                self._provider_key_present(self.review_model)))
         return out
 
-    def _provider_key_present(self, model, *, anthropic_key, openai_key=None):
-        """Whether the key a stage's adapter would use is set, without
-        importing an SDK or constructing a client. Anthropic stages use
-        anthropic_key; OpenAI-family stages use openai_key when given (the
-        checker), else the provider's env var (the extractor and reviewer)."""
-        info = model_info(model)
-        if info.provider == PROVIDER_ANTHROPIC:
-            return bool(anthropic_key)
-        if openai_key is not None:
-            return bool(openai_key)
-        return bool(os.environ.get(info.api_key_env))
+    def _provider_key_present(self, model):
+        """Whether the environment holds the key this model's adapter will
+        read, without importing an SDK or constructing a client.
+
+        `direktoro.build_adapter` resolves the key variable from the model id
+        and reads it from the environment, so this asks the environment the
+        same question one step earlier — before any spend rather than at the
+        stage's first call."""
+        return bool(os.environ.get(model_info(model).api_key_env))
 
     def _role_model(self, role):
         """Model id configured for a role ("extractor" | "review")."""
@@ -1981,48 +1973,23 @@ class Orchestrator:
         raise ValueError(f"unknown role {role!r}")
 
     def _adapter_for_role(self, role):
-        """Resolve the provider adapter for a role from the model registry.
+        """The adapter a role's calls go through, or None when its key is unset.
 
-        The model id determines the provider, base URL, and API-key env var,
-        so per-role provider selection needs no extra config: naming an OpenAI
-        or GLM model in pipeline.yaml routes that role through the OpenAI
-        adapter automatically. Returns None when the provider's API key is
-        unset, so the caller can fail loudly naming the env var (extractor) or
-        skip the stage (review).
+        `direktoro.build_adapter` resolves everything about reaching the model
+        from the id alone — endpoint, key variable, and the adapter that speaks
+        that wire — so per-role routing needs no extra config: naming a
+        different model for a role in pipeline.yaml re-points that role and
+        nothing else.
+
+        None means one thing only: the key variable the model needs is unset.
+        Both call sites raise on it, naming the variable, so no stage is ever
+        silently skipped — a run that asked for a reviewer and got none would
+        ship an un-reviewed extraction under a config that ordered one.
         """
-        info = model_info(self._role_model(role))
-        if info.provider == PROVIDER_ANTHROPIC:
-            client = self._anthropic_client()
-            if client is None:
-                return None
-            from direktoro import AnthropicAdapter
-            return AnthropicAdapter(client, base_url=info.base_url)
-        client = self._openai_client(info)
-        if client is None:
+        try:
+            return build_adapter(self._role_model(role))
+        except MissingAPIKey:
             return None
-        from direktoro import OpenAIAdapter
-        return OpenAIAdapter(
-            client, provider=info.provider, base_url=info.base_url)
-
-    def _anthropic_client(self):
-        if not self.api_key:
-            return None
-        import anthropic
-        return anthropic.Anthropic(api_key=self.api_key)
-
-    def _openai_client(self, info):
-        """Construct an OpenAI-SDK client for `info` (OpenAI or a compatible
-        endpoint such as Z.ai's GLM), or None when the key env var is unset.
-
-        The `openai` package is imported lazily so the pipeline (and the whole
-        offline test suite) runs without it installed when only Anthropic
-        models are used.
-        """
-        api_key = os.environ.get(info.api_key_env, "")
-        if not api_key:
-            return None
-        import openai
-        return openai.OpenAI(api_key=api_key, base_url=info.base_url)
 
     def _render_user_prompt_text(self):
         """Text-only render of the initial user message, captured into

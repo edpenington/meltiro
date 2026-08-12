@@ -121,9 +121,9 @@ class TestExtractDryRun:
             monkeypatch):
         # Guarantee zero network: if any code path tries to build an
         # Anthropic client, fail loudly.
-        def _boom(self):
-            raise AssertionError("dry-run must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("dry-run must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
 
         out_dir = tmp_path / "runs"
         code = _run([
@@ -384,9 +384,9 @@ class TestExtractDryRun:
             self, tmp_path, config_dir, bundle_minimal_dir, capsys,
             monkeypatch):
         # The --checker-model flag alone satisfies the requirement.
-        def _boom(self):
-            raise AssertionError("dry-run must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("dry-run must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
         config = _config_copy_without_key(tmp_path, config_dir,
                                           "checker_model")
         code = _run([
@@ -404,9 +404,9 @@ class TestExtractDryRun:
         # B3: a study that finalises status "error" makes the command exit 1.
         monkeypatch.setattr(Orchestrator, "run", lambda self: "error")
 
-        def _boom(self):
-            raise AssertionError("must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
         code = _run([
             "extract",
             "--config", str(config_dir),
@@ -422,9 +422,9 @@ class TestExtractDryRun:
         monkeypatch.setattr(
             Orchestrator, "run", lambda self: "in_progress")
 
-        def _boom(self):
-            raise AssertionError("must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
         code = _run([
             "extract",
             "--config", str(config_dir),
@@ -443,9 +443,9 @@ class TestExtractDryRun:
             lambda self: self._finalise("failed_validation",
                                         failure_reason="stalled"))
 
-        def _boom(self):
-            raise AssertionError("must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
         out_dir = tmp_path / "runs"
         code = _run([
             "extract",
@@ -472,9 +472,9 @@ class TestExtractDryRun:
         monkeypatch.setattr(
             Orchestrator, "run", lambda self: self._pause("tool_cap_hit"))
 
-        def _boom(self):
-            raise AssertionError("must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
         out_dir = tmp_path / "runs"
         code = _run([
             "extract",

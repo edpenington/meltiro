@@ -20,7 +20,7 @@ from meltiro.errors import CheckerError
 from meltiro.prompt_partials import stage_predicates
 from meltiro.rates import Rates
 from meltiro.tools import CHECKER_VERDICT_TOOL_NAME
-from direktoro import NormalisedResponse, NormalisedUsage
+from direktoro import NormalisedResponse, NormalisedUsage, model_info
 from direktoro.registry import OPENROUTER_BASE_URL
 
 # The run's structure predicates, which a checker fingerprint takes as an
@@ -128,9 +128,28 @@ RATES = Rates(input_per_1m=3.0, output_per_1m=15.0,
 
 def _config(rates=RATES):
     return CheckerConfig(
-        api_key="sk-test", checker_model="claude-sonnet-4-6",
+        checker_model="claude-sonnet-4-6",
         max_tokens=1024, sampling={"temperature": 0.0}, concurrency=4, rates=rates,
     )
+
+
+class TestCheckerWithoutAKey:
+    def test_missing_key_env_is_a_checker_error_naming_the_variable(
+            self, monkeypatch):
+        # No client injected and the variable the checker model's key lives in
+        # is unset, so no adapter can be built. The field fails as a
+        # CheckerError naming the variable, which is what the orchestrator's
+        # pre-spend preflight quotes back to an operator.
+        config = _config()
+        env = model_info(config.checker_model).api_key_env
+        monkeypatch.delenv(env, raising=False)
+        with pytest.raises(CheckerError) as excinfo:
+            check_one_field(
+                system_message_blocks=[{"type": "text", "text": "sys"}],
+                user_message_blocks=[{"type": "text", "text": "user"}],
+                config=config,
+            )
+        assert env in str(excinfo.value)
 
 
 class TestCheckOneField:
@@ -469,7 +488,7 @@ class TestCheckOneFieldRoutedCost:
     ROUTED = "z-ai/glm-5v-turbo"
 
     def _config(self):
-        return CheckerConfig(api_key="x", checker_model=self.ROUTED,
+        return CheckerConfig(checker_model=self.ROUTED,
                              max_tokens=1024, sampling={"temperature": 0.0}, concurrency=4)
 
     def _response(self, reported_cost, *, generation_id="gen-chk-1",
@@ -594,7 +613,7 @@ class TestRunCheckerBatch:
                  "user_message_blocks": []},
             ],
             config=CheckerConfig(
-                api_key="x", checker_model="claude-sonnet-4-6",
+                checker_model="claude-sonnet-4-6",
                 max_tokens=1024, concurrency=1),
             client=client,
         )
@@ -703,7 +722,7 @@ class TestFailuresDegradeOnlyTheirOwnField:
     ROUTED = "z-ai/glm-5v-turbo"
 
     def _config(self):
-        return CheckerConfig(api_key="x", checker_model=self.ROUTED,
+        return CheckerConfig(checker_model=self.ROUTED,
                              max_tokens=1024, concurrency=1)
 
     def _calls(self, *paths):
@@ -991,7 +1010,6 @@ class TestCheckerConfig:
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
-            api_key="sk-x",
         )
         a = cfg.fingerprint(synthetic_template, predicates=PREDICATES)
         b = cfg.fingerprint(synthetic_template, predicates=PREDICATES)
@@ -1009,7 +1027,6 @@ class TestCheckerConfig:
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
-            api_key="x",
         )
         fp1 = cfg1.fingerprint(synthetic_template, predicates=PREDICATES)
 
@@ -1018,7 +1035,6 @@ class TestCheckerConfig:
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
-            api_key="x",
         )
         fp2 = cfg2.fingerprint(synthetic_template, predicates=PREDICATES)
 
@@ -1039,7 +1055,6 @@ class TestCheckerConfig:
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
-            api_key="x",
         )
         fp_a = cfg.fingerprint(
             synthetic_template, {"gauge_list": [{"tool_name": "WDS-9"}]},
@@ -1062,7 +1077,6 @@ class TestCheckerConfig:
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
             user_prompt_template_path=str(user_path),
-            api_key="x",
         )
         fp_before = cfg.fingerprint(synthetic_template,
                                     predicates=PREDICATES)

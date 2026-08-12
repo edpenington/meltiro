@@ -16,13 +16,21 @@ immediately; the documented recovery is to raise the cap).
 import json
 from types import SimpleNamespace
 
+import pytest
+
+from direktoro import NormalisedUsage
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.orchestrator import Orchestrator
-from direktoro import NormalisedUsage
 from meltiro.rates import Rates
 from meltiro.run_log import load_log
+
+
+# Every stage's key variable is present for this module: these tests
+# reach the orchestrator's pre-spend key preflight, and the provider
+# calls behind it are stubbed.
+pytestmark = pytest.mark.usefixtures("stage_keys")
 
 EXTRACTOR = "claude-opus-4-8"
 
@@ -56,14 +64,13 @@ def _orch(config_dir, bundle_dir, out_dir, *, cap):
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model=EXTRACTOR,
-        checker_config=CheckerConfig(max_tokens=1024, checker_model="claude-sonnet-4-6",
-                                     api_key="x"),
+        checker_config=CheckerConfig(
+            max_tokens=1024, checker_model="claude-sonnet-4-6"),
         review_model=None,
         max_checks_per_field=0, final_review=False,
         max_tool_calls=cap,
         rates=RATES,
         extractor_max_tokens=4096,
-        api_key="x",
     )
 
 

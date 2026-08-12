@@ -151,7 +151,6 @@ class CheckerConfig:
     # the other decoding knobs it comes from the config bundle only, never
     # from the environment.
     context_chars: int = DEFAULT_CONTEXT_CHARS
-    api_key: str = ""
     # Prompt paths come from the config bundle
     # (`ConfigBundle.checker_system_path` / `.checker_user_template_path`);
     # the orchestrator sets them at construction time. No CWD-relative
@@ -177,7 +176,6 @@ class CheckerConfig:
 
     @classmethod
     def from_env(cls, model_override=None, concurrency_override=None):
-        from direktoro import is_known_model, model_info
         # The model comes from the caller alone — the config bundle's
         # `checker_model`, or `--checker-model` — and from no environment
         # variable. A shell-supplied model would change what the checker is
@@ -186,16 +184,6 @@ class CheckerConfig:
         # would then record different fingerprints for no recorded reason.
         # Same rule as the decoding knobs below.
         model = model_override
-        # The checker's API key comes from the provider its model resolves to
-        # (ANTHROPIC_API_KEY for Claude, OPENAI_API_KEY for GPT, OPENROUTER_API_KEY
-        # for gateway-routed GLM/Qwen), not a fixed Anthropic var. The CLI
-        # validates the model id is known before this runs; an unknown or absent
-        # model falls back to ANTHROPIC_API_KEY (the run then fails loudly
-        # downstream).
-        if model and is_known_model(model):
-            api_key = os.environ.get(model_info(model).api_key_env, "")
-        else:
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         # The checker's decoding knobs (max_tokens, the sampling controls) and its
         # quote-context width are NOT read from the environment: they come
         # from the config bundle via the CLI, so a tagged bundle fully
@@ -226,7 +214,6 @@ class CheckerConfig:
             concurrency = int(os.environ.get(
                 "CHECKER_CONCURRENCY", str(DEFAULT_CONCURRENCY)))
         return cls(
-            api_key=api_key,
             checker_model=model,
             concurrency=concurrency,
         )
@@ -543,34 +530,21 @@ def _degraded_verdict(message, spent):
 
 
 def _build_checker_adapter(config, client=None):
-    """Resolve the provider adapter for the checker's model.
+    """The adapter the checker's calls go through, or None when its key is unset.
 
-    The checker model's registry entry picks the provider, so the per-field
-    fan-out runs on Claude, GPT, or GLM without any checker-specific config.
-    `client` is an already-constructed provider SDK client (the parallel
-    fan-out builds one and shares it across every call; tests inject a stub).
-    Returns None when no client is available and the provider's key is unset,
-    so the caller can wrap that as a per-field CheckerError.
+    `direktoro.build_adapter` resolves the endpoint, the key variable and the
+    adapter that speaks that wire from the checker model's id alone, so the
+    per-field fan-out re-points to another checker model with no
+    checker-specific config. `client` is an already-constructed provider SDK
+    client to wrap: the parallel fan-out builds one and shares it across every
+    call, and tests inject a stub. A None return means the key variable is
+    unset, which the caller wraps as a per-field CheckerError.
     """
-    from direktoro import PROVIDER_ANTHROPIC, model_info
-    info = model_info(config.checker_model)
-    if info.provider == PROVIDER_ANTHROPIC:
-        if client is None:
-            if not config.api_key:
-                return None
-            import anthropic
-            client = anthropic.Anthropic(api_key=config.api_key)
-        from direktoro import AnthropicAdapter
-        return AnthropicAdapter(client, base_url=info.base_url)
-    if client is None:
-        if not config.api_key:
-            return None
-        import openai
-        client = openai.OpenAI(
-            api_key=config.api_key, base_url=info.base_url)
-    from direktoro import OpenAIAdapter
-    return OpenAIAdapter(
-        client, provider=info.provider, base_url=info.base_url)
+    from direktoro import MissingAPIKey, build_adapter
+    try:
+        return build_adapter(config.checker_model, client=client)
+    except MissingAPIKey:
+        return None
 
 
 def _require_cap(config):
@@ -660,8 +634,8 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
     if adapter is None:
         # Unreachable in the orchestrated pipeline: Orchestrator._preflight_keys
         # verifies the checker key before any spend, so key absence is caught
-        # up front rather than here. Kept as a defensive guard for direct
-        # callers that build a config with no key.
+        # up front rather than here. Kept as a defensive guard for a direct
+        # caller running under an environment that names no key for this model.
         env = model_info(config.checker_model).api_key_env
         raise CheckerError(f"{env} not set; cannot call checker")
 

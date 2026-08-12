@@ -729,8 +729,7 @@ class TestImageLabelNormalisation:
             review_max_tokens=4096,
             # The checker is not this test's subject, and enabled it would
             # demand a configured model and cap.
-            max_checks_per_field=0,
-            api_key="")
+            max_checks_per_field=0)
         assert orch.image_labels == {"figure_01", "table_02"}
 
 
@@ -767,8 +766,7 @@ class TestTruncationNamesTheCapAndTheKey:
             extractor_model="claude-opus-4-7",
             review_model="claude-opus-4-7",
             max_checks_per_field=0, final_review=False,
-            extractor_max_tokens=8192,
-            api_key="x")
+            extractor_max_tokens=8192)
         orch.prepare_new_session()
 
         orch._call_extractor(_TruncatedAdapter(), tool_defs=[])

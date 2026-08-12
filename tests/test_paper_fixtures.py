@@ -422,9 +422,9 @@ class TestPromptBuildingOverRealBundle:
 
 class TestCliDryRunOverRealBundle:
     def _no_client(self, monkeypatch):
-        def _boom(self):
-            raise AssertionError("dry-run must not construct an API client")
-        monkeypatch.setattr(Orchestrator, "_anthropic_client", _boom)
+        def _boom(self, role):
+            raise AssertionError("dry-run must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
 
     def test_dry_run_tables_bundle_renders_instrument(self, tmp_path, config_dir,
                                                       bundle_tables_dir,

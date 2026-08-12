@@ -200,8 +200,7 @@ class TestStartupGuard:
             review_model="claude-opus-4-7",
             max_checks_per_field=0,
             extractor_max_tokens=4096,
-            review_max_tokens=4096,
-            api_key="")
+            review_max_tokens=4096)
         orch.template["role_fields"] = {}  # no role:summary field either
         orch.prepare_new_session()
         assert orch.session.meta["status"] == "in_progress"
@@ -230,8 +229,7 @@ class TestStartupGuard:
             checker_config=CheckerConfig(checker_model="claude-sonnet-4-6",
                                          max_tokens=4096),
             extractor_max_tokens=4096,
-            review_max_tokens=4096,
-            api_key="")
+            review_max_tokens=4096)
         orch.template["role_fields"] = {}  # simulate no role:summary field
         with pytest.raises(AgenticExtractionError,
                            match="No study-identity context"):
@@ -532,8 +530,7 @@ class TestResolvedMismatchLeavesNoFalseWarning:
             extractor_model="claude-opus-4-8",
             review_model=None,
             max_checks_per_field=0, final_review=False,
-            extractor_max_tokens=4096,
-            api_key="x")
+            extractor_max_tokens=4096)
         orch.prepare_new_session()
         return orch
 

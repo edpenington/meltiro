@@ -407,15 +407,14 @@ class TestTheLibraryRefusesOnItsOwn:
                 extractor_model="claude-opus-4-8",
                 review_model="no-such-model",
                 extractor_max_tokens=4096, review_max_tokens=4096,
-                max_checks_per_field=0, final_review=True,
-                api_key="x")
+                max_checks_per_field=0, final_review=True)
 
     def _kwargs(self, **over):
         base = dict(
             extractor_model="claude-opus-4-8",
             review_model="claude-opus-4-8",
             max_checks_per_field=0, final_review=False,
-            extractor_max_tokens=4096, api_key="x")
+            extractor_max_tokens=4096)
         base.update(over)
         return base
 
@@ -459,7 +458,7 @@ class TestTheLibraryRefusesOnItsOwn:
         # every field to a false challenge. The stub adapter is load-bearing:
         # were the cap check ever reordered below adapter construction, this
         # test must fail on the assertion, not fall through to a real client.
-        config = CheckerConfig(checker_model="claude-sonnet-4-6", api_key="x")
+        config = CheckerConfig(checker_model="claude-sonnet-4-6")
         stub = object()
         with pytest.raises(CheckerError, match="max_tokens"):
             check_one_field(system_message_blocks=[], user_message_blocks=[],

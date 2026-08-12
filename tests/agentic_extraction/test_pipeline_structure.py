@@ -30,6 +30,11 @@ from meltiro.orchestrator import Orchestrator
 from direktoro import NormalisedResponse, NormalisedUsage, model_info
 
 
+# Every stage's key variable is present for this module: these tests
+# reach the orchestrator's pre-spend key preflight, and the provider
+# calls behind it are stubbed.
+pytestmark = pytest.mark.usefixtures("stage_keys")
+
 EXTRACTOR = "claude-opus-4-7"
 CHECKER = "claude-sonnet-4-6"
 REVIEWER = "claude-opus-4-7"
@@ -48,8 +53,7 @@ STRUCTURES = {
 # ---------------------------------------------------------------------------
 
 def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field, final_review,
-          dry_run=False, checker_model=CHECKER, review_model=REVIEWER,
-          api_key="x"):
+          dry_run=False, checker_model=CHECKER, review_model=REVIEWER):
     """A real Orchestrator over the shipped config + synthetic bundle, wired
     for the requested structure. A disabled stage may pass model=None."""
     config = load_config_bundle(config_dir)
@@ -57,14 +61,13 @@ def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field, final_review
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model=EXTRACTOR,
-        checker_config=CheckerConfig(max_tokens=4096, checker_model=checker_model,
-                                     api_key=api_key),
+        checker_config=CheckerConfig(
+            max_tokens=4096, checker_model=checker_model),
         review_model=review_model,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
         extractor_max_tokens=4096,
-        review_max_tokens=4096,
-        api_key=api_key, dry_run=dry_run,
+        review_max_tokens=4096, dry_run=dry_run,
     )
 
 
@@ -382,30 +385,55 @@ def test_final_review_false_skips_reviewer_entirely(
 # A reviewer that is ON but unusable fails loudly (no silent skip)
 # ---------------------------------------------------------------------------
 
-def test_review_on_without_key_raises_not_skips(
-        config_dir, bundle_minimal_dir, tmp_path):
-    # No API key: the review adapter resolves to None, which raises and names
-    # the env var to set. Returning review_clean instead would report a review
-    # that never happened.
+def test_extractor_without_key_raises_naming_the_env_var(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+    # The variable the extractor model's key lives in is unset, so no adapter
+    # can be built. The stage refuses by name, before any call is attempted,
+    # so an operator is told which variable to set rather than reading a 401.
+    env = model_info(EXTRACTOR).api_key_env
+    monkeypatch.delenv(env, raising=False)
     orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                 max_checks_per_field=0, final_review=True, api_key="")
+                 max_checks_per_field=0, final_review=False)
+    orch.prepare_new_session()
+    with pytest.raises(AgenticExtractionError) as excinfo:
+        orch._extractor_loop()
+    assert env in str(excinfo.value)
+
+
+def test_review_on_without_key_raises_not_skips(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+    # The reviewer's key variable is unset, so the review adapter resolves to
+    # None, which raises and names the variable to set. Returning review_clean
+    # instead would report a review that never happened. Called directly, past
+    # the preflight, because that guard is what holds when the stage is
+    # entered.
+    env = model_info(REVIEWER).api_key_env
+    monkeypatch.delenv(env, raising=False)
+    orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                 max_checks_per_field=0, final_review=True)
     orch.prepare_new_session()
     with pytest.raises(AgenticExtractionError) as excinfo:
         orch._final_review()
-    assert model_info(REVIEWER).api_key_env in str(excinfo.value)
+    assert env in str(excinfo.value)
 
 
 def test_run_review_on_without_key_finalises_error(
-        config_dir, bundle_minimal_dir, tmp_path):
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
     # The loud failure propagates through run() to an "error" status: a run
-    # that asked for a review must not ship an un-reviewed extraction.
+    # that asked for a review must not ship an un-reviewed extraction. The
+    # reviewer is on a provider of its own here, so the run is short of exactly
+    # one key and it is the reviewer's.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                 max_checks_per_field=0, final_review=True, api_key="")
+                 max_checks_per_field=0, final_review=True,
+                 review_model="gpt-5.6-sol")
     orch.prepare_new_session()
     orch._extractor_loop = _mark_complete_extractor(orch)
 
     assert orch.run() == "error"
-    assert "error" in [e.get("event") for e in orch.session.read_events()]
+    err = next(e for e in orch.session.read_events()
+               if e.get("event") == "error")
+    assert "OPENAI_API_KEY" in err["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -413,9 +441,10 @@ def test_run_review_on_without_key_finalises_error(
 # ---------------------------------------------------------------------------
 
 def test_preflight_missing_extractor_key_raises(
-        config_dir, bundle_minimal_dir, tmp_path):
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+    monkeypatch.delenv(model_info(EXTRACTOR).api_key_env, raising=False)
     orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                 max_checks_per_field=0, final_review=False, api_key="")
+                 max_checks_per_field=0, final_review=False)
     orch.prepare_new_session()
     with pytest.raises(AgenticExtractionError) as excinfo:
         orch._preflight_keys()
@@ -426,12 +455,14 @@ def test_preflight_missing_extractor_key_raises(
 
 def test_preflight_missing_review_key_raises(
         config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
-    # Extractor key present (Anthropic), reviewer on a different provider whose
-    # env var is unset: only the review stage is flagged, naming its env var.
+    # The question is per model, not per run: every other provider's key is
+    # present, and a GPT reviewer still needs OPENAI_API_KEY, because that is
+    # the variable `build_adapter` will read for that model. Only the review
+    # stage is flagged, and the message names the variable to set.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
                  max_checks_per_field=0, final_review=True,
-                 review_model="gpt-5.6-sol", api_key="x")
+                 review_model="gpt-5.6-sol")
     orch.prepare_new_session()
     with pytest.raises(AgenticExtractionError) as excinfo:
         orch._preflight_keys()
@@ -441,16 +472,16 @@ def test_preflight_missing_review_key_raises(
 
 
 def test_preflight_missing_checker_key_rejected_before_extractor_spends(
-        config_dir, bundle_minimal_dir, tmp_path):
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
     # A missing checker key discovered mid-round, after the extractor has
     # fully spent, degrades EVERY field to a challenge, so the preflight
     # rejects it before the extractor loop is ever entered. Extractor key
     # present; checker (routed GLM) key unset. The checker's GLM routes
     # through OpenRouter, so the missing key it names is OPENROUTER_API_KEY.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
                  max_checks_per_field=2, final_review=False,
-                 checker_model="z-ai/glm-5v-turbo", api_key="x")
-    orch.checker_config.api_key = ""  # simulate OPENROUTER_API_KEY unset
+                 checker_model="z-ai/glm-5v-turbo")
     orch.prepare_new_session()
 
     spent = []
@@ -466,14 +497,16 @@ def test_preflight_missing_checker_key_rejected_before_extractor_spends(
 
 
 def test_preflight_skipped_for_dry_run_without_keys(
-        config_dir, bundle_minimal_dir, tmp_path):
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
     # Dry-run needs no keys for any stage: it never enters the live loop, so no
     # preflight runs and no session is created. dry_run_report renders the
-    # instrument (all three stage fingerprints present) with empty keys.
+    # instrument (all three stage fingerprints present) with not one key
+    # variable set.
+    for env in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(env, raising=False)
     orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                 max_checks_per_field=2, final_review=True, api_key="",
+                 max_checks_per_field=2, final_review=True,
                  dry_run=True)
-    orch.checker_config.api_key = ""
     report = orch.dry_run_report()
     assert orch.session is None
     fp = report["fingerprints"]

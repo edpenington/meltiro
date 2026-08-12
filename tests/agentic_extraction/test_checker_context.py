@@ -813,12 +813,11 @@ class TestRunJson:
             checker_config=CheckerConfig(max_tokens=1024, 
                 checker_model=("claude-sonnet-4-6"
                                if max_checks_per_field else None),
-                context_chars=context_chars, api_key="x"),
+                context_chars=context_chars),
             review_model=None,
             max_checks_per_field=max_checks_per_field,
             final_review=False,
             extractor_max_tokens=4096,
-            api_key="x",
         )
         orch.prepare_new_session()
         return dict(orch.session.meta)

@@ -51,12 +51,12 @@ def _orch(config_dir, bundle_minimal_dir, tmp_path, **kwargs):
     kwargs.setdefault("review_sampling", _sampling(loop, "review"))
     kwargs.setdefault("checker_config", CheckerConfig(
         checker_model=loop["checker_model"], max_tokens=1024,
-        sampling=_sampling(loop, "checker"), api_key="x"))
+        sampling=_sampling(loop, "checker")))
     kwargs.setdefault("extractor_max_tokens", 4096)
     kwargs.setdefault("review_max_tokens", 4096)
     return Orchestrator(
         load_config_bundle(config_dir), load_bundle(bundle_minimal_dir),
-        tmp_path / "runs", api_key="x", **kwargs)
+        tmp_path / "runs", **kwargs)
 
 
 def _inert(orch):

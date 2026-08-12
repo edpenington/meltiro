@@ -44,6 +44,12 @@ from meltiro.errors import SessionError
 from meltiro.orchestrator import Orchestrator
 from meltiro.transcript import render_transcript
 
+
+# Every stage's key variable is present for this module: these tests
+# reach the orchestrator's pre-spend key preflight, and the provider
+# calls behind it are stubbed.
+pytestmark = pytest.mark.usefixtures("stage_keys")
+
 EXTRACTOR = "claude-opus-4-8"
 CHECKER = "claude-sonnet-4-6"
 REVIEWER = "claude-opus-4-8"
@@ -104,7 +110,7 @@ def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field=2,
     return Orchestrator(
         load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
         extractor_model=EXTRACTOR,
-        checker_config=CheckerConfig(checker_model=CHECKER, api_key="x",
+        checker_config=CheckerConfig(checker_model=CHECKER,
                                      max_tokens=1024),
         review_model=review_model,
         max_checks_per_field=max_checks_per_field,
@@ -113,7 +119,6 @@ def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field=2,
         diagnostics=diagnostics,
         extractor_max_tokens=4096,
         review_max_tokens=4096,
-        api_key="x",
     )
 
 
@@ -647,12 +652,16 @@ def _use_real_fanout(monkeypatch):
                 "rationale": "The quote gives the full title.",
                 "notes": None,
             })
+            # One dict under both names, as the Anthropic adapter records it:
+            # the canonical format IS that wire, so the two are the same
+            # object and the audit log stores the request once.
+            request = dict(kwargs)
             return NormalisedResponse(
                 content=[_text(body)],
                 usage=NormalisedUsage(input_tokens=812, output_tokens=96),
                 resolved_model=CHECKER, provider="anthropic", base_url=None,
-                raw_request=dict(kwargs), raw_response={"id": "msg_stub"},
-                wire_request=dict(kwargs),
+                raw_request=request, raw_response={"id": "msg_stub"},
+                wire_request=request,
                 decoding_params={"temperature": 0.0},
             )
 

@@ -23,6 +23,12 @@ from meltiro.statuses import VALIDATED_STATUSES
 from meltiro.tools import ToolDispatcher
 
 
+# Every stage's key variable is present for this module: these tests
+# reach the orchestrator's pre-spend key preflight, and the provider
+# calls behind it are stubbed.
+pytestmark = pytest.mark.usefixtures("stage_keys")
+
+
 def _tool_use(tool_id, name, tool_input):
     return SimpleNamespace(type="tool_use", id=tool_id, name=name,
                            input=tool_input)
@@ -121,12 +127,11 @@ def _extractor_only_orch(config_dir, bundle_dir, out_dir):
     return Orchestrator(
         config, bundle, out_dir,
         extractor_model="claude-opus-4-8",
-        checker_config=CheckerConfig(max_tokens=1024, checker_model="claude-sonnet-4-6",
-                                     api_key="x"),
+        checker_config=CheckerConfig(
+            max_tokens=1024, checker_model="claude-sonnet-4-6"),
         review_model=None,
         max_checks_per_field=0, final_review=False,
         extractor_max_tokens=4096,
-        api_key="x",
     )
 
 

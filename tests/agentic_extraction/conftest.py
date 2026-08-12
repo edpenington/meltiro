@@ -10,11 +10,41 @@ the path where a QA field reaches the tool schemas, the validator, and the
 checker's per-field fan-out. Holding QA in a separate block and leaving it
 empty is the tempting simplification, and it hides a checker that never looks
 at a QA field at all.
+
+It also provides the `stage_keys` fixture, which a module reaching the
+orchestrator's pre-spend key preflight opts into.
 """
 
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture
+def stage_keys(monkeypatch):
+    """Every API key variable the registry names, set to a placeholder.
+
+    `Orchestrator._preflight_keys` asks the environment for the variable each
+    enabled stage's model resolves to, which is the same question
+    `direktoro.build_adapter` answers. A test that reaches `run()` therefore
+    needs those variables present, and a test that took them from the
+    developer's shell would pass or fail by whose machine it ran on. Every
+    provider call in these tests is stubbed, so no value here is ever sent
+    anywhere.
+
+    The set is read from the registry rather than listed, so a new provider's
+    variable is covered the day the registry names it. A test that is ABOUT a
+    missing key deletes the one it means in its own body, which runs after
+    this.
+
+    Opted into per module (`pytestmark = pytest.mark.usefixtures(
+    "stage_keys")`) rather than autouse, so a module that says nothing about
+    keys is not silently given any.
+    """
+    from direktoro import known_models, model_info
+
+    for env in sorted({model_info(m).api_key_env for m in known_models()}):
+        monkeypatch.setenv(env, "not-a-real-key")
 
 
 # The synthetic template's two check blocks, answered in full, in the flat

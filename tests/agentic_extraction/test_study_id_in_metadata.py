@@ -20,8 +20,7 @@ def test_meta_json_carries_manifest_study_id(
         extractor_model="claude-opus-4-8",
         review_model=None,
         max_checks_per_field=0, final_review=False,
-        extractor_max_tokens=4096,
-        api_key="x")
+        extractor_max_tokens=4096)
     orch.prepare_new_session()
     # The output metadata carries the bundle manifest id at the top level.
     assert orch.session.meta["study_id"] == str(bundle.study_id)

@@ -37,7 +37,14 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    # The shared provider layer: adapters, model registry, cost arithmetic.
+    # The shared provider layer: adapters, model registry, cost arithmetic —
+    # and, since meltiro builds no provider client of its own, the package that
+    # carries the provider SDKs. `direktoro.build_adapter` resolves the
+    # endpoint, the key variable and the SDK from a model id, and direktoro
+    # declares `anthropic` and `openai` at the floors its own call sites need;
+    # tests/test_dependency_floors.py checks those floors, and this package's
+    # silence on them, on every run.
+    #
     # meltiro stays importable WITHOUT it — every name `import meltiro`
     # advertises resolves with direktoro absent, so a consumer that only reads
     # and validates bundles can install --no-deps and add `pyyaml` (needed by
@@ -64,28 +71,6 @@ dependencies = [
     # in each run-log entry, folded into `engine_fp`), so the declaration here
     # and the artefact agree on which direktoro produced a given run.
     "direktoro>=0.3.0",
-    # anthropic and openai are direktoro's runtime deps too, but meltiro
-    # constructs clients directly (lazily, in orchestrator/checker), so they
-    # are declared here in their own right.
-    #
-    # The anthropic floor is set by the per-role thinking seam: meltiro hands
-    # direktoro a `Thinking` spec, which it emits as `thinking=` and
-    # `output_config=` on `messages.stream(...)`. An SDK without those keyword
-    # parameters raises TypeError the moment a bundle names a thinking key.
-    # Measured against the published wheels: `thinking` first appears in
-    # 0.47.0, `output_config` in 0.77.0, so 0.77.0 is the oldest SDK accepting
-    # both. tests/test_dependency_floors.py checks this floor against the
-    # installed SDK's real signature and against direktoro's own declaration.
-    "anthropic>=0.77",
-    # The openai floor is inherited rather than self-imposed: meltiro only
-    # constructs `openai.OpenAI(...)`, which has been available far longer, but
-    # the client it builds is handed to direktoro's adapter, which calls
-    # `client.responses.create`. The `responses` namespace first ships in
-    # openai-python 1.66.0, so an older SDK resolves, imports, and then fails
-    # with an AttributeError at the first OpenAI call — after the run has
-    # started. Declared here at its true runtime floor rather than left to
-    # whatever direktoro happens to require.
-    "openai>=1.66",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
 ]

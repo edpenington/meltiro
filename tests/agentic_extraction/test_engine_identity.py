@@ -39,11 +39,10 @@ def _orch(config_dir, bundle_dir, out_dir, **kwargs):
         load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
         extractor_model="claude-opus-4-7",
         checker_config=CheckerConfig(max_tokens=1024, 
-            checker_model="claude-sonnet-4-6", api_key="x"),
+            checker_model="claude-sonnet-4-6"),
         review_model="claude-opus-4-7",
         extractor_max_tokens=4096,
         review_max_tokens=4096,
-        api_key="x",
         **kwargs,
     )
 

@@ -18,6 +18,8 @@ Covers:
 import shutil
 from types import SimpleNamespace
 
+from direktoro import build_adapter
+
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
@@ -36,12 +38,11 @@ def _prepared_orch(config_dir, bundle_dir, out_dir, *,
         config, bundle, out_dir,
         extractor_model="claude-opus-4-7",
         checker_config=CheckerConfig(max_tokens=1024, 
-            checker_model="claude-sonnet-4-6", api_key="x"),
+            checker_model="claude-sonnet-4-6"),
         review_model=review_model,
         review_max_tokens=review_max_tokens,
         extractor_max_tokens=extractor_max_tokens,
         max_tool_calls=max_tool_calls,
-        api_key="x",
     )
     orch.prepare_new_session()
     return orch
@@ -185,7 +186,10 @@ def test_review_call_uses_configured_review_max_tokens(
         content=[],
         usage=SimpleNamespace(input_tokens=0, output_tokens=0),
     )
-    orch._anthropic_client = lambda: _CaptureClient(sink, resp)
+    # direktoro's own adapter, wrapped around a capture client: the request
+    # the adapter builds is the real one, so `sink` holds the wire kwargs.
+    orch._adapter_for_role = lambda role: build_adapter(
+        orch._role_model(role), client=_CaptureClient(sink, resp))
 
     status = orch._final_review()
 
