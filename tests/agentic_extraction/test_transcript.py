@@ -38,7 +38,7 @@ from meltiro import checker as checker_mod
 from meltiro import cli
 from meltiro import orchestrator as orch_mod
 from meltiro.bundle import load_bundle
-from meltiro.checker import CheckerConfig
+from meltiro.checker import CHECKER_TOOL_REPROMPT, CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.errors import SessionError
 from meltiro.orchestrator import Orchestrator
@@ -597,7 +597,15 @@ class TestDegradesHonestly:
 
         document = (orch.session.session_dir /
                     "diagnostics" / "transcript.md").read_text()
-        assert "The message this check was sent, in full:" in document
+        # The stub answers in prose rather than by calling the verdict tool,
+        # so this check was asked twice — and BOTH asks were sent and billed.
+        # Each is printed and labelled: keyed on the field and the check
+        # alone, the second would overwrite the first, and the document would
+        # show the nudged re-ask as if it were the whole of what was sent.
+        assert "This check took 2 asks" in document
+        assert "Ask 1 of 2, the first ask:" in document
+        assert ("Ask 2 of 2, re-asked, with the nudge to record a verdict:"
+                in document)
         assert "The rendered user message for this check is not in the " \
             "session" not in document
         # The verbatim message, slot by slot: the field, its value, and the
@@ -607,7 +615,14 @@ class TestDegradesHonestly:
         assert "`study.title`" in check
         assert f'"{SHORT_TITLE}"' in check
         assert f'"{QUOTE}"' in check
+        # The nudge rides on the second ask and nothing else, so its one
+        # appearance is what separates the two messages.
+        assert check.count(CHECKER_TOOL_REPROMPT) == 1
         assert "`full` is the top level" in document
+        # The re-ask is on the outcome, not only in the message dump.
+        assert "##### Check 1. `study.title`" in document
+        assert "(re-asked once)" in document
+        assert "| Re-asks before a verdict | 1 |" in document
 
     def test_a_session_stopped_before_the_review_says_so(
             self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
@@ -931,7 +946,7 @@ class TestTheUnhappyPaths:
         assert document.count("Needs a quote.") == 1
         assert "- `record.relationship_1.gauge`" in document
 
-    def test_an_exhausted_retry_verdict_is_not_shown_as_a_judgement(
+    def test_a_failed_check_is_not_shown_as_a_judgement(
             self, tmp_path):
         session_dir = _hand_built_session(tmp_path, [
             {"ts": "T0", "event": "tool_call_applied", "turn_id": 1,
@@ -955,11 +970,175 @@ class TestTheUnhappyPaths:
              "content": [{"type": "text", "text": ""}]},
         ])
         document = render_transcript(session_dir)
-        assert ("##### Check 1. `study.title`: challenge, but from an "
-                "exhausted retry") in document
+        # The headline names no cause. This verdict's was a rate limit, and
+        # the ways a check ends without one also include a reply that called
+        # no tool, a cut-off reply, a verdict outside the vocabulary and a
+        # fault in the plumbing; the rationale below is where the actual
+        # cause is recorded.
+        assert ("##### Check 1. `study.title`: challenge, but from a failed "
+                "check — not a checker judgement") in document
+        assert "exhausted retry" not in document
         assert "This is not a judgement." in document
-        assert "no request reached the wire log either" in document.lower()
+        # What the extractor was shown is read off this call's own
+        # `checker_challenges`, which this event does not carry.
+        assert "its text was not put to the extractor" in document
+        # What the paragraph must NOT claim: a failed check's calls may have
+        # reached the provider and been billed, and whatever they sent is in
+        # the wire log when the session kept one. Stating otherwise would tell
+        # a reader their run was cheaper than it was and send them looking for
+        # a log entry the document said was absent.
+        assert "billed at zero" not in document.lower()
+        assert "no request reached the wire log" not in document.lower()
+        assert "may well have completed and been billed" in document
         assert "[check 1 check error](#check-1)" in document
+
+    def test_a_failed_check_that_was_shown_says_it_was_shown(self, tmp_path):
+        # The same failure, in a session where the challenge DID go into the
+        # tool result. What reached the extractor is a fact about the run
+        # being rendered, read off this call's own `checker_challenges`;
+        # asserting the engine's current rule instead would misdescribe every
+        # session recorded under a different one.
+        session_dir = _hand_built_session(tmp_path, [
+            {"ts": "T0", "event": "tool_call_applied", "turn_id": 1,
+             "tool_use_id": "t1", "tool": "update_study", "args": {},
+             "result": {
+                 "status": "ok", "applied_changes": {}, "errors": [],
+                 "warnings": [], "failed_fields": {},
+                 "checker_challenges": {
+                     "study.title": "(checker error: rate limited)"},
+                 "_checker_verdicts": {"study.title": {
+                     "verdict": "challenge",
+                     "rationale": "(checker error: rate limited)",
+                     "notes": None, "value_checked": "T",
+                     "evidence_checked": "<q>T</q>", "note_checked": None,
+                     "error_origin": True, "stage": "extractor",
+                     "input_tokens": 0, "output_tokens": 0,
+                     "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                     "cost_usd": 0.0}},
+             }},
+            {"ts": "T1", "event": "assistant_message", "turn_id": 1,
+             "content": [{"type": "text", "text": ""}]},
+        ])
+        document = render_transcript(session_dir)
+        assert "its text WAS put to the extractor" in document
+        assert "its text was not put to the extractor" not in document
+
+    def test_a_total_that_covers_less_than_the_run_says_so(self, tmp_path):
+        # A call billed and not priced leaves the sum a floor. Printed bare it
+        # would read as the whole bill, and nothing else in the document would
+        # contradict it.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "session_started"}],
+            meta={"cost_usd": 0.004, "cost_incomplete": True,
+                  "unreceipted_calls": 2, "input_tokens": 10,
+                  "output_tokens": 2})
+        document = render_transcript(session_dir)
+        assert "at least $0.004000" in document
+        assert "2 call(s) returned no receipt" in document
+
+    def test_a_fully_receipted_total_is_printed_plainly(self, tmp_path):
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "session_started"}],
+            meta={"cost_usd": 0.004, "input_tokens": 10, "output_tokens": 2})
+        document = render_transcript(session_dir)
+        assert "$0.004000" in document
+        assert "at least" not in document
+
+    def test_a_run_nothing_priced_states_no_floor_to_be_at_least_of(
+            self, tmp_path):
+        # Two separate gaps, and stacking them produces a claim nobody can
+        # make: "at least *(not priced)*" is a floor over no number at all.
+        # The coverage still has to be stated — an unpriced run is the one
+        # place a missing receipt could hide behind a louder fault.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "session_started"}],
+            meta={"cost_usd": None, "cost_incomplete": True,
+                  "unreceipted_calls": 3, "input_tokens": 10,
+                  "output_tokens": 2})
+        document = render_transcript(session_dir)
+        assert ("| Cost | *(not priced)* — 3 call(s) returned no receipt and "
+                "are missing from any figure |") in document
+        assert "at least" not in document
+
+    def test_a_receipted_sum_of_zero_is_not_dressed_up_as_a_floor(
+            self, tmp_path):
+        # Every receipt there was is in the figure and it is still nothing, so
+        # "at least $0.0000" would invite a reader to imagine a bill just above
+        # zero. What is true is that nothing receipted was charged, over calls
+        # nobody can price.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "session_started"}],
+            meta={"cost_usd": 0.0, "cost_incomplete": True,
+                  "unreceipted_calls": 2, "input_tokens": 10,
+                  "output_tokens": 2})
+        document = render_transcript(session_dir)
+        spend = document.split("### Spend", 1)[1].split("###", 1)[0]
+        assert ("| Cost | no receipted charge (2 call(s) returned no "
+                "receipt) |") in spend
+        assert "$" not in spend
+
+    def test_a_roles_own_figure_carries_its_own_coverage(self, tmp_path):
+        # The per-role rows are what a reader adds up for one stage's bill, and
+        # the run-wide qualifier is a table away by then. A floor arriving here
+        # bare would be summed as a total.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "session_started"}],
+            meta={"cost_usd": 0.004, "cost_incomplete": True,
+                  "unreceipted_calls": 2, "input_tokens": 10,
+                  "output_tokens": 2,
+                  "usage_by_role": {
+                      "extractor": {"input_tokens": 10, "output_tokens": 2,
+                                    "cache_read_tokens": 0,
+                                    "cache_write_tokens": 0,
+                                    "cost_usd": 0.004},
+                      "checker": {"input_tokens": 5, "output_tokens": 1,
+                                  "cache_read_tokens": 0,
+                                  "cache_write_tokens": 0,
+                                  "cost_usd": 0.0,
+                                  "cost_incomplete": True,
+                                  "unreceipted_calls": 2}}})
+        document = render_transcript(session_dir)
+        assert "| extractor | $0.004000 |" in document
+        assert ("| checker | no receipted charge (2 call(s) returned no "
+                "receipt) |") in document
+
+    def test_a_check_and_the_checkers_total_both_state_their_coverage(
+            self, tmp_path):
+        # One check can make more than one call (a re-ask is a second), so a
+        # verdict states what its own figure covers, and the checker's total in
+        # the field history is a floor over the same gap. Neither is derivable
+        # from the other, and a reader meets them in different sections.
+        session_dir = _hand_built_session(tmp_path, [
+            {"ts": "T0", "event": "tool_call_applied", "turn_id": 1,
+             "tool_use_id": "t1", "tool": "update_study", "args": {},
+             "result": {
+                 "status": "ok", "applied_changes": {}, "errors": [],
+                 "warnings": [], "failed_fields": {},
+                 "_field_diffs": {"study.title": {"before": None,
+                                                  "after": "T"}},
+                 "_checker_verdicts": {"study.title": {
+                     "verdict": "ok", "rationale": "matches the quote",
+                     "notes": None, "value_checked": "T",
+                     "evidence_checked": "<q>T</q>", "note_checked": None,
+                     "error_origin": False, "stage": "extractor",
+                     "input_tokens": 5, "output_tokens": 1,
+                     "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                     "cost_usd": 0.004, "cost_incomplete": True,
+                     "unreceipted_responses": 1}},
+             }},
+            {"ts": "T1", "event": "assistant_message", "turn_id": 1,
+             "content": [{"type": "text", "text": ""}]},
+        ])
+        document = render_transcript(session_dir)
+        assert ("| Cost | at least $0.004000 (1 call(s) returned no "
+                "receipt) |") in document
+        assert ("| What the checker cost | at least $0.004000 (1 call(s) "
+                "returned no receipt) |") in document
 
     def test_a_session_with_no_field_history_file_says_it_derived_one(
             self, tmp_path):

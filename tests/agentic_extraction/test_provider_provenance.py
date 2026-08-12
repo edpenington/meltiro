@@ -362,20 +362,26 @@ def test_extractor_call_omits_temperature_for_no_temperature_model(
 
 def _orch_for_fp(config_dir, bundle_dir, out_dir, *, extractor_model,
                  checker_model="claude-sonnet-4-6",
-                 review_model="claude-opus-4-7", sampling={"temperature": 0.0}):
+                 review_model="claude-opus-4-7", sampling=None):
+    # The default block is built here rather than written into the signature:
+    # a dict default is one object shared by every call, and the three roles
+    # below would then be handed the same mapping to keep. Each gets its own
+    # copy for the same reason.
+    sampling = dict(sampling) if sampling else {"temperature": 0.0}
     config = load_config_bundle(config_dir)
     bundle = load_bundle(bundle_dir)
     orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
-        checker_config=CheckerConfig(max_tokens=4096, checker_model=checker_model, api_key="x",
-                                     sampling=sampling),
+        checker_config=CheckerConfig(max_tokens=4096,
+                                     checker_model=checker_model, api_key="x",
+                                     sampling=dict(sampling)),
         review_model=review_model,
         # Every role states the same controls. Nothing is inherited between
         # roles, so a role left unset would send nothing and the registry edit
         # below would have nothing to drop from its params.
-        sampling=sampling,
-        review_sampling=sampling,
+        sampling=dict(sampling),
+        review_sampling=dict(sampling),
         extractor_max_tokens=4096,
         review_max_tokens=4096,
         api_key="x")

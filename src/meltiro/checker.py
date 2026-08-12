@@ -30,7 +30,10 @@ and comes back complete; how that reaches the wire is the adapter's business,
 and nothing here depends on it. This module retries with backoff on 429/5xx,
 accounts prompt-cache cost, and reports every failure as a structured
 `CheckerError`, which is what lets one bad field degrade rather than abort the
-extraction.
+extraction. Each such failure carries the spend its asks had already incurred,
+and costing one never raises: a check that cannot be priced is reported as a
+figure with its coverage stated, because the alternative is one field's
+plumbing discarding a batch of paid sibling verdicts.
 """
 
 from __future__ import annotations
@@ -367,18 +370,33 @@ def _spend(config, responses):
     and reporting only the second would understate the run.
 
     Three costing paths: a ROUTED checker model is priced FROM the responses
-    (OpenRouter usage.cost -> reported_cost; a missing value is a loud fault,
-    never $0); a DIRECT model is priced against the checker's rate card, which
-    is recorded with the run so the figure stays checkable; a DIRECT model with
-    no rate card states no cost at all, leaving the token counters as the
-    record. None is deliberate there and is never a 0.0, which would read as a
-    free call.
+    (OpenRouter usage.cost -> reported_cost); a DIRECT model is priced against
+    the checker's rate card, which is recorded with the run so the figure stays
+    checkable; a DIRECT model with no rate card states no cost at all, leaving
+    the token counters as the record. None is deliberate there and is never a
+    0.0, which would read as a free call.
+
+    Costing NEVER raises, on any path. A routed response that came back
+    without a charge on it is recorded rather than refused: the returned
+    mapping carries `cost_incomplete` and `unreceipted_responses`, `cost_usd`
+    covers the receipts there were, and the token counters stay whole. One
+    field's check runs in a fan-out beside paid siblings and its verdict is
+    what the run is buying, so an unreadable price is a gap in the accounting
+    to be stated — never grounds for discarding a verdict that was asked for,
+    answered, and billed.
 
     Called on the way to a verdict AND on the way out of a failure that had
     already been billed, so a degraded field is priced the same way a
     successful one is.
     """
     from direktoro import model_info
+
+    if not responses:
+        # Nothing was billed, so nothing is priced and the registry is not
+        # consulted: a failure before the first call landed — a refused
+        # connection, a model this build cannot resolve — must not be turned
+        # into a second failure by the accounting that reports it.
+        return CheckerError.no_spend()
 
     def total(attr):
         return sum(getattr(r.usage, attr, 0) or 0 for r in responses)
@@ -388,10 +406,16 @@ def _spend(config, responses):
     cache_create = total("cache_creation_input_tokens")
     cache_read = total("cache_read_input_tokens")
 
+    unreceipted = 0
     if model_info(config.checker_model).route is not None:
-        cost_usd = round(sum(
-            reported_cost_or_raise(config.checker_model, r)
-            for r in responses), 6)
+        charged = 0.0
+        for r in responses:
+            reported = getattr(r, "reported_cost", None)
+            if reported is None:
+                unreceipted += 1
+                continue
+            charged += reported
+        cost_usd = round(charged, 6)
     elif config.rates is not None:
         cost_usd = _compute_cost(
             config.rates, input_tokens, output_tokens,
@@ -399,7 +423,7 @@ def _spend(config, responses):
         )
     else:
         cost_usd = None
-    return {
+    spent = {
         "responses": len(responses),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -407,6 +431,14 @@ def _spend(config, responses):
         "cache_read_tokens": cache_read,
         "cost_usd": cost_usd,
     }
+    if unreceipted:
+        # Present only when a receipt was missing, so an ordinary spend record
+        # carries no flag saying nothing was wrong. The count is what makes the
+        # figure readable: a dollar total beside "2 calls it does not cover"
+        # states its own coverage.
+        spent["cost_incomplete"] = True
+        spent["unreceipted_responses"] = unreceipted
+    return spent
 
 
 def reported_cost_or_raise(model, response):
@@ -421,8 +453,15 @@ def reported_cost_or_raise(model, response):
     would silently undercount the run. So this raises loudly rather than
     ledgering a $0 routed call. Callers branch on the registry:
     `model_info(model).route is not None` -> this; else -> the calling role's
-    rate card. Shared by the checker and the orchestrator's extractor/review
-    accounting.
+    rate card.
+
+    The raise belongs to the roles whose call stands alone: the orchestrator's
+    extractor and review turns, where the conversation is sequential and an
+    exception ends a run that has nothing else in flight. The checker prices
+    through `_spend` instead, which states an unreadable charge as coverage on
+    the figure, because one field's missing receipt there would discard a
+    batch of paid sibling verdicts to report a price for the field it came
+    from.
     """
     reported = getattr(response, "reported_cost", None)
     if reported is None:
@@ -433,6 +472,74 @@ def reported_cost_or_raise(model, response):
             f"it as $0: a routed call's cost comes from the response."
         )
     return reported
+
+
+def _cost_coverage(spent):
+    """The coverage keys a spend record carries when a charge was unreadable.
+
+    Empty for the ordinary case, so a verdict says how far its cost figure
+    reaches only when that is less than the whole of it, and a run whose every
+    call came back with a receipt serialises with no flag on it.
+    """
+    if not spent.get("cost_incomplete"):
+        return {}
+    return {
+        "cost_incomplete": True,
+        "unreceipted_responses": spent.get("unreceipted_responses"),
+    }
+
+
+def _degraded_verdict(message, spent):
+    """The error-origin challenge one failed field degrades to.
+
+    A challenge in shape and an absence of checking in fact: `error_origin`
+    says which, and every disposition downstream reads that flag rather than
+    the verdict word. `spent` is what the failure had already been billed
+    (`CheckerError.spent`, or `CheckerError.no_spend()` for a fault that
+    reached no provider), so a degraded field is priced from the same record a
+    successful one is. Every counter is read with a zero default: a
+    `CheckerError` raised by a library caller may carry a partial mapping, and
+    this is the last line before the fan-out returns — a KeyError here would
+    abort the batch it exists to protect.
+    """
+    responses = spent.get("responses", 0)
+    cost_usd = spent.get("cost_usd")
+    # 0.0 only when no call was made: zero tokens cost zero under any rate
+    # card, so that is a real figure over a real (empty) usage and neither
+    # needs rates nor withholds a total from a run that has them. A failure
+    # that DID make calls keeps None when nothing could price them, exactly as
+    # a successful verdict does, so an unpriced direct model withholds the
+    # run's total instead of having this field assert the calls were free.
+    if cost_usd is None and not responses:
+        cost_usd = 0.0
+    return {
+        "error": message,
+        "verdict": "challenge",
+        "rationale": f"(checker error: {message})",
+        "notes": None,
+        # Tagged here, at the source, so a downstream disposition never treats
+        # a failed check as a genuine objection: an error-origin challenge must
+        # never contribute to a trusted status.
+        "error_origin": True,
+        # A degraded field still reports the asks it took to get there, so the
+        # calibration signal reads the same way on this path as on a
+        # successful one.
+        "reprompted": max(0, responses - 1),
+        # The spend the failure had already incurred: zero when nothing
+        # reached the provider or every attempt errored, and a real figure when
+        # the calls succeeded and their answers could not be used — a truncated
+        # reply, a verdict outside the vocabulary, or replies that called no
+        # tool. Those were billed, and a run that ledgered them at zero would
+        # understate itself.
+        "input_tokens": spent.get("input_tokens", 0),
+        "output_tokens": spent.get("output_tokens", 0),
+        "cache_creation_tokens": spent.get("cache_creation_tokens", 0),
+        "cache_read_tokens": spent.get("cache_read_tokens", 0),
+        "cost_usd": cost_usd,
+        # ... and, when a routed charge could not be read, how many of the
+        # calls behind that figure it does not cover.
+        **_cost_coverage(spent),
+    }
 
 
 def _build_checker_adapter(config, client=None):
@@ -507,7 +614,42 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     covers EVERY call this check made, so a re-asked field reports what it
     actually cost.
 
-    Raises CheckerError on any failure.
+    Raises CheckerError on any failure, and ONLY CheckerError: this frame
+    owns the accumulator the asks land in, so whatever the ask below raises
+    leaves here priced from the calls that were actually billed. That is what
+    keeps `run_checker_batch`'s backstop honest — the faults it still catches
+    are the ones raised outside this function, where no call was made and
+    there is genuinely nothing to price.
+    """
+    responses = []
+    try:
+        return _ask_for_verdict(
+            responses,
+            system_message_blocks=system_message_blocks,
+            user_message_blocks=user_message_blocks,
+            config=config, client=client, adapter=adapter,
+            api_logger=api_logger, api_log_meta=api_log_meta,
+        )
+    except CheckerError:
+        # Already priced where it was raised, from these same responses.
+        raise
+    except Exception as e:
+        # A fault this module has no structured error for — and the asks
+        # before it were billed all the same.
+        raise CheckerError(f"{type(e).__name__}: {e}",
+                           spent=_spend(config, responses)) from e
+
+
+def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
+                     config, client=None, adapter=None, api_logger=None,
+                     api_log_meta=None):
+    """Ask until a verdict arrives, appending every billed response to
+    `responses`, and return the verdict record `check_one_field` documents.
+
+    `responses` belongs to the caller so that a failure anywhere in here can
+    still be priced from the calls that had completed when it happened: a
+    check re-asked once and then met with a fault was billed for the first
+    ask, and a list built and lost inside this frame would ledger it at zero.
     """
     from direktoro import (ProviderError, ProviderRateLimitError,
                            ProviderRetryableError, extract_tool_call,
@@ -539,7 +681,6 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     tool_choice = tool_choice_named(
         config.checker_model, CHECKER_VERDICT_TOOL_NAME)
 
-    responses = []
     tool_input = None
     last_error = None
     # Each attempt is its own SINGLE-TURN call, not a growing conversation:
@@ -567,20 +708,29 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
                     thinking=config.thinking,
                 )
                 break
+            # Each raise carries the spend of the asks that ALREADY completed
+            # (`responses` holds them; the ask that just failed is not among
+            # them and was not billed). A field re-asked once and then met
+            # with a provider error was billed for the first ask, and a
+            # degraded field that ledgered it at zero would understate the run
+            # by however many checks went this way.
             except ProviderRateLimitError as e:
                 if attempt < max_retries:
                     time.sleep(backoff[attempt])
                     continue
                 raise CheckerError(
-                    f"Rate limit after {max_retries} retries: {e}")
+                    f"Rate limit after {max_retries} retries: {e}",
+                    spent=_spend(config, responses))
             except ProviderRetryableError as e:
                 if attempt < max_retries:
                     time.sleep(backoff[attempt])
                     continue
                 raise CheckerError(
-                    f"Provider error after {max_retries} retries: {e}")
+                    f"Provider error after {max_retries} retries: {e}",
+                    spent=_spend(config, responses))
             except ProviderError as e:
-                raise CheckerError(f"Provider API error: {e}")
+                raise CheckerError(f"Provider API error: {e}",
+                                   spent=_spend(config, responses))
 
         responses.append(response)
 
@@ -600,23 +750,50 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
                 # Audit-side errors must not abort the checker call.
                 pass
 
-        # Truncation, named. Unnamed, a turn that ended before the tool call
-        # was emitted arrives here as an ordinary tool-free reply, which
-        # points at the model's willingness rather than at the cap. The
-        # message names the cap and the key that set it, which is the line an
-        # operator would edit. Not re-asked: a cap that truncated once will
-        # truncate again.
-        if getattr(response, "stop_reason", None) == "max_tokens":
-            raise CheckerError(
-                truncation_report(config.max_tokens, "checker_max_tokens"),
-                spent=_spend(config, responses))
-
         # Read the verdict off the response by BLOCK TYPE rather than by
         # position, so any leading block a model or endpoint emits ahead of
         # the tool call — reasoning, a sentence of preamble — is skipped
         # rather than mistaken for the answer.
         tool_input, last_error = extract_tool_call(
             response, CHECKER_VERDICT_TOOL_NAME)
+        if not isinstance(tool_input, dict):
+            # A verdict is an object of named arguments. Anything else is a
+            # reply with no verdict in it, handled as any other tool-free
+            # reply — and never as an AttributeError on the `.get` below,
+            # which would leave this field's plumbing fault to be caught as a
+            # surprise rather than reported as an absence of checking. A tool
+            # call whose input is absent entirely reads back as `(None, None)`,
+            # so the reason is stated here rather than left as a bare "None"
+            # in the message the failure carries.
+            if tool_input is not None:
+                last_error = (
+                    f"{CHECKER_VERDICT_TOOL_NAME} was called with "
+                    f"{type(tool_input).__name__}, not an object of arguments")
+            elif last_error is None:
+                last_error = (
+                    f"{CHECKER_VERDICT_TOOL_NAME} was called with no "
+                    f"arguments at all")
+            tool_input = None
+
+        # Truncation, named. Unnamed, a turn that ended before the tool call
+        # was emitted arrives here as an ordinary tool-free reply, which
+        # points at the model's willingness rather than at the cap. The
+        # message names the cap and the key that set it, which is the line an
+        # operator would edit. Not re-asked: a cap that truncated once will
+        # truncate again.
+        #
+        # Read AFTER the verdict, so a reply that recorded a complete verdict
+        # and then ran into the cap keeps the answer it was billed for: the
+        # tool call is the whole of what this role is asked for, and whatever
+        # the cap cut off came after it. Only a cut-off reply with no usable
+        # verdict degrades.
+        if (getattr(response, "stop_reason", None) == "max_tokens"
+                and (tool_input is None
+                     or tool_input.get("verdict") not in VALID_VERDICTS)):
+            raise CheckerError(
+                truncation_report(config.max_tokens, "checker_max_tokens"),
+                spent=_spend(config, responses))
+
         if tool_input is not None:
             break
 
@@ -642,11 +819,19 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     if verdict not in VALID_VERDICTS:
         raise CheckerError(
             f"Invalid verdict {verdict!r}; expected one of "
-            f"{sorted(VALID_VERDICTS)}"
+            f"{sorted(VALID_VERDICTS)}",
+            # The calls that produced this unusable answer were billed, like
+            # the ones behind the two failures above. A raise with no spend on
+            # it would ledger them at $0.
+            spent=_spend(config, responses),
         )
 
-    # `response` is the ask that answered, and is what the provenance below
-    # describes; the counters cover every ask.
+    # `response` is the ask that answered, and is what the provenance
+    # below describes; the counters cover every ask. A missing charge on
+    # any of them, this one included, is stated as coverage on the figure
+    # rather than raised: the verdict was asked for, answered and billed,
+    # and it is what the batch is buying — an unreadable price is a gap in
+    # the accounting, not grounds for discarding the answer.
     spent = _spend(config, responses)
     input_tokens = spent["input_tokens"]
     output_tokens = spent["output_tokens"]
@@ -657,10 +842,10 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
         "verdict": verdict,
         "rationale": rationale,
         "notes": notes,
-        # A genuine model verdict. The error path in run_checker_batch tags its
-        # synthetic challenge with error_origin=True so a disposition can tell a
-        # real challenge from an exhausted-retry one; a genuine verdict is never
-        # error-origin.
+        # A genuine model verdict. The error path in run_checker_batch tags
+        # its synthetic challenge with error_origin=True so a disposition can
+        # tell a real challenge from a failed check; a genuine verdict is
+        # never error-origin.
         "error_origin": False,
         # How many times this field had to be re-asked before the verdict
         # arrived. Nearly always 0. It is calibration signal about the CHECKER
@@ -673,6 +858,9 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
         "cache_creation_tokens": cache_create,
         "cache_read_tokens": cache_read,
         "cost_usd": cost_usd,
+        # Present only when an earlier ask's charge could not be read, so the
+        # figure above says how far it reaches.
+        **_cost_coverage(spent),
         # Model-invisible provenance for the orchestrator to fold into
         # run.json once per run (the checker's resolved model + the raw
         # decoding params actually sent), plus the routing receipts a routed
@@ -708,19 +896,29 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
         across all calls)
       - `user_message_blocks`: per-field content blocks
 
-    Returns a dict `{field_path: result_dict_or_error_dict}`. Errors
-    are wrapped (`{"error": ..., "rationale": "(checker error)"}`) so
-    one bad field doesn't abort the batch. The returned dict is ordered by
-    field path, not by completion order: results land in nondeterministic
-    `as_completed` order, and that order flows into the tool result the
-    model reads and into the session event, so the results are sorted before
-    returning to keep runs reproducible.
+    Returns a dict `{field_path: result_dict_or_error_dict}`. A field whose
+    check fails is wrapped (`{"error": ..., "rationale": "(checker error)"}`)
+    rather than raised, for EVERY exception its call raises and not only the
+    structured ones: one field's fault degrades that field, and the paid
+    verdicts of its siblings in the same batch are returned beside it. The
+    returned dict is ordered by field path, not by completion order: results
+    land in nondeterministic `as_completed` order, and that order flows into
+    the tool result the model reads and into the session event, so the results
+    are sorted before returning to keep runs reproducible.
 
     `on_complete(field_path, result)` is an optional callback invoked
     on the calling thread, inside the `as_completed` loop, as each call
     returns; used by the orchestrator to accumulate spend as results land. It
     still fires in completion order (the accumulation is commutative, so order
-    is irrelevant there); only the returned mapping is sorted.
+    is irrelevant there); only the returned mapping is sorted. An exception it
+    raises propagates rather than being caught: it is the run's ledger, and a
+    batch that banked verdicts past a failed ledger write would count them
+    against a total that no longer covers what they cost. What that does NOT
+    do is stop the batch: every call was submitted before the loop began, so
+    the pool runs them all out on the way through the `with` block. They are
+    billed, and their verdicts are lost with the mapping this never returns —
+    which is the price of a ledger that cannot be written, and cheaper than
+    one that no longer says what the run spent.
     """
     # Refused for the batch rather than per field: with no cap every call in
     # the fan-out fails the same way, and degrading each field to a challenge
@@ -747,41 +945,28 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
                 api_log_meta=api_log_meta,
             )
         except CheckerError as e:
-            # Genuine transient API errors (rate limit / 5xx exhausted, a
-            # malformed response) degrade this one field to a challenge rather
-            # than aborting the batch. Key absence is NOT expected here: the
-            # orchestrator preflight rejects a missing checker key before any
-            # spend, so this catch never masks a misconfiguration.
-            res = {
-                "error": str(e),
-                "verdict": "challenge",
-                "rationale": f"(checker error: {e})",
-                "notes": None,
-                # Tag the error origin here, at the source, so a downstream
-                # disposition never treats an exhausted-retry challenge as a
-                # genuine one: an error-origin challenge must never contribute
-                # to a trusted status.
-                "error_origin": True,
-                # A degraded field still reports the asks it took to get
-                # there, so the calibration signal reads the same way on this
-                # path as on a successful one.
-                "reprompted": max(0, e.spent["responses"] - 1),
-                # The spend the failure had already incurred (CheckerError.
-                # spent): zero when nothing reached the provider or every
-                # attempt errored, and a real figure when the calls succeeded
-                # and their answers could not be used — a truncated reply, or
-                # replies that called no tool. Those were billed, and a run
-                # that ledgered them at zero would understate itself.
-                "input_tokens": e.spent["input_tokens"],
-                "output_tokens": e.spent["output_tokens"],
-                "cache_creation_tokens": e.spent["cache_creation_tokens"],
-                "cache_read_tokens": e.spent["cache_read_tokens"],
-                # 0.0 rather than None when nothing was spent: zero tokens
-                # cost zero under any rate card, so it is a real figure over a
-                # real (empty) usage and neither needs rates nor withholds a
-                # total from a run that has them.
-                "cost_usd": e.spent.get("cost_usd") or 0.0,
-            }
+            # The normal failure path. Genuine transient API errors (rate
+            # limit / 5xx exhausted, a malformed response) degrade this one
+            # field to a challenge rather than aborting the batch. Key absence
+            # is NOT expected here: the orchestrator preflight rejects a
+            # missing checker key before any spend, so this catch never masks a
+            # misconfiguration.
+            res = _degraded_verdict(str(e), e.spent)
+        except Exception as e:
+            # The backstop, and the last line: anything raised out here that
+            # is not a CheckerError degrades this field too, rather than
+            # propagating out of `fut.result()` and discarding the verdicts
+            # its siblings were already billed for. It is priced at nothing
+            # because the faults that reach it are the ones raised AROUND the
+            # check — a malformed call dict, a fault building the log meta —
+            # which made no provider call: `check_one_field` prices anything
+            # that goes wrong once it has one, and re-raises it as the
+            # CheckerError above carrying that spend. The exception is named
+            # in the message rather than swallowed, so a fault that belongs in
+            # the vocabulary above is visible in the run rather than
+            # indistinguishable from one that does not.
+            res = _degraded_verdict(
+                f"{type(e).__name__}: {e}", CheckerError.no_spend())
         return call["field_path"], res
 
     with concurrent.futures.ThreadPoolExecutor(
@@ -792,11 +977,14 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
             field_path, res = fut.result()
             results[field_path] = res
             if on_complete is not None:
-                try:
-                    on_complete(field_path, res)
-                except Exception:
-                    # Audit-side errors shouldn't abort the batch.
-                    pass
+                # Raised through, not caught. The callback is the run's spend
+                # ledger and its meta checkpoint, so a failure inside it means
+                # calls that were billed are not being recorded — the batch
+                # continuing would bank verdicts against a total that no longer
+                # counts them. It runs on the calling thread, so its exception
+                # reaches the orchestrator exactly as any other write to the
+                # run's own state would.
+                on_complete(field_path, res)
 
     # Deterministic order by field path (see docstring).
     return {fp: results[fp] for fp in sorted(results)}

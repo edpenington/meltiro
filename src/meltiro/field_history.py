@@ -137,6 +137,13 @@ def build_field_history(events):
     # priced would read as what the checker cost, while covering only part of
     # it.
     checker_cost_unpriced = False
+    # Set by the first verdict whose own figure covered fewer calls than the
+    # check made, and summed over them: a check is re-asked when its first
+    # reply records no verdict, so one check can leave more than one charge
+    # unread. The aggregate is then a floor over the checking, on the same
+    # terms the run's total is a floor over the run.
+    checker_cost_incomplete = False
+    checker_unreceipted = 0
     challenges_raised = 0
     challenges_revised = 0
     challenges_overruled = 0
@@ -259,6 +266,10 @@ def build_field_history(events):
                 checker_cost_unpriced = True
             else:
                 checker_cost += float(cost)
+            if verdict.get("cost_incomplete"):
+                checker_cost_incomplete = True
+                checker_unreceipted += int(
+                    verdict.get("unreceipted_responses") or 0)
 
     for path, entry in fields.items():
         st = state[path]
@@ -300,6 +311,13 @@ def build_field_history(events):
         "check_errors": check_errors,
         "checker_cost_usd": (
             None if checker_cost_unpriced else round(checker_cost, 6)),
+        # Carried only when a charge actually went unread, and then saying how
+        # many calls the figure above leaves out. Present exactly where a
+        # reader must not take that figure for the whole of what the checker
+        # cost; an ordinary run records no flag saying nothing went wrong.
+        **({"checker_cost_incomplete": True,
+            "checker_unreceipted_responses": checker_unreceipted}
+           if checker_cost_incomplete else {}),
     }
     return {"aggregate": aggregate, "fields": fields}
 

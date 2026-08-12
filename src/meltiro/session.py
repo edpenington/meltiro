@@ -66,8 +66,76 @@ from meltiro.extraction_record import ExtractionRecord
 from meltiro.field_history import build_field_history
 from meltiro.fingerprint import (
     bundle_fingerprint, figure_hashes, run_fingerprint)
-from meltiro.run_log import direktoro_version, git_state
+from meltiro.run_log import current_engine_fp, direktoro_version, git_state
 from meltiro.statuses import TERMINAL_STATUSES
+
+
+def _engine_label(meltiro_v, direktoro_v):
+    """One phrase naming both halves of an engine identity."""
+    return (f"meltiro {meltiro_v or '(unrecorded)'} + direktoro "
+            f"{direktoro_v or '(absent)'}")
+
+
+def _drift_axis(meta):
+    """Which axis moved, for the message a refused resume carries.
+
+    A stage fingerprint folds in engine-owned material as well as the config
+    bundle's — the tool schema, the framing this package writes around the
+    bundle's prompts — so upgrading meltiro or direktoro, or editing either
+    one's source, moves it with the bundle untouched. Told only that the
+    config drifted, an operator goes looking for an edit nobody made.
+
+    The comparison is on `engine_fp`, the run's own engine axis, which is a
+    digest of both packages' SOURCE as well as their versions
+    (`fingerprint.engine_fingerprint`). Versions alone cannot answer this: an
+    edit to this package between two runs of one release changes what a stage
+    fingerprint covers and leaves every version string identical, which is the
+    ordinary state of a tree under development. The stored fingerprint and the
+    one the running code would record are therefore what decide, and the
+    versions are printed beside them because they are what a human reads.
+    """
+    stored = _engine_label(meta.get("meltiro_version"),
+                           meta.get("direktoro_version"))
+    current = _engine_label(__version__, direktoro_version())
+    recorded_fp = meta.get("engine_fp")
+    if recorded_fp is None:
+        # A session recorded without the key. The axis is undetermined rather
+        # than either answer: the versions can still show an engine that
+        # moved, but versions that match rule nothing out, and reading an
+        # unwritten key as agreement would blame the config for an edit it
+        # cannot see.
+        if stored != current:
+            return (f"This session records no engine_fp, so the axis cannot "
+                    f"be settled by content, but the ENGINE did move: it was "
+                    f"started by {stored} and is being resumed by {current}. "
+                    f"A stage fingerprint folds in engine-owned material, so "
+                    f"it drifts on an engine change alone, with the config "
+                    f"bundle unedited.")
+        return (f"Which axis moved cannot be determined: this session records "
+                f"no engine_fp, and the engine is identified here by content "
+                f"rather than by version. It records the same versions as the "
+                f"engine running now ({current}), which rules nothing out — "
+                f"an edit to either package under an unchanged version moves "
+                f"a stage fingerprint with the config bundle untouched. Check "
+                f"both the engine and the config.")
+    current_fp = current_engine_fp()
+    if recorded_fp == current_fp:
+        return (f"The engine is the one that started this session, by content "
+                f"and not merely by version ({current}, {recorded_fp}), so "
+                f"what moved is the config — the bundle, or a command-line "
+                f"override that feeds the fingerprints (models, "
+                f"--max-checks-per-field, --final-review).")
+    # What the comparison establishes and no more: the engine moved. Whether
+    # the config moved WITH it is a question this comparison does not ask, so
+    # the message sends the operator back to the config once the engine is
+    # restored rather than telling them the bundle is untouched.
+    return (f"The ENGINE moved under this session: it was started by {stored} "
+            f"under {recorded_fp} and is being resumed by {current} under "
+            f"{current_fp}. A stage fingerprint folds in engine-owned "
+            f"material, so an engine change alone is enough to move it. This "
+            f"says nothing about the config bundle, which may have been "
+            f"edited too: restore the engine, and if the resume is still "
+            f"refused, the config is what moved.")
 
 
 def _utc_now_iso():
@@ -260,7 +328,7 @@ class Session:
                user_prompt=None, image_labels=None,
                review_system_prompt=None, checker_system_prompt=None,
                caps=None, structure=None, images_omitted=None,
-               checker_context_chars=None,
+               checker_context_chars=None, decoding_specified=None,
                diagnostics=DEFAULT_DIAGNOSTICS):
         """Start a fresh session and write the initial run.json + empty
         extraction output.
@@ -395,9 +463,11 @@ class Session:
             "template_hash": template_hash,
             "prompt_hash": prompt_hash,
             "tool_call_count": 0,
-            # Total per-field checker calls made in this session, across every
-            # tool call that triggered the fan-out. Not a count of rounds:
-            # there are none.
+            # Total per-field CHECKS made in this session, across every tool
+            # call that triggered the fan-out. Not a count of rounds: there are
+            # none. Not a count of provider calls either: a check re-asked
+            # after a reply that recorded no verdict made two of those and is
+            # one check here.
             "checker_calls_run": 0,
             # Per-entity next record-id index, keyed by entity name. Session
             # bookkeeping, not part of the consumer-facing extraction output:
@@ -449,6 +519,29 @@ class Session:
             # rather than recorded as false. The stderr warning at run start
             # is the loud companion to this structural record.
             "images_omitted": images_omitted or {},
+            # The operator's decoding block per role, verbatim, as the config
+            # bundle wrote it; a role that wrote none is absent. Its
+            # counterpart `decoding_params` is written per role as each role's
+            # first response comes back, and holds what the WIRE carried. The
+            # two differ whenever a model refuses a control it was given: the
+            # value is dropped, silently and by design, and moves no
+            # fingerprint. Recording only the wire side would make "wrote a
+            # value the model refused" and "wrote nothing" the same artefact.
+            #
+            # A key written with a null value is recorded as written, though
+            # the resolver reads a null as "unspecified" and sends nothing for
+            # it. The two documents answer different questions: this one says
+            # what the bundle states, and `decoding_params` says what the wire
+            # carried. Normalising the null away here would leave a bundle
+            # that says `temperature: null` indistinguishable in the artefact
+            # from one that never names the control, which is a difference an
+            # operator wrote down on purpose.
+            #
+            # Rewritten by every resume to the CURRENT segment's blocks (see
+            # `Orchestrator.resume_session`), like `caps` and `diagnostics`:
+            # a refused control moves no fingerprint, so an edit to one is
+            # admitted by the drift gate and has to be visible in the record.
+            "decoding_specified": decoding_specified or {},
         }
         s = cls(session_dir, meta)
         s.diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -500,9 +593,9 @@ class Session:
 
         What this gate does NOT check is the ENGINE. `meltiro_version`,
         `direktoro_version`, `git_commit`, `git_dirty`, `engine_fp` and
-        `run_fp` are all read once, at creation, and are neither re-read nor
-        compared here, so a resume across a new commit or an upgraded package
-        is admitted. That is deliberate: `engine_fp` moves on any edit to
+        `run_fp` are all read once, at creation, and none of them can refuse a
+        resume, so a resume across a new commit or an upgraded package is
+        admitted. That is deliberate: `engine_fp` moves on any edit to
         either package's source, and refusing on it would refuse the documented
         cap-hit recovery (pause, raise the cap, resume) to anyone whose tree
         moved in between, which working on the engine guarantees. What changes
@@ -516,6 +609,13 @@ class Session:
         `_warn_engine_drift`). `run.json`'s copy therefore reads as the engine
         at session START, which is what `fingerprint.run_fingerprint`
         documents `run_fp` to mean.
+
+        The engine is read for one purpose here: a stage fingerprint folds in
+        engine-owned material, so it drifts on an engine change with the config
+        bundle unedited. Every refusal below therefore names the axis that
+        moved, or says that the session does not record enough to tell
+        (`_drift_axis`), rather than sending an operator to look for an edit
+        nobody made.
         """
         session_dir = Path(session_dir)
         meta_path = Session.meta_path_for(session_dir)
@@ -543,7 +643,7 @@ class Session:
                 raise ResumeRefused(
                     f"{label} fingerprint drift: session was started with "
                     f"{meta.get(key)}, current config is {expected}. Refusing "
-                    "to resume; start a fresh session."
+                    f"to resume; start a fresh session. {_drift_axis(meta)}"
                 )
         s = cls(session_dir, meta)
         # A hard kill (power loss) mid-append can leave the last line of the
@@ -565,18 +665,24 @@ class Session:
         return Path(session_dir) / "diagnostics" / "run.json"
 
     @classmethod
-    def find_in_progress(cls, study_id, *, runs_dir,
-                         expected_config_fp=None):
-        """Return the most-recent in-progress session for a study, or None.
+    def in_progress_sessions(cls, study_id, *, runs_dir):
+        """Every in-progress session for a study, as `(session_dir, meta)`.
 
-        Used by `--auto-resume`. Filters on config_fp if supplied so
-        config drift doesn't surface a stale session.
+        The unfiltered population `find_in_progress` chooses from. Exposed on
+        its own because a caller that is about to start a FRESH run needs to
+        know whether it is passing paid work by: "nothing to resume" and
+        "sessions to resume, none of them under this configuration" are
+        different facts about a run's money, and only one of them is worth
+        saying out loud.
+
+        A directory with no readable `run.json` is skipped rather than raised
+        on: this is a discovery scan over whatever is on disk, and one
+        unreadable neighbour must not stop a resumable session being found.
         """
-        runs_dir = Path(runs_dir)
-        sessions_root = runs_dir / str(study_id) / "sessions"
+        sessions_root = Path(runs_dir) / str(study_id) / "sessions"
         if not sessions_root.is_dir():
-            return None
-        candidates = []
+            return []
+        found = []
         for d in sorted(sessions_root.iterdir()):
             meta_path = cls.meta_path_for(d)
             if not meta_path.exists():
@@ -588,14 +694,44 @@ class Session:
                 continue
             if m.get("status") != "in_progress":
                 continue
-            if expected_config_fp is not None and \
-                    m.get("config_fp") != expected_config_fp:
-                continue
-            candidates.append((m.get("updated_at", ""), d))
+            found.append((d, m))
+        return found
+
+    @staticmethod
+    def newest_resumable(sessions, *, expected_config_fp=None):
+        """The most-recent session of an already-scanned population, or None.
+
+        `sessions` is `[(session_dir, meta)]` as `in_progress_sessions`
+        returns. Split from the scan so a caller that needs BOTH answers — the
+        one session to resume, and how many it is about to spend past — gets
+        them from a single pass over the directory rather than from two, which
+        could disagree if a concurrent run finished a session between them.
+
+        Filters on config_fp when supplied, so config drift does not surface a
+        stale session.
+        """
+        candidates = [
+            (m.get("updated_at", ""), d)
+            for d, m in sessions
+            if expected_config_fp is None
+            or m.get("config_fp") == expected_config_fp
+        ]
         if not candidates:
             return None
         candidates.sort()
         return candidates[-1][1]
+
+    @classmethod
+    def find_in_progress(cls, study_id, *, runs_dir,
+                         expected_config_fp=None):
+        """Return the most-recent in-progress session for a study, or None.
+
+        The scan and the choice in one call, for a caller that wants only the
+        answer.
+        """
+        return cls.newest_resumable(
+            cls.in_progress_sessions(study_id, runs_dir=runs_dir),
+            expected_config_fp=expected_config_fp)
 
     # ----------------------------------------------------------------------
     # Persistence
@@ -986,7 +1122,12 @@ class Session:
         self.write_meta()
 
     def record_checker_calls(self, count):
-        """Add `count` to the session's total checker-call tally and flush.
+        """Add `count` to the session's tally of CHECKS run, and flush.
+
+        One per field checked, not one per provider call: a check whose first
+        reply recorded no verdict is re-asked, and both asks belong to the one
+        check this counts. The wire log is where the calls themselves are
+        counted.
 
         Called once per tool call whose fan-out ran, so the flush cadence
         matches the tool-call cadence: a crash loses at most the current call's

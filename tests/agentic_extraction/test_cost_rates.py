@@ -468,6 +468,203 @@ class TestReportedChargeStandsAlone:
 
 
 # ---------------------------------------------------------------------------
+# A charge that could not be read makes the total a floor, and says so
+# ---------------------------------------------------------------------------
+
+class TestAnUnreadableChargeReachesTheRunsTotal:
+    """A checker call whose gateway charge never arrived is billed, counted in
+    tokens, and priced at whatever the receipts covered. That leaves the run's
+    sum a floor rather than a total, and the difference is invisible in the
+    figure itself — so the run carries the coverage beside it, exactly as an
+    unpriced call carries its null."""
+
+    def _prepared(self, config_dir, bundle_dir, out_dir):
+        """A checker-enabled run on a routed checker, session created, nothing
+        called yet."""
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model=EXTRACTOR,
+            checker_config=CheckerConfig(max_tokens=4096,
+                                         checker_model=ROUTED_EXTRACTOR,
+                                         api_key="x"),
+            review_model=None,
+            max_checks_per_field=2, final_review=False,
+            rates={}, extractor_max_tokens=4096, api_key="x",
+        )
+        orch.prepare_new_session()
+        return orch
+
+    def _checked(self, config_dir, bundle_dir, out_dir, monkeypatch, verdict):
+        """A checker-enabled run, one fan-out, whatever verdict is passed.
+
+        Driven through the real `_run_checker_fanout` callback rather than by
+        setting the meters by hand: what is under test is that a verdict's
+        coverage reaches the run at all, and the callback is where it would be
+        dropped.
+        """
+        orch = self._prepared(config_dir, bundle_dir, out_dir)
+
+        def _fake_batch(*, calls, config, on_complete=None, api_logger=None,
+                        **kw):
+            for c in calls:
+                on_complete(c["field_path"], dict(verdict))
+            return {c["field_path"]: verdict for c in calls}
+
+        monkeypatch.setattr("meltiro.orchestrator.run_checker_batch",
+                            _fake_batch)
+        orch._run_checker_fanout(
+            [{"field_path": "study.x", "user_message_blocks": []}])
+        return orch
+
+    def test_the_run_states_its_figure_and_what_it_does_not_cover(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        orch = self._checked(
+            config_dir, bundle_minimal_dir, tmp_path / "runs", monkeypatch,
+            {"verdict": "ok", "input_tokens": 5, "output_tokens": 1,
+             "cache_creation_tokens": 0, "cache_read_tokens": 0,
+             "cost_usd": 0.004, "cost_incomplete": True,
+             "unreceipted_responses": 2})
+        # The figure stands: it is what the receipts there were actually say.
+        assert orch.recorded_cost() == pytest.approx(0.004)
+        # And it is a floor, over two calls it does not price.
+        assert orch.unreceipted_calls() == 2
+        meta = orch.session.meta
+        assert meta["cost_usd"] == pytest.approx(0.004)
+        assert meta["cost_incomplete"] is True
+        assert meta["unreceipted_calls"] == 2
+        # The tokens are complete either way: only the charge went missing.
+        assert meta["input_tokens"] == 5
+        assert meta["output_tokens"] == 1
+        # And the cross-run index says it too: that is where a consumer sums
+        # many runs into one bill, and a floor added up as a total is exactly
+        # the mistake it would make.
+        from meltiro.run_entry import build_entry
+        entry = build_entry(orch.session, cost_usd=orch.recorded_cost(),
+                            cost_rates=orch._cost_rates_record(),
+                            usage_by_role=orch._usage_by_role_record())
+        assert entry["cost_incomplete"] is True
+        assert entry["unreceipted_calls"] == 2
+
+    def test_a_fully_receipted_run_carries_no_coverage_flag(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        # The flag has to mean something where it appears, so the ordinary run
+        # records nothing at all rather than a false.
+        orch = self._checked(
+            config_dir, bundle_minimal_dir, tmp_path / "runs", monkeypatch,
+            {"verdict": "ok", "input_tokens": 5, "output_tokens": 1,
+             "cache_creation_tokens": 0, "cache_read_tokens": 0,
+             "cost_usd": 0.004})
+        assert orch.unreceipted_calls() == 0
+        assert "cost_incomplete" not in orch.session.meta
+        assert "unreceipted_calls" not in orch.session.meta
+
+    def test_a_failed_check_that_could_not_be_priced_withholds_the_total(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        # A check that failed on a model nothing prices reports its tokens and
+        # a null, exactly as a successful one on that model would, and the run
+        # withholds its total on the same terms. A 0.0 there would have the
+        # failed field assert its calls were free and let the run state a
+        # figure that leaves them out.
+        orch = self._checked(
+            config_dir, bundle_minimal_dir, tmp_path / "runs", monkeypatch,
+            {"verdict": "challenge", "error_origin": True,
+             "input_tokens": 100, "output_tokens": 20,
+             "cache_creation_tokens": 0, "cache_read_tokens": 0,
+             "cost_usd": None})
+        assert orch.recorded_cost() is None
+        assert orch.session.meta["cost_usd"] is None
+        assert orch.session.meta["input_tokens"] == 100
+
+    def test_the_gap_survives_a_resume(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        # The reseeded sum still leaves out what the earlier segment could not
+        # price, so the coverage carries with the money it qualifies.
+        out = tmp_path / "runs"
+        first = self._checked(
+            config_dir, bundle_minimal_dir, out, monkeypatch,
+            {"verdict": "ok", "input_tokens": 5, "output_tokens": 1,
+             "cache_creation_tokens": 0, "cache_read_tokens": 0,
+             "cost_usd": 0.004, "cost_incomplete": True,
+             "unreceipted_responses": 1})
+        session_dir = first.session.session_dir
+        first._pause("tool_cap_hit")
+
+        second = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_minimal_dir),
+            out, extractor_model=EXTRACTOR,
+            checker_config=CheckerConfig(max_tokens=4096,
+                                         checker_model=ROUTED_EXTRACTOR,
+                                         api_key="x"),
+            review_model=None, max_checks_per_field=2, final_review=False,
+            rates={}, extractor_max_tokens=4096, api_key="x",
+        )
+        second.resume_session(session_dir)
+        assert second.unreceipted_calls() == 1
+        assert second.recorded_cost() == pytest.approx(0.004)
+        # And on the role that lost it, which reseeds from its own block.
+        assert second._usage_by_role["checker"]["incomplete"] is True
+        assert second._usage_by_role["checker"]["unreceipted"] == 1
+
+    def test_the_role_that_lost_the_receipt_states_the_gap_too(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        # The run's total is the sum of the per-role figures, so a consumer
+        # asking what the checker cost reads the block and not the total. A
+        # floor arriving there bare is a floor with the qualifier stripped,
+        # and adding the blocks up rebuilds the run's total as if it were
+        # whole.
+        orch = self._checked(
+            config_dir, bundle_minimal_dir, tmp_path / "runs", monkeypatch,
+            {"verdict": "ok", "input_tokens": 5, "output_tokens": 1,
+             "cache_creation_tokens": 0, "cache_read_tokens": 0,
+             "cost_usd": 0.004, "cost_incomplete": True,
+             "unreceipted_responses": 2})
+        by_role = orch.session.meta["usage_by_role"]
+        assert by_role["checker"]["cost_incomplete"] is True
+        assert by_role["checker"]["unreceipted_calls"] == 2
+        # The role that lost nothing carries no flag. It has to mean something
+        # where it appears, or every role on a run with one bad call would
+        # read as unreceipted.
+        assert "cost_incomplete" not in by_role["extractor"]
+        assert "unreceipted_calls" not in by_role["extractor"]
+        # The cross-run index carries the per-role blocks verbatim, which is
+        # where a consumer sums many runs into one bill.
+        from meltiro.run_entry import build_entry
+        entry = build_entry(orch.session, cost_usd=orch.recorded_cost(),
+                            usage_by_role=orch._usage_by_role_record())
+        assert entry["usage_by_role"]["checker"]["unreceipted_calls"] == 2
+
+    def test_a_verdicts_coverage_reaches_the_result_the_session_records(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        # `_checker_verdicts` on the tool-call result is the only durable
+        # record of what one check cost, and the transcript renders each
+        # verdict's figure from it. Dropped here, a check's own floor would be
+        # rendered as what that check cost.
+        orch = self._prepared(config_dir, bundle_minimal_dir,
+                              tmp_path / "runs")
+        monkeypatch.setattr(orch, "_build_checker_calls",
+                            lambda paths: ([{"field_path": "study.title"}],
+                                           {"study.title": {}}))
+
+        def _fanout(verdict):
+            monkeypatch.setattr(orch, "_run_checker_fanout",
+                                lambda calls: {"study.title": verdict})
+            res = {"applied_fields": ["study.title"]}
+            orch._check_applied_fields(res, stage="extractor")
+            return res["_checker_verdicts"]["study.title"]
+
+        recorded = _fanout({"verdict": "ok", "rationale": "r",
+                            "cost_usd": 0.004, "cost_incomplete": True,
+                            "unreceipted_responses": 2})
+        assert recorded["cost_incomplete"] is True
+        assert recorded["unreceipted_responses"] == 2
+        # A check whose figure covers every call it made records no flag, so
+        # the flag marks exactly the verdicts a reader must not add up whole.
+        clean = _fanout({"verdict": "ok", "rationale": "r", "cost_usd": 0.004})
+        assert "cost_incomplete" not in clean
+        assert "unreceipted_responses" not in clean
+
+
+# ---------------------------------------------------------------------------
 # Mixed and resumed runs never state a partial total
 # ---------------------------------------------------------------------------
 
@@ -648,8 +845,13 @@ class TestDerivedViews:
 # The per-field history aggregate follows the same rule
 # ---------------------------------------------------------------------------
 
-def _verdict_event(path, cost):
-    """One dispatch event carrying a single checker verdict at `cost`."""
+def _verdict_event(path, cost, *, unreceipted=0):
+    """One dispatch event carrying a single checker verdict at `cost`, and
+    optionally the count of that check's calls the figure does not cover."""
+    verdict = {"verdict": "ok", "rationale": "r", "cost_usd": cost}
+    if unreceipted:
+        verdict["cost_incomplete"] = True
+        verdict["unreceipted_responses"] = unreceipted
     return {
         "ts": "T", "event": "tool_call_applied", "turn_id": 1,
         "tool": "update_study",
@@ -658,9 +860,7 @@ def _verdict_event(path, cost):
             "applied_changes": {},
             "failed_fields": {},
             "_field_diffs": {path: {"before": None, "after": "v"}},
-            "_checker_verdicts": {
-                path: {"verdict": "ok", "rationale": "r", "cost_usd": cost},
-            },
+            "_checker_verdicts": {path: verdict},
         },
     }
 
@@ -683,3 +883,25 @@ class TestCheckerCostAggregate:
         # real measurement rather than a withheld one.
         history = build_field_history([])
         assert history["aggregate"]["checker_cost_usd"] == 0.0
+
+    def test_the_sum_says_how_many_of_the_checkers_calls_it_leaves_out(self):
+        # The priced verdicts still sum: what the receipts said is what they
+        # said. But the checker made calls this figure prices none of, so it is
+        # a floor over the checking on the same terms the run's total is a
+        # floor over the run — and the counts add up across verdicts, because
+        # one check can lose more than one charge.
+        history = build_field_history([
+            _verdict_event("study.a", 0.002, unreceipted=2),
+            _verdict_event("study.b", 0.003, unreceipted=1),
+        ])
+        aggregate = history["aggregate"]
+        assert aggregate["checker_cost_usd"] == 0.005
+        assert aggregate["checker_cost_incomplete"] is True
+        assert aggregate["checker_unreceipted_responses"] == 3
+
+    def test_a_fully_receipted_checker_flags_nothing(self):
+        # The flag has to mean something where it appears.
+        aggregate = build_field_history(
+            [_verdict_event("study.a", 0.002)])["aggregate"]
+        assert "checker_cost_incomplete" not in aggregate
+        assert "checker_unreceipted_responses" not in aggregate

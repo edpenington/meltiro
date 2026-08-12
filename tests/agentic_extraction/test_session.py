@@ -31,8 +31,10 @@ import json
 
 import pytest
 
+import meltiro
 from meltiro.extraction_record import ExtractionRecord
 from meltiro.errors import ResumeRefused, SessionError
+from meltiro.run_log import current_engine_fp
 from meltiro.session import Session
 from meltiro.statuses import TERMINAL_STATUSES
 
@@ -281,6 +283,97 @@ class TestResume:
     def test_resume_missing_meta_raises(self, tmp_path):
         with pytest.raises(ResumeRefused):
             Session.resume(tmp_path / "nope")
+
+
+class TestARefusalNamesTheAxisThatMoved:
+    """A stage fingerprint folds in engine-owned material as well as the
+    config bundle's, so it drifts on an engine upgrade with the bundle
+    untouched. Told only "config drift", an operator goes hunting for an edit
+    nobody made, and the honest recovery (start fresh under the new engine)
+    looks like a bug instead.
+
+    The axis is decided on `engine_fp`, which is a digest of both packages'
+    source. Deciding it on version strings instead is wrong in the case that
+    matters most: editing this package between two runs of one release is the
+    ordinary state of a tree under development, and every version string is
+    identical across it."""
+
+    def _rewrite_meta(self, session, **fields):
+        meta = json.loads(session.meta_path.read_text())
+        for key, value in fields.items():
+            if value is None:
+                meta.pop(key, None)
+            else:
+                meta[key] = value
+        session.meta_path.write_text(json.dumps(meta))
+
+    def test_an_unchanged_engine_puts_the_drift_on_the_config(self, tmp_path):
+        s = _create(tmp_path)
+        self._rewrite_meta(s, engine_fp=current_engine_fp())
+        with pytest.raises(ResumeRefused) as excinfo:
+            Session.resume(s.session_dir, expected_config_fp="config_fp:new")
+        message = str(excinfo.value)
+        assert "what moved is the config" in message
+        # And the config is not only the bundle: the flags that feed the
+        # fingerprints move it too, and an operator sent to diff the YAML
+        # would not find yesterday's --max-checks-per-field.
+        assert "command-line override" in message
+        assert "--max-checks-per-field" in message
+        assert meltiro.__version__ in message
+
+    def test_a_moved_engine_is_named_as_what_moved(self, tmp_path):
+        # The session was written by an older release. Nothing about the
+        # bundle has to have changed for its fingerprint to have.
+        s = _create(tmp_path)
+        self._rewrite_meta(s, meltiro_version="0.0.1-old",
+                           direktoro_version="0.0.1-old",
+                           engine_fp="engine_fp:from-the-old-release")
+        with pytest.raises(ResumeRefused) as excinfo:
+            Session.resume(s.session_dir, expected_config_fp="config_fp:new")
+        message = str(excinfo.value)
+        assert "The ENGINE moved under this session" in message
+        # Both identities, so the operator can see which upgrade did it.
+        assert "0.0.1-old" in message
+        assert meltiro.__version__ in message
+        # And it claims only what the comparison establishes. A differing
+        # engine_fp says the engine moved; it cannot see the bundle, so a
+        # simultaneous config edit is exactly what it fails to rule out, and
+        # the message sends the operator back to the config rather than
+        # certifying it.
+        assert "says nothing about the config bundle" in message
+        assert "config bundle unedited" not in message
+
+    def test_a_source_edit_under_one_version_still_names_the_engine(
+            self, tmp_path):
+        # THE case: the versions are identical because no release happened,
+        # and the code moved anyway. Decided on versions this reads as "the
+        # engine is the one that started the session" and blames a config
+        # nobody touched.
+        s = _create(tmp_path)
+        self._rewrite_meta(s, engine_fp="engine_fp:before-the-edit")
+        assert json.loads(s.meta_path.read_text())["meltiro_version"] == \
+            meltiro.__version__
+        with pytest.raises(ResumeRefused) as excinfo:
+            Session.resume(s.session_dir, expected_config_fp="config_fp:new")
+        message = str(excinfo.value)
+        assert "The ENGINE moved under this session" in message
+        assert "engine_fp:before-the-edit" in message
+        assert current_engine_fp() in message
+
+    def test_a_session_with_no_engine_fp_says_the_axis_is_undetermined(
+            self, tmp_path):
+        # Nothing to compare by content. Reading the absent key as agreement
+        # would assert the engine stood still, which is exactly the claim the
+        # missing value cannot support.
+        s = _create(tmp_path)
+        self._rewrite_meta(s, engine_fp=None)
+        with pytest.raises(ResumeRefused) as excinfo:
+            Session.resume(s.session_dir, expected_config_fp="config_fp:new")
+        message = str(excinfo.value)
+        assert "cannot be determined" in message
+        assert "no engine_fp" in message
+        assert "The ENGINE moved under this session" not in message
+        assert "what moved is the config" not in message
 
 
 class TestRecordIdCounterAcrossResume:

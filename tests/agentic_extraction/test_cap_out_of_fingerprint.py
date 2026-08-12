@@ -33,8 +33,15 @@ EXTRACTOR = "claude-opus-4-8"
 
 
 def _orch(config_dir, bundle_dir, out_dir, *, cap,
-          extractor=EXTRACTOR, sampling={"temperature": 0.0}):
-    """An extractor-only Orchestrator (checker and reviewer off)."""
+          extractor=EXTRACTOR, sampling=None):
+    """An extractor-only Orchestrator (checker and reviewer off).
+
+    The default sampling block is built here rather than written into the
+    signature: a dict default is one object shared by every call this module
+    makes, and anything downstream that kept a reference to it would carry one
+    test's controls into the next.
+    """
+    sampling = dict(sampling) if sampling else {"temperature": 0.0}
     config = load_config_bundle(config_dir)
     bundle = load_bundle(bundle_dir)
     return Orchestrator(

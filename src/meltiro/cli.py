@@ -47,6 +47,7 @@ Examples:
 import argparse
 import json
 import sys
+import textwrap
 from datetime import date
 from pathlib import Path
 
@@ -69,7 +70,7 @@ from meltiro.orchestrator import (
     DEFAULT_MAX_TOOL_CALLS,
     Orchestrator,
 )
-from meltiro.rates import Rates, parse_rates
+from meltiro.rates import Rates, cost_with_coverage, parse_rates
 from meltiro.reference_lists import load_reference_list_labels
 from meltiro.render_template import render_template
 from meltiro.session import Session
@@ -96,8 +97,7 @@ def _version_text():
     The first line is the conventional `<prog> <version>` and is what a
     script should read; everything after it is detail for a human.
     """
-    from meltiro.fingerprint import engine_fingerprint
-    from meltiro.run_log import engine_identity, git_state
+    from meltiro.run_log import current_engine_fp, engine_identity, git_state
 
     identity = engine_identity()
     version, direktoro = identity[0], identity[2]
@@ -110,7 +110,11 @@ def _version_text():
         tree = f"commit {commit}, {'dirty' if dirty else 'clean'} tree"
     return (
         f"meltiro {version}\n"
-        f"{engine_fingerprint(*identity)}\n"
+        # Through the one expression of "which engine is this", the same call a
+        # new session and a refused resume make, and OF the reading in hand: a
+        # line printed to be compared against a run record has to be built the
+        # way the record was.
+        f"{current_engine_fp(identity)}\n"
         f"  {tree}\n"
         f"  direktoro {direktoro if direktoro else '(not installed)'}"
     )
@@ -587,6 +591,12 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     # and the run records that this role specified none. Pin a parameter by
     # writing it in that role's own block.
     blocks = {}
+    # The same blocks unsplit, to be recorded in run.json exactly as written.
+    # A run states what was SENT from the response it came back on, and a model
+    # that refuses a control is sent none of it, so without the written block
+    # beside it the artefact cannot separate a value the operator wrote and the
+    # model dropped from a value the operator never wrote.
+    specified = {}
     for role in ("extractor", "review", "checker"):
         key = f"{role}_decoding"
         try:
@@ -594,6 +604,9 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
         except ValueError as e:
             print(f"{key}: {e} Fix pipeline.yaml.", file=sys.stderr)
             raise SystemExit(1)
+        written = loop_cfg.get(key)
+        if isinstance(written, dict) and written:
+            specified[role] = dict(written)
     checker_config.sampling, checker_config.thinking = blocks["checker"]
 
     # Each enabled role's call resolved against the registry, before a client
@@ -660,6 +673,9 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
         # number.
         review_max_tokens=caps.get("review"),
         final_review=final_review,
+        # Recorded with the run, read by nothing on the call path: what goes on
+        # the wire is resolved from the split blocks above.
+        decoding_specified=specified,
         # Commercial, not methodological, so it reaches no fingerprint
         # (see meltiro.rates). One card per role, keyed by role name;
         # the Orchestrator hands the checker's to the checker.
@@ -677,14 +693,13 @@ def _print_run_summary(orch, status):
     print(f"  Status: {status}")
     print(f"  Session: {orch.session.session_dir}")
     print(f"  Tool calls dispatched: {orch.session.meta.get('tool_call_count')}")
-    print(f"  Checker calls: {orch.session.meta.get('checker_calls_run')}")
+    # CHECKS, not calls: a check whose first reply recorded no verdict is
+    # re-asked, and that check made two provider calls.
+    print(f"  Checks run: {orch.session.meta.get('checker_calls_run')}")
     # A run states a total or it states none. "not priced" is printed where the
     # figure would go, never `$0.0000`, which would tell an operator the run was
     # free when what actually happened is that nothing said what it cost.
-    cost = orch.recorded_cost()
-    print(f"  Total cost: ${cost:.4f}" if cost is not None
-          else "  Total cost: not priced (tokens recorded; a role ran with "
-               "neither a `rates:` card nor a price-table entry)")
+    _print_total_cost(orch)
     meta = orch.session.meta
     if status == "in_progress":
         # A tool-call-cap PAUSE. The session is genuinely in_progress and its
@@ -732,6 +747,85 @@ def _print_run_summary(orch, status):
                   "so this does")
             print("  not change the status; the fields are listed in "
                   "run.checker_diagnostics.")
+    _print_checker_health(meta)
+
+
+def _print_total_cost(orch):
+    """The run's dollar line, and what it covers.
+
+    A priced run states its total. A run some call could not be priced at all
+    states none, because a sum over the priced calls alone would wear a
+    total's clothes. Either way a call whose charge never arrived is a
+    SEPARATE gap, and it is reported with whichever figure was stated: a
+    priced run's total becomes a floor, and an unpriced run's silence covers
+    those calls too. Dropping the coverage on the unpriced path would let the
+    louder fault hide the quieter one.
+
+    `rates.cost_with_coverage` supplies the words, shared with every other
+    site that prints one of these figures, so the transcript and this line
+    cannot describe the same run differently.
+    """
+    cost = orch.recorded_cost()
+    figure = (f"${cost:.4f}" if cost is not None else
+              "not priced (tokens recorded; a role ran with neither a "
+              "`rates:` card nor a price-table entry)")
+    missing = orch.unreceipted_calls()
+    if missing:
+        figure = cost_with_coverage(cost, figure, missing)
+    # Wrapped rather than printed as one long line: the coverage clause makes
+    # the length depend on the run, and every other note in this summary is
+    # hand-wrapped to about here.
+    print(textwrap.fill(f"Total cost: {figure}", width=78,
+                        initial_indent="  ", subsequent_indent="  "))
+
+
+def _print_checker_health(meta):
+    """Name a checker that failed or had to be nudged, whatever the status.
+
+    A checker that answered nothing leaves a run with no challenges in it,
+    which reads on stdout exactly like a run the checker was happy with. So the
+    failures are printed on their own terms: a stage that could not do its job
+    must be louder than one that did it and found a single thing to say. Both
+    figures are advisory — neither changes the status — and both are in
+    run.json, which this points at rather than reprinting.
+    """
+    diagnostics = meta.get("checker_diagnostics") or {}
+    errors = diagnostics.get("checker_errors") or []
+    reprompted = int(diagnostics.get("checks_reprompted") or 0)
+    if not errors and not reprompted:
+        return
+    checks = diagnostics.get("checks_run")
+    print()
+    if errors:
+        print(f"  NOTE: {len(errors)} field(s) ended with no verdict at all: "
+              f"the checker call")
+        print("  failed and the field was left unchecked. That is an absence "
+              "of checking,")
+        print("  not an objection to the value, and it was never shown to the "
+              "extractor.")
+        print("  The fields are listed in run.checker_diagnostics.")
+        # Two counts of two different things, so they are stated as two
+        # sentences rather than as one fraction. The fields above are counted
+        # once each, by the LAST verdict they received; this counts every check
+        # the run made, and one field can receive several. Neither is a
+        # denominator for the other.
+        print(f"  This run made {_present_count(checks)} check(s) in total.")
+    if reprompted:
+        # What the number counts and no more: a re-asked check ended in a
+        # verdict or in a failure, and this tally does not separate them (the
+        # failures above do). Each re-ask was a second billed call either way.
+        print(f"  NOTE: {reprompted} check(s) needed a re-ask before "
+              f"answering or failing.")
+        print("  Each re-ask was a second billed call, and a checker model "
+              "that needs")
+        print("  nudging is marginal for the role; the count is in "
+              "run.checker_diagnostics.")
+
+
+def _present_count(value):
+    """A count for a message, or `an unrecorded number of` when there is
+    none, so a sentence built on it never reads as `None check(s)`."""
+    return "an unrecorded number of" if value is None else str(value)
 
 
 def _run_one(config, bundle, out_dir, loop_cfg, args):
@@ -766,22 +860,26 @@ def _run_one(config, bundle, out_dir, loop_cfg, args):
         if args.auto_resume:
             # Find the most recent in_progress session for this study whose
             # EXTRACTOR config still matches, and try to resume it. The
-            # config_fp filter is what makes that reliable: find_in_progress
-            # returns only the single newest in-progress session, so without
-            # the filter a newer session under a drifted config hides an older
-            # in-progress session this config could resume, and that older
-            # session's banked API spend is thrown away and re-spent from
-            # scratch. config_fp comes from the orchestrator's own fingerprint
-            # recipe (the same one prepare_new_session and the dry run use), so
-            # learning it needs no throwaway session dir and emits no warning.
+            # config_fp filter is what makes that reliable: the choice below
+            # is a single session, so without the filter a newer session under
+            # a drifted config hides an older in-progress session this config
+            # could resume, and that older session's banked API spend is
+            # thrown away and re-spent from scratch. config_fp comes from the
+            # orchestrator's own fingerprint recipe (the same one
+            # prepare_new_session and the dry run use), so learning it needs
+            # no throwaway session dir and emits no warning.
             # The full three-fingerprint drift gate in resume_session stays the
             # authority on whether the chosen candidate is actually resumable;
             # this only narrows WHICH candidate is offered to it. Either branch
             # prepares the session exactly once.
             expected_config_fp = orch._build_fingerprints()["config_fp"]
-            candidate = Session.find_in_progress(
-                bundle.study_id, runs_dir=out_dir,
-                expected_config_fp=expected_config_fp)
+            # ONE scan of the study's sessions, answering both questions asked
+            # of it below: which session to resume, and — when there is none —
+            # how much in-progress work this run is about to spend past.
+            in_progress = Session.in_progress_sessions(
+                bundle.study_id, runs_dir=out_dir)
+            candidate = Session.newest_resumable(
+                in_progress, expected_config_fp=expected_config_fp)
             resumed = False
             if candidate is not None:
                 print(f"  Auto-resuming session: {candidate}")
@@ -790,6 +888,18 @@ def _run_one(config, bundle, out_dir, loop_cfg, args):
                     resumed = True
                 except ResumeRefused as e:
                     print(f"  Resume refused, starting fresh: {e}")
+            else:
+                # Sessions this run is about to spend past. Silence here would
+                # bill the study again with the earlier run's paid work sitting
+                # on disk unmentioned, so the skip is stated with its reason.
+                passed_over = in_progress
+                if passed_over:
+                    print(
+                        f"  {len(passed_over)} in-progress session(s) for "
+                        f"this study were left alone: none was started under "
+                        f"this run's extractor fingerprint "
+                        f"({expected_config_fp}), so none can be resumed. "
+                        f"Starting fresh.")
             if not resumed:
                 orch.prepare_new_session()
         else:

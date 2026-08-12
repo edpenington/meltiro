@@ -969,6 +969,328 @@ def load_config_bundle_pipeline(config_dir):
     return load_config_bundle(config_dir).pipeline
 
 
+class TestTheRunRecordsWhatWasSpecified:
+    """`run.json` carries both halves of the decoding story: the block the
+    operator wrote, and the params the wire actually carried.
+
+    A model that refuses a sampling control is sent none of it, silently and
+    by design, and the value moves no fingerprint. With only the wire side
+    recorded, "wrote a temperature the model dropped" and "wrote nothing at
+    all" are the same artefact — and the first is a methodological claim the
+    run did not honour.
+    """
+
+    def _args(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            max_tool_calls=None, max_checks_per_field=None, final_review=None,
+            extractor_model=None, review_model=None, checker_model=None,
+            diagnostics="standard", dry_run=True)
+
+    def _orch(self, config_dir, bundle_minimal_dir, tmp_path, loop_cfg):
+        from meltiro.bundle import load_bundle
+        from meltiro.config_bundle import load_config_bundle
+        config = load_config_bundle(config_dir)
+        bundle = load_bundle(str(bundle_minimal_dir))
+        return cli._build_orchestrator(
+            config, bundle, tmp_path / "runs", loop_cfg, self._args())
+
+    def test_a_refused_value_and_an_unwritten_one_are_told_apart(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # The fixture's extractor model refuses the sampling controls, so
+        # these two runs send byte-identical decoding params. Only the record
+        # of what was ASKED FOR separates them.
+        written = dict(load_config_bundle_pipeline(config_dir))
+        written["extractor_decoding"] = {"temperature": 0.3}
+        unwritten = dict(load_config_bundle_pipeline(config_dir))
+        unwritten.pop("extractor_decoding", None)
+
+        a = self._orch(config_dir, bundle_minimal_dir, tmp_path, written)
+        b = self._orch(config_dir, bundle_minimal_dir, tmp_path, unwritten)
+
+        assert a.decoding_specified["extractor"] == {"temperature": 0.3}
+        assert "extractor" not in b.decoding_specified
+        assert (a._decoding_params_meta()["extractor"]
+                == b._decoding_params_meta()["extractor"])
+        assert "temperature" not in a._decoding_params_meta()["extractor"]
+
+    def test_the_written_block_reaches_run_json(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch):
+        # Written at session creation, so it is in the artefact whatever the
+        # run then does — including a run that never gets an answer back from
+        # the role whose block it records.
+        monkeypatch.setattr(Orchestrator, "run", lambda self: "in_progress")
+        out_dir = tmp_path / "runs"
+        assert _run([
+            "extract",
+            "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(out_dir),
+        ]) == 0
+        sessions = list((out_dir / "demo-001" / "sessions").iterdir())
+        meta = json.loads(
+            (sessions[0] / "diagnostics" / "run.json").read_text())
+        # Verbatim, per role, exactly as the fixture pipeline writes them.
+        assert meta["decoding_specified"] == {
+            "extractor": {"temperature": 1.0},
+            "review": {"temperature": 0.0},
+            "checker": {"temperature": 0.0},
+        }
+
+
+class TestTheTotalSaysWhatItCovers:
+    """Three states, three lines. A run states its total, states none, or
+    states a floor — and the floor is the one that would otherwise be
+    indistinguishable from a whole bill that happened to be small."""
+
+    def _extract(self, tmp_path, config_dir, bundle_minimal_dir):
+        return _run([
+            "extract",
+            "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(tmp_path / "runs"),
+        ])
+
+    def _spending(self, cost, *, unreceipted=0, unpriced=False):
+        """A run that banks `cost` and, optionally, a gap in its coverage.
+
+        `unpriced` is the separate fault: a role ran that nothing could price,
+        so the run states no figure at all. It combines with `unreceipted`,
+        because a run can meet both.
+        """
+        def _run_with(self):
+            self._cost_usd = cost
+            self._cost_counted = True
+            self._cost_unpriced = unpriced
+            if unreceipted:
+                self._cost_incomplete = True
+                self._unreceipted_calls = unreceipted
+            self._checkpoint_usage_to_meta()
+            # The checkpoint is in-memory; a real run flushes it at the next
+            # meta write, and this stub makes no other.
+            self.session.write_meta()
+            return "complete"
+        return _run_with
+
+    def test_a_missing_receipt_makes_the_printed_total_a_floor(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        monkeypatch.setattr(Orchestrator, "run",
+                            self._spending(0.0123, unreceipted=2))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "Total cost: at least $0.0123 (2 call(s) returned no receipt)" \
+            in out
+
+    def test_a_fully_receipted_run_prints_the_figure_plainly(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # The qualifier has to mean something where it appears.
+        monkeypatch.setattr(Orchestrator, "run", self._spending(0.0123))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "Total cost: $0.0123" in out
+        assert "at least" not in out
+
+    def test_an_unpriced_run_still_reports_its_missing_receipts(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # The two faults are independent, and the unpriced one is the louder.
+        # Returning on it early drops the quieter one entirely: the operator is
+        # told nothing was priced and never told that calls also came back with
+        # no charge to price.
+        monkeypatch.setattr(Orchestrator, "run",
+                            self._spending(0.0, unreceipted=2, unpriced=True))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        flat = " ".join(capsys.readouterr().out.split())
+        assert ("Total cost: not priced (tokens recorded; a role ran with "
+                "neither a `rates:` card nor a price-table entry) — 2 call(s) "
+                "returned no receipt and are missing from any figure") in flat
+        # And no floor: there is no figure for one to be a floor over.
+        assert "at least" not in flat
+
+    def test_a_zero_sum_with_a_gap_is_not_printed_as_a_floor(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # Every receipt the run got is in the figure and it is still nothing.
+        # "at least $0.0000" reads as a bill just above zero; what is true is
+        # that nothing receipted was charged, over calls nobody can price.
+        monkeypatch.setattr(Orchestrator, "run",
+                            self._spending(0.0, unreceipted=2))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert ("Total cost: no receipted charge (2 call(s) returned no "
+                "receipt)") in out
+        assert "$0.0000" not in out
+
+    def test_the_coverage_is_in_run_json_too(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch):
+        # stdout scrolls away; the artefact is what a ledger is built from, so
+        # the figure carries its coverage there as well.
+        out_dir = tmp_path / "runs"
+        monkeypatch.setattr(Orchestrator, "run",
+                            self._spending(0.0123, unreceipted=2))
+        assert _run([
+            "extract", "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir), "--out", str(out_dir),
+        ]) == 0
+        sessions = list((out_dir / "demo-001" / "sessions").iterdir())
+        meta = json.loads(
+            (sessions[0] / "diagnostics" / "run.json").read_text())
+        assert meta["cost_usd"] == 0.0123
+        assert meta["cost_incomplete"] is True
+        assert meta["unreceipted_calls"] == 2
+
+
+class TestADegradedCheckerIsLoud:
+    """A checker that answered nothing leaves a run with no challenges in it,
+    which on stdout reads exactly like a run the checker was happy with. The
+    end-of-run summary has to tell those two apart, or the quieter outcome is
+    the worse one."""
+
+    def _extract(self, tmp_path, config_dir, bundle_minimal_dir):
+        return _run([
+            "extract",
+            "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(tmp_path / "runs"),
+        ])
+
+    def _finishing_with(self, diagnostics):
+        def _run_with(self):
+            self.session.meta["checker_diagnostics"] = diagnostics
+            return "complete"
+        return _run_with
+
+    def test_a_checker_that_answered_nothing_prints_a_note(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        monkeypatch.setattr(Orchestrator, "run", self._finishing_with({
+            "fields_checked": 3, "checks_run": 3, "checks_reprompted": 0,
+            "unresolved_challenges": [],
+            "checker_errors": ["study.a", "study.b", "study.c"]}))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "NOTE: 3 field(s) ended with no verdict at all" in out
+        assert "the checker call" in out
+        assert "run.checker_diagnostics" in out
+
+    def test_the_two_checker_counts_are_never_printed_as_a_fraction(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # They count different things. `checker_errors` is one entry per FIELD
+        # whose last verdict was an error; `checks_run` counts every check the
+        # run made, and a field can be checked more than once. Printed as "N
+        # field(s) of the M check(s)" the pair reads as a fraction, and here it
+        # would read as 2 of 5 when both fields the checker was asked about
+        # failed.
+        monkeypatch.setattr(Orchestrator, "run", self._finishing_with({
+            "fields_checked": 2, "checks_run": 5, "checks_reprompted": 0,
+            "unresolved_challenges": [],
+            "checker_errors": ["study.a", "study.b"]}))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "2 field(s) ended with no verdict at all" in out
+        assert "This run made 5 check(s) in total." in out
+        assert "of the 5 check(s)" not in out
+
+    def test_re_asked_checks_are_counted_out_loud(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # Every re-ask was a second billed call, and a model that needs
+        # nudging is marginal for the role even when every nudge worked.
+        monkeypatch.setattr(Orchestrator, "run", self._finishing_with({
+            "fields_checked": 2, "checks_run": 2, "checks_reprompted": 2,
+            "unresolved_challenges": [], "checker_errors": []}))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "NOTE: 2 check(s) needed a re-ask before answering or failing" \
+            in out
+
+    def test_the_re_ask_note_claims_only_what_the_number_counts(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # A re-asked check that then failed is in this tally too, so the note
+        # cannot say the re-asks were followed by a verdict. Here every check
+        # made was re-asked AND every one of them failed: a note claiming a
+        # verdict would be false about all of them at once.
+        monkeypatch.setattr(Orchestrator, "run", self._finishing_with({
+            "fields_checked": 2, "checks_run": 2, "checks_reprompted": 2,
+            "unresolved_challenges": [],
+            "checker_errors": ["study.a", "study.b"]}))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "before the checker recorded a" not in out
+        assert "answering or failing" in out
+
+    def test_a_healthy_checker_says_nothing_extra(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # The counterpart: the notice has to mean something when it appears.
+        monkeypatch.setattr(Orchestrator, "run", self._finishing_with({
+            "fields_checked": 2, "checks_run": 2, "checks_reprompted": 0,
+            "unresolved_challenges": [], "checker_errors": []}))
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "verdict at all" not in out
+        assert "re-asked" not in out
+
+    def test_the_label_says_checks_not_calls(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        # `checker_calls_run` counts CHECKS: a check re-asked once made two
+        # provider calls and is one of these. Printed as "Checker calls" the
+        # figure reads as a call count and understates the wire.
+        monkeypatch.setattr(Orchestrator, "run", lambda self: "in_progress")
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        assert "  Checks run: " in capsys.readouterr().out
+
+
+class TestAutoResumeSaysWhatItPassedOver:
+    """`--auto-resume` starting fresh is a decision to spend the study's money
+    again. When there was in-progress work it could not use, it says so: silence
+    is indistinguishable from there having been nothing there."""
+
+    def _stale_session(self, out_dir, study_id="demo-001"):
+        from meltiro.session import Session
+        return Session.create(
+            study_id, config_fp="config_fp:stale",
+            checker_fp="checker_fp:stale", review_fp="review_fp:stale",
+            instrument_fp="instrument_fp:x", extractor_call_fp="call_fp:e",
+            checker_call_fp="call_fp:c", review_call_fp="call_fp:r",
+            engine_fp="engine_fp:e", extractor_model="opus",
+            checker_model="sonnet", review_model="opus",
+            tool_set_hash="ts", template_hash="th", prompt_hash="ph",
+            runs_dir=out_dir)
+
+    def _extract(self, tmp_path, config_dir, bundle_minimal_dir):
+        return _run([
+            "extract",
+            "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(tmp_path / "runs"),
+            "--auto-resume",
+        ])
+
+    def test_an_unmatched_in_progress_session_is_named(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        monkeypatch.setattr(Orchestrator, "run", lambda self: "in_progress")
+        self._stale_session(tmp_path / "runs")
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        out = capsys.readouterr().out
+        assert "1 in-progress session(s) for this study were left alone" in out
+        assert "extractor fingerprint" in out
+        assert "Starting fresh." in out
+
+    def test_nothing_to_resume_says_nothing(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        monkeypatch.setattr(Orchestrator, "run", lambda self: "in_progress")
+        assert self._extract(tmp_path, config_dir, bundle_minimal_dir) == 0
+        assert "left alone" not in capsys.readouterr().out
+
+
 class TestResumeWritesToTheSessionsOwnRoot:
     """A resumed run appends its run-log entry beside the session it continues.
 

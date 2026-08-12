@@ -141,6 +141,38 @@ class Rates:
         )
 
 
+def cost_with_coverage(cost, figure, missing):
+    """One dollar figure, worded so its coverage travels with it.
+
+    For the sites that print money where a call's charge could not be read off
+    its response: the tokens were counted and the charge was not, so any sum
+    over the rest covers fewer calls than were made. `figure` is the caller's
+    own rendering of `cost` — the sites differ in precision and in markup, and
+    each keeps its own — and `missing` is how many calls that figure leaves
+    out, or None when even the count was not recorded.
+
+    Three readings, and the wording is the whole of what tells them apart:
+
+    - a figure with money in it is a FLOOR, and says `at least`, which is the
+      difference between a small bill and an understated one;
+    - a floor of exactly zero is not a floor any reader should be handed.
+      Every receipt there was is already in it and it is still nothing, so it
+      states that there was no receipted charge rather than `at least
+      $0.0000`, which reads as a run that all but paid for itself;
+    - a figure that states no money at all leaves the missing calls nothing to
+      be a floor of, so they are named as missing from any figure — an
+      unpriced run and a missing receipt are two separate gaps, and stacking
+      `at least` on a null would claim a number nobody has.
+    """
+    calls = "some call(s)" if missing is None else f"{missing} call(s)"
+    if not isinstance(cost, (int, float)):
+        return (f"{figure} — {calls} returned no receipt and are missing "
+                f"from any figure")
+    if cost == 0:
+        return f"no receipted charge ({calls} returned no receipt)"
+    return f"at least {figure} ({calls} returned no receipt)"
+
+
 def parse_rates(pipeline):
     """The rate cards a pipeline mapping configures, as `{role: Rates}`.
 

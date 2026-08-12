@@ -70,7 +70,6 @@ from meltiro.errors import AgenticExtractionError, truncation_report
 from meltiro.extraction_record import ROLE_REVIEW
 from meltiro.fingerprint import (
     call_fingerprint as _call_fp,
-    engine_fingerprint as _engine_fp,
     run_fingerprint as _run_fp)
 from meltiro.instrument import Instrument
 from direktoro import (
@@ -85,7 +84,7 @@ from meltiro.prompt_builder import (
 )
 from meltiro.template import load_template
 from meltiro.run_entry import append_session_entry
-from meltiro.run_log import engine_identity, git_state
+from meltiro.run_log import current_engine_fp, engine_identity, git_state
 from meltiro.session import Session, result_to_model_text
 from meltiro.statuses import CONSIDERED_STATUSES, VALIDATED_STATUSES
 from meltiro.tools import (
@@ -161,6 +160,7 @@ class Orchestrator:
                  extractor_max_tokens=None,
                  review_max_tokens=None,
                  final_review=True,
+                 decoding_specified=None,
                  rates=None,
                  diagnostics=DEFAULT_DIAGNOSTICS,
                  api_key=None, dry_run=False):
@@ -245,6 +245,19 @@ class Orchestrator:
         # and leaves the model's own default thinking behaviour in force.
         self.thinking = thinking
         self.review_thinking = review_thinking
+        # The operator's decoding block per role, verbatim, as the config
+        # bundle wrote it: `{role: {key: value}}`, and a role that wrote none
+        # is absent. Recorded in run.json beside the params the wire actually
+        # carried, which are not the same document — a model that refuses a
+        # sampling control is sent none of it, and without this the artefact
+        # cannot tell a value the operator wrote and the model dropped from a
+        # value the operator never wrote. Carried, never read: nothing on the
+        # call path consults it, because what is SENT is resolved from
+        # `sampling` / `thinking` / the caps below.
+        self.decoding_specified = {
+            role: dict(block)
+            for role, block in (decoding_specified or {}).items()
+            if block}
         # One output cap per ENABLED role (see `_required_cap`), the
         # checker's included: `CheckerConfig` alone is constructible without
         # one (its own entry points re-refuse for direct callers), but an
@@ -324,6 +337,16 @@ class Orchestrator:
         # $0.00, which reads as "free" rather than "nothing priced anything".
         self._cost_unpriced = False
         self._cost_counted = False
+        # A third state the sum cannot hold: some call WAS priced, and the
+        # price covers less than the calls behind it — a gateway-served
+        # checker call whose response carried no charge (see
+        # `checker._spend`). The sum is then a floor rather than a total, and
+        # `_unreceipted_calls` says how many calls it does not cover. Kept
+        # apart from `_cost_unpriced` because the two report different facts:
+        # nothing could price that call, versus something priced it and the
+        # receipt did not arrive.
+        self._cost_incomplete = False
+        self._unreceipted_calls = 0
         # The same five meters again PER ROLE: `{role: counters}`, built by
         # `_role_usage`. Each role carries its own `unpriced` / `counted`
         # latches on the same terms as the run-wide pair, so an unpriced
@@ -596,7 +619,7 @@ class Orchestrator:
                            if self.checker_enabled else None)
         review_call_fp = (_call_fp(self._review_call_identity())
                           if self.final_review else None)
-        engine_fp = _engine_fp(*engine_identity())
+        engine_fp = current_engine_fp()
         # Whole-run identity. A disabled checker/review stage contributes a
         # documented sentinel, so the four ablation shapes stay distinct (see
         # fingerprint.run_fingerprint).
@@ -680,6 +703,7 @@ class Orchestrator:
             },
             structure=self._structure_dict(),
             images_omitted=self._images_omitted_meta(),
+            decoding_specified=self.decoding_specified,
             diagnostics=self.diagnostics,
         )
         # Loud run-start signals: the figures a text-only model never sees
@@ -782,6 +806,27 @@ class Orchestrator:
         # session creation, so a session started at `minimal` never gains one.
         previous_diagnostics = self.session.meta.get("diagnostics")
         self.session.meta["diagnostics"] = self.diagnostics
+        # What each role's decoding block SAYS, refreshed to this segment's,
+        # on the same terms as the caps and the level above. It is the record
+        # of what was asked for rather than of what went on the wire, and the
+        # case it exists for is a control the model refuses: editing one of
+        # those moves no fingerprint, so the drift gate admits the resume and
+        # a snapshot frozen at creation would attribute this segment's asks to
+        # the previous segment's block. run.json reports the CURRENT segment's;
+        # the `resumed` event below carries both values whenever they differ,
+        # which is the per-segment history this snapshot cannot hold.
+        # Absent is not empty. A session recorded before this key existed says
+        # nothing about what its segment asked for, and reading that silence as
+        # "stated no controls" would have the event below announce a change on
+        # the first resume of every such session — from a previous value nobody
+        # recorded. Undetermined makes no claim: the event carries the pair
+        # only when a PRESENT previous value differs. `Session.create` always
+        # writes the key (`{}` for a run that states nothing), so an empty
+        # mapping here is a real reading, and a move away from it is reported.
+        previous_specified = self.session.meta.get("decoding_specified")
+        specified_moved = (previous_specified is not None
+                           and self.decoding_specified != previous_specified)
+        self.session.meta["decoding_specified"] = self.decoding_specified
         # A FRESH reading of the whole engine identity for this segment, from
         # the same helper `Session.create` used: both package versions and
         # source digests, plus the git anchor. The creation-time readings —
@@ -797,7 +842,7 @@ class Orchestrator:
         segment_identity = engine_identity()
         segment_version = segment_identity[0]
         segment_direktoro = segment_identity[2]
-        segment_engine_fp = _engine_fp(*segment_identity)
+        segment_engine_fp = current_engine_fp(segment_identity)
         self.session.append_event({
             "event": "resumed",
             "max_tool_calls": self.max_tool_calls,
@@ -811,6 +856,13 @@ class Orchestrator:
             "direktoro_version": segment_direktoro,
             "git_commit": segment_commit,
             "engine_fp": segment_engine_fp,
+            # Only when it actually changed, so the event says something when
+            # it carries these at all: an unchanged block is the ordinary
+            # case, and recording it every resume would bury the segment where
+            # the asks moved.
+            **({"decoding_specified": self.decoding_specified,
+                "previous_decoding_specified": previous_specified}
+               if specified_moved else {}),
         })
         self.session.write_meta()
         self._warn_engine_drift(segment_engine_fp)
@@ -2451,6 +2503,13 @@ class Orchestrator:
         would be partial), or nothing has priced anything and no card would.
         A run holding a card for any role states a total from the start; its
         zero is a real zero. Rationale in rates.py.
+
+        The figure this returns can still cover less than the run: a call
+        whose charge could not be read is counted in tokens and not in
+        dollars, which makes the sum a floor. That is a property of the
+        figure rather than a reason to withhold it, so it rides beside it —
+        `unreceipted_calls()` below, `meta.cost_incomplete`, and the words
+        every reader of the total prints.
         """
         if self._cost_unpriced:
             return None
@@ -2458,6 +2517,16 @@ class Orchestrator:
                 card is not None for card in self.rates.values()):
             return round(self._cost_usd, 6)
         return None
+
+    def unreceipted_calls(self):
+        """How many billed calls `recorded_cost()` does not cover.
+
+        0 for a run whose every call came back with a price on it, which is
+        every run that never met a missing receipt. Non-zero says the total
+        is a floor and by how many calls, so a reader states "at least"
+        rather than a figure that reads as the whole bill.
+        """
+        return self._unreceipted_calls if self._cost_incomplete else 0
 
     def _enabled_roles(self):
         """The roles this run actually calls, in call order.
@@ -2479,6 +2548,11 @@ class Orchestrator:
         `cache_creation_input_tokens` and `meltiro.rates` prices as
         `cache_write_per_1m`; it is named for the rate here so a per-role record
         and the card that priced it read in the same vocabulary.
+
+        `incomplete`/`unreceipted` are the run-level coverage pair kept per
+        role: the run's total is the sum of these figures, so a role's figure
+        that leaves calls out has to say so where it is stated, or a reader
+        adding the roles up rebuilds the run's floor with the qualifier gone.
         """
         return self._usage_by_role.setdefault(role, {
             "input_tokens": 0,
@@ -2488,6 +2562,8 @@ class Orchestrator:
             "cost_usd": 0.0,
             "unpriced": False,
             "counted": False,
+            "incomplete": False,
+            "unreceipted": 0,
         })
 
     def _role_cost(self, role):
@@ -2524,6 +2600,12 @@ class Orchestrator:
         these plus nothing else, so a reader who wants to know which role spent
         the money reads here and a reader who wants the bill reads the totals.
         `cost_usd` is null for a role that could not be priced, never 0.0.
+
+        A role's coverage rides with its figure on the run's terms: the
+        `cost_incomplete`/`unreceipted_calls` pair appears only on a role some
+        call's charge could not be read for, and it is what keeps the sum over
+        these blocks a floor rather than a total once the run-wide qualifier is
+        out of view.
         """
         record = {}
         for role in self._enabled_roles():
@@ -2536,6 +2618,9 @@ class Orchestrator:
                 "cost_usd": self._role_cost(role),
                 "cost_rates": (self.rates[role].as_record()
                                if self.rates.get(role) is not None else None),
+                **({"cost_incomplete": True,
+                    "unreceipted_calls": acc["unreceipted"]}
+                   if acc["incomplete"] else {}),
             }
         return record
 
@@ -2562,6 +2647,15 @@ class Orchestrator:
         meta = self.session.meta
         meta["cost_usd"] = self.recorded_cost()
         meta["cost_rates"] = self._cost_rates_record()
+        if self._cost_incomplete:
+            # Written only once a receipt has actually gone missing, so an
+            # ordinary run's record carries no flag saying nothing was wrong,
+            # and the count is what makes the figure beside it readable: a
+            # dollar total next to "2 calls it does not cover" states its own
+            # coverage. Both survive a resume through `_reseed_usage_from_meta`
+            # — the earlier segment's gap is still a gap in the run's total.
+            meta["cost_incomplete"] = True
+            meta["unreceipted_calls"] = self._unreceipted_calls
         meta["input_tokens"] = self._input_tokens
         meta["output_tokens"] = self._output_tokens
         meta["cache_creation_tokens"] = self._cache_creation_tokens
@@ -2591,6 +2685,11 @@ class Orchestrator:
         self._cost_unpriced = ("cost_usd" in meta and meta["cost_usd"] is None)
         self._cost_counted = isinstance(meta.get("cost_usd"), (int, float))
         self._cost_usd = float(meta.get("cost_usd") or 0.0)
+        # A charge that could not be read in an earlier segment is still
+        # missing from the reseeded sum, so the coverage carries across with
+        # the money it qualifies.
+        self._cost_incomplete = bool(meta.get("cost_incomplete"))
+        self._unreceipted_calls = int(meta.get("unreceipted_calls") or 0)
         self._input_tokens = int(meta.get("input_tokens") or 0)
         self._output_tokens = int(meta.get("output_tokens") or 0)
         self._cache_creation_tokens = int(
@@ -2607,6 +2706,11 @@ class Orchestrator:
             acc["unpriced"] = ("cost_usd" in block and cost is None)
             acc["counted"] = isinstance(cost, (int, float))
             acc["cost_usd"] = float(cost or 0.0)
+            # The earlier segment's unread charge is still unread, and it is
+            # still this role's, so the coverage reseeds with the money it
+            # qualifies rather than only with the run-wide pair above.
+            acc["incomplete"] = bool(block.get("cost_incomplete"))
+            acc["unreceipted"] = int(block.get("unreceipted_calls") or 0)
 
     def _accumulate_usage(self, response, model, role):
         """Fold one role's call into the run-wide meters and that role's own.
@@ -2771,9 +2875,12 @@ class Orchestrator:
         Two keys are written onto `res`:
 
           - `checker_challenges`, model-visible: `{field_path: rationale}` for
-            the challenged fields only. An unchallenged field needs no words
-            spent on it, and listing the `ok`s would bury the challenges the
-            model is meant to weigh.
+            the GENUINELY challenged fields only. An unchallenged field needs
+            no words spent on it, and listing the `ok`s would bury the
+            challenges the model is meant to weigh; an error-origin verdict is
+            excluded because its rationale is an engine message about a failed
+            call, and a model asked to answer it would be revising against
+            plumbing text.
           - `_checker_verdicts`, underscore-prefixed and therefore stripped
             from the model-facing payload by `result_to_model_text`: the FULL
             per-field verdict set, including the `ok`s, each verdict's
@@ -2793,10 +2900,16 @@ class Orchestrator:
         if not calls:
             return
         verdicts = self._run_checker_fanout(calls)
+        # An error-origin verdict is excluded: its rationale is this engine's
+        # report of a failed call, not a reading of the paper, and putting it
+        # in front of the extractor would have a model revise a value against
+        # plumbing text. A field whose check failed is simply unchecked, and
+        # the run records that in `_checker_verdicts` and in
+        # `checker_diagnostics.checker_errors`.
         challenges = {
             fp: (v.get("rationale") or "").strip()
             for fp, v in verdicts.items()
-            if v.get("verdict") == "challenge"
+            if v.get("verdict") == "challenge" and not v.get("error_origin")
         }
         if challenges:
             res["checker_challenges"] = challenges
@@ -2823,6 +2936,14 @@ class Orchestrator:
                 # a verdict with no cost figure states none, rather than
                 # defaulting to a zero that would read as a free call.
                 "cost_usd": v.get("cost_usd"),
+                # Carried only when a call's charge could not be read off its
+                # response, and then saying how many calls the figure above
+                # does not cover. A verdict whose cost is complete records no
+                # flag, so this is present exactly where a reader must not add
+                # the number up as if it were whole.
+                **({"cost_incomplete": True,
+                    "unreceipted_responses": v.get("unreceipted_responses")}
+                   if v.get("cost_incomplete") else {}),
             }
             for fp, v in verdicts.items()
         }
@@ -2997,6 +3118,20 @@ class Orchestrator:
                 self._cost_counted = True
                 acc["cost_usd"] += cost
                 acc["counted"] = True
+            # A check whose figure covers fewer calls than it made: the
+            # charge on a gateway-served response did not arrive, and the
+            # check reported what it could price (checker._spend). The run's
+            # total inherits the gap, because it is the sum that a reader
+            # would otherwise take for the whole bill.
+            if result.get("cost_incomplete"):
+                unreceipted = int(result.get("unreceipted_responses") or 0)
+                self._cost_incomplete = True
+                self._unreceipted_calls += unreceipted
+                # And onto the role that made the call, because the per-role
+                # record is what a reader sums when they want one stage's
+                # bill.
+                acc["incomplete"] = True
+                acc["unreceipted"] += unreceipted
             self._input_tokens += result.get("input_tokens", 0)
             self._output_tokens += result.get("output_tokens", 0)
             self._cache_creation_tokens += result.get(

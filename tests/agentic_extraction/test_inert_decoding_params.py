@@ -197,3 +197,92 @@ class TestWhereItIsSaidAndWhereItIsKept:
         resumed.resume_session(orch.session.session_dir)
         assert "WARNING: inert-decoding-param" in capsys.readouterr().err
         assert _inert(resumed) == before
+
+    def _resumed_event(self, orch):
+        return [e for e in orch.session.read_events()
+                if e.get("event") == "resumed"][-1]
+
+    def test_a_resumed_segment_records_the_block_it_states(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # The edit this record exists to make visible is one to a REFUSED
+        # control: it changes no resolved param, so no fingerprint moves, the
+        # drift gate admits the resume, and nothing else in the artefact shows
+        # it. Written once at creation, `decoding_specified` would then credit
+        # this segment's asks to the block the previous segment stated — the
+        # one case where the record is the only witness is the one case it
+        # would get wrong.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                     decoding_specified={"extractor": {"temperature": 1.0}})
+        orch.prepare_new_session()
+
+        resumed = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                        decoding_specified={"extractor": {"temperature": 0.0}})
+        resumed.resume_session(orch.session.session_dir)
+        assert resumed.session.meta["decoding_specified"] == {
+            "extractor": {"temperature": 0.0}}
+        # run.json holds the current segment's, so the per-segment history is
+        # on the event, both values on it.
+        event = self._resumed_event(resumed)
+        assert event["decoding_specified"] == {
+            "extractor": {"temperature": 0.0}}
+        assert event["previous_decoding_specified"] == {
+            "extractor": {"temperature": 1.0}}
+
+    def test_a_session_that_never_recorded_the_key_claims_no_change(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # A session written before this key existed says nothing about what its
+        # segment asked for. Read as "stated no controls", that silence makes
+        # the first resume of every such session announce a change — from a
+        # previous value nobody recorded — and the event exists precisely so
+        # that a change in it can be believed. Undetermined makes no claim.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                     decoding_specified={"extractor": {"temperature": 1.0}})
+        orch.prepare_new_session()
+        orch.session.meta.pop("decoding_specified")
+        orch.session.write_meta()
+
+        resumed = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                        decoding_specified={"extractor": {"temperature": 1.0}})
+        resumed.resume_session(orch.session.session_dir)
+        event = self._resumed_event(resumed)
+        assert "decoding_specified" not in event
+        assert "previous_decoding_specified" not in event
+        # The current segment's block is still recorded: what this segment
+        # asked for is knowable even where what the last one asked is not.
+        assert resumed.session.meta["decoding_specified"] == {
+            "extractor": {"temperature": 1.0}}
+
+    def test_an_empty_block_is_a_reading_and_a_move_away_from_it_is_reported(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # The other half of the same distinction: `Session.create` writes `{}`
+        # for a run that states no controls at all, which IS a reading. A
+        # resume that then states one has moved, and reading absent and empty
+        # alike would have to drop this event to silence the false one above.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                     decoding_specified={})
+        orch.prepare_new_session()
+        assert orch.session.meta["decoding_specified"] == {}
+
+        resumed = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                        decoding_specified={"extractor": {"temperature": 0.0}})
+        resumed.resume_session(orch.session.session_dir)
+        event = self._resumed_event(resumed)
+        assert event["previous_decoding_specified"] == {}
+        assert event["decoding_specified"] == {
+            "extractor": {"temperature": 0.0}}
+
+    def test_an_unchanged_block_leaves_the_resumed_event_silent(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # The ordinary resume changes nothing here, and an event that recorded
+        # the block every time would bury the segment where it moved.
+        specified = {"extractor": {"temperature": 1.0}}
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                     decoding_specified=specified)
+        orch.prepare_new_session()
+        resumed = _orch(config_dir, bundle_minimal_dir, tmp_path,
+                        decoding_specified=dict(specified))
+        resumed.resume_session(orch.session.session_dir)
+        event = self._resumed_event(resumed)
+        assert "decoding_specified" not in event
+        assert "previous_decoding_specified" not in event
+        assert resumed.session.meta["decoding_specified"] == specified

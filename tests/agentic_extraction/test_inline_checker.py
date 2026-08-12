@@ -276,6 +276,12 @@ def _live_orch(tmp_path, template, paper_text, image_labels, *,
     # below all carry one, so nothing goes uncosted and the run states a total.
     orch._cost_unpriced = False
     orch._cost_counted = False
+    # The coverage pair beside them: a checker call whose gateway charge did
+    # not arrive makes the run's sum a floor, and these say so and by how many
+    # calls. The stubbed verdicts below are all fully receipted, so a run that
+    # ends with either of these moved has been told something by a verdict.
+    orch._cost_incomplete = False
+    orch._unreceipted_calls = 0
     orch._input_tokens = 0
     orch._output_tokens = 0
     orch._cache_creation_tokens = 0
@@ -392,9 +398,8 @@ class TestVerdictRouting:
     def test_an_error_origin_challenge_is_recorded_as_such(
             self, tmp_path, synthetic_template, paper_text, image_labels,
             monkeypatch):
-        # An exhausted-retry failure degrades to a challenge rather than
-        # aborting, and the record says it was an API failure rather than an
-        # objection.
+        # A failed check degrades to a challenge rather than aborting, and the
+        # record says it was a failed call rather than an objection.
         _, res = self._applied(
             tmp_path, synthetic_template, paper_text, image_labels, monkeypatch,
             {"study.primary_aim": _verdict(
@@ -402,7 +407,57 @@ class TestVerdictRouting:
                 cost_usd=0.0)})
         assert res["_checker_verdicts"][
             "study.primary_aim"]["error_origin"] is True
-        assert "study.primary_aim" in res["checker_challenges"]
+        # And the flag is not decoration: it is what keeps the failure out of
+        # the challenges. Asserting only the flag would pass on an engine that
+        # recorded it and put the field to the extractor anyway.
+        assert "checker_challenges" not in res
+
+    def test_an_error_origin_challenge_never_reaches_the_model(
+            self, tmp_path, synthetic_template, paper_text, image_labels,
+            monkeypatch):
+        # Its rationale is this engine's report of a failed call. Shown to the
+        # extractor it would be an instruction to revise a value against
+        # plumbing text — a paid turn spent answering "(checker error: rate
+        # limit)" as though it were a reading of the paper.
+        orch, res = self._applied(
+            tmp_path, synthetic_template, paper_text, image_labels, monkeypatch,
+            {"study.primary_aim": _verdict(
+                "challenge", "(checker error: rate limit)", error_origin=True,
+                cost_usd=0.0)})
+        assert "checker_challenges" not in res
+        sent = result_to_model_text(res)
+        assert "checker error" not in sent
+        assert "checker_challenges" not in sent
+        # And the failure cost the field the one slot its own check used, and
+        # no more: nothing about degrading it re-checks anything.
+        assert orch._check_counts == {"study.primary_aim": 1}
+
+    def test_a_genuine_challenge_beside_a_failed_check_still_reaches_the_model(
+            self, tmp_path, synthetic_template, paper_text, image_labels,
+            monkeypatch):
+        # The exclusion is of the failed check, not of the batch it failed in.
+        orch = _live_orch(tmp_path, synthetic_template, paper_text,
+                          image_labels)
+        _stub_fanout(monkeypatch, {
+            "study.primary_aim": _verdict(
+                "challenge", "the quote is about administration"),
+            "study.sample_size": _verdict(
+                "challenge", "(checker error: rate limit)",
+                error_origin=True),
+        })
+        res = orch.dispatcher.dispatch("update_study", {"study": {
+            "primary_aim": {
+                "value": "Aim A",
+                "evidence": "<q>The WDS-9 was administered</q>"},
+            "sample_size": {
+                "value": 100,
+                "evidence": "<q>The WDS-9 was administered</q>"},
+        }})
+        orch._check_applied_fields(res, stage="extractor")
+        assert list(res["checker_challenges"]) == ["study.primary_aim"]
+        # Both are in the durable record; only one was put to the model.
+        assert set(res["_checker_verdicts"]) == {
+            "study.primary_aim", "study.sample_size"}
 
     def test_a_call_that_triggers_nothing_writes_neither_key(
             self, tmp_path, synthetic_template, paper_text, image_labels,

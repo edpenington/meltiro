@@ -385,6 +385,23 @@ class TestCheckOneField:
         assert result["output_tokens"] == 20
 
 
+def _direct_response(content, *, input_tokens=100, output_tokens=20,
+                     stop_reason=None):
+    """A canned NormalisedResponse from a DIRECT (un-routed) checker call.
+
+    Priced against the run's rate card rather than from the response, so it
+    carries no `reported_cost` at all — which is the ordinary state for a
+    direct call and never a missing receipt.
+    """
+    return NormalisedResponse(
+        content=content,
+        usage=NormalisedUsage(input_tokens=input_tokens,
+                              output_tokens=output_tokens),
+        resolved_model="claude-sonnet-4-6", provider="anthropic",
+        base_url=None, raw_request={}, raw_response={},
+        decoding_params={"max_tokens": 1024}, stop_reason=stop_reason)
+
+
 def _routed_response(content, *, model="z-ai/glm-5v-turbo",
                      reported_cost=0.0123, generation_id="gen-chk-1",
                      served="Z.AI", input_tokens=5, output_tokens=1):
@@ -421,6 +438,27 @@ class _RaisingAdapter:
         raise ProviderError("connection refused")
 
 
+class _SequenceAdapter:
+    """An adapter handing back one canned outcome per call, in order.
+
+    An outcome is a NormalisedResponse to return or an exception to raise, so
+    a check that is asked twice, or a batch whose first field fails and whose
+    second answers, can be scripted whole. The last outcome repeats, so a
+    script shorter than the calls made does not run out.
+    """
+
+    def __init__(self, *outcomes):
+        self._outcomes = list(outcomes)
+        self.calls = []
+
+    def create_message(self, **kwargs):
+        outcome = self._outcomes[min(len(self.calls), len(self._outcomes) - 1)]
+        self.calls.append(kwargs)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
 class TestCheckOneFieldRoutedCost:
     """A ROUTED (gateway-served) checker model is priced FROM the response
     (OpenRouter usage.cost -> reported_cost). That figure is a charge the
@@ -454,12 +492,72 @@ class TestCheckOneFieldRoutedCost:
         assert result["_provenance"]["generation_id"] == "gen-chk-1"
         assert result["_provenance"]["served_provider"] == "Z.AI"
 
-    def test_missing_reported_cost_raises_loudly(self):
-        with pytest.raises(RuntimeError, match="no reported cost"):
+    def test_a_missing_receipt_states_its_coverage_and_keeps_the_verdict(self):
+        # The ANSWERING call came back with no charge on it. The verdict was
+        # asked for, answered and billed, and it is what the run is buying: an
+        # unreadable price is a gap in the accounting, stated as one. The
+        # counters are the whole of what was billed either way.
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=self._config(), adapter=_StubAdapter(
+                self._response(reported_cost=None)))
+        assert result["verdict"] == "ok"
+        assert result["cost_usd"] == 0.0
+        assert result["cost_incomplete"] is True
+        assert result["unreceipted_responses"] == 1
+        assert (result["input_tokens"], result["output_tokens"]) == (5, 1)
+
+    def test_a_reasked_success_is_not_poisoned_by_the_first_asks_receipt(self):
+        # The first ask came back without the verdict tool AND without a
+        # charge on it; the second answered and was priced. The verdict is the
+        # second call's, and it stands: raising on the first ask's missing
+        # receipt would throw away a verdict that was asked for, answered, and
+        # paid for, over the price of the ask that failed. The gap is recorded
+        # instead, so the figure states its own coverage.
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=self._config(),
+            adapter=_SequenceAdapter(
+                _routed_response([_Text("prose")], model=self.ROUTED,
+                                 reported_cost=None),
+                self._response(reported_cost=0.02)))
+        assert result["verdict"] == "ok"
+        assert result["reprompted"] == 1
+        assert result["cost_usd"] == pytest.approx(0.02)
+        assert result["cost_incomplete"] is True
+        assert result["unreceipted_responses"] == 1
+
+    def test_a_failure_prices_what_it_can_and_says_what_it_could_not(self):
+        # Neither ask recorded a verdict, and neither came back with a charge.
+        # Costing this must not raise: the field is being degraded, not
+        # reported, and an exception here would leave the fan-out around it
+        # (see TestFailuresDegradeOnlyTheirOwnField).
+        adapter = _SequenceAdapter(
+            _routed_response([_Text("prose")], model=self.ROUTED,
+                             reported_cost=None))
+        with pytest.raises(CheckerError, match="no record_verdict call") as exc:
             check_one_field(
                 system_message_blocks=[], user_message_blocks=[],
-                config=self._config(), adapter=_StubAdapter(
-                    self._response(reported_cost=None)))
+                config=self._config(), adapter=adapter)
+        assert exc.value.spent["cost_usd"] == 0.0
+        assert exc.value.spent["cost_incomplete"] is True
+        assert exc.value.spent["unreceipted_responses"] == 2
+
+    def test_a_failure_still_costs_the_receipts_it_does_have(self):
+        # One ask charged, one not. The figure is the charge that was stated,
+        # and it is marked as covering less than the whole check rather than
+        # being withheld or rounded up to nothing.
+        adapter = _SequenceAdapter(
+            _routed_response([_Text("prose")], model=self.ROUTED,
+                             reported_cost=0.004),
+            _routed_response([_Text("prose")], model=self.ROUTED,
+                             reported_cost=None))
+        with pytest.raises(CheckerError) as exc:
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=self._config(), adapter=adapter)
+        assert exc.value.spent["cost_usd"] == pytest.approx(0.004)
+        assert exc.value.spent["unreceipted_responses"] == 1
 
 
 class TestRunCheckerBatch:
@@ -559,6 +657,22 @@ class TestRunCheckerBatch:
         assert results["study.x"]["input_tokens"] == 0
         assert results["study.x"]["cost_usd"] == 0.0
 
+    def test_a_failing_on_complete_stops_the_batch(self):
+        # The callback is the run's spend ledger and its meta checkpoint, not
+        # an audit-side nicety. Swallowing its failure would bank verdicts
+        # against a total that had stopped counting what they cost, and the
+        # run would finish reporting a number it knows to be wrong.
+        client = _client_returning()
+
+        def _ledger(field_path, result):
+            raise RuntimeError("meta write failed")
+
+        with pytest.raises(RuntimeError, match="meta write failed"):
+            run_checker_batch(
+                calls=[{"field_path": "study.x", "system_message_blocks": [],
+                        "user_message_blocks": []}],
+                config=_config(), client=client, on_complete=_ledger)
+
     def test_results_ordered_by_field_path(self):
         # Results are returned sorted by field path, not by nondeterministic
         # completion order, so the tool result the model reads and the session
@@ -576,6 +690,294 @@ class TestRunCheckerBatch:
             calls=calls, config=_config(), client=client,
         )
         assert list(results.keys()) == sorted(unsorted_paths)
+
+
+class TestFailuresDegradeOnlyTheirOwnField:
+    """A batch is a set of paid siblings. Whatever one field's check does on
+    its way to failing, the other fields' verdicts come back.
+
+    Concurrency is 1 throughout, so the scripted adapter's outcomes land in
+    field order.
+    """
+
+    ROUTED = "z-ai/glm-5v-turbo"
+
+    def _config(self):
+        return CheckerConfig(api_key="x", checker_model=self.ROUTED,
+                             max_tokens=1024, concurrency=1)
+
+    def _calls(self, *paths):
+        return [{"field_path": p, "system_message_blocks": [],
+                 "user_message_blocks": []} for p in paths]
+
+    def _prose(self, **kw):
+        return _routed_response([_Text("prose")], model=self.ROUTED, **kw)
+
+    def _ok(self, **kw):
+        return _routed_response([_verdict_block("ok", "fine")],
+                                model=self.ROUTED, **kw)
+
+    def test_a_failure_with_no_receipt_prices_itself_and_spares_the_batch(self):
+        # Both of the failed field's asks came back without a charge on them.
+        # Costing that must not raise: the exception would leave the pool
+        # through `fut.result()` and take the second field's paid verdict with
+        # it.
+        adapter = _SequenceAdapter(
+            self._prose(reported_cost=None), self._prose(reported_cost=None),
+            self._ok(reported_cost=0.01))
+        results = run_checker_batch(
+            calls=self._calls("study.bad", "study.good"),
+            config=self._config(), adapter=adapter)
+        assert results["study.bad"]["error_origin"] is True
+        assert results["study.bad"]["cost_usd"] == 0.0
+        assert results["study.bad"]["cost_incomplete"] is True
+        assert results["study.bad"]["unreceipted_responses"] == 2
+        assert results["study.good"]["verdict"] == "ok"
+
+    def test_an_answering_call_with_no_receipt_keeps_its_verdict(self):
+        # A verdict the checker gave, on a call that was made and billed. The
+        # only thing missing is the gateway's charge for it, and the whole
+        # cost of treating that as fatal falls on the answer: the field would
+        # be recorded as unchecked, its check slot spent, and an error-origin
+        # challenge banked at $0 for work that was paid for. So the verdict
+        # stands, the counters are the real sums, and the figure says what it
+        # does not cover.
+        adapter = _SequenceAdapter(
+            self._ok(reported_cost=None), self._ok(reported_cost=0.01))
+        results = run_checker_batch(
+            calls=self._calls("study.bad", "study.good"),
+            config=self._config(), adapter=adapter)
+        verdict = results["study.bad"]
+        assert verdict["verdict"] == "ok"
+        assert verdict["error_origin"] is False
+        assert "error" not in verdict
+        assert (verdict["input_tokens"], verdict["output_tokens"]) == (5, 1)
+        assert verdict["cost_usd"] == 0.0
+        assert verdict["cost_incomplete"] is True
+        assert verdict["unreceipted_responses"] == 1
+        assert results["study.good"]["verdict"] == "ok"
+
+    def test_an_unexpected_exception_is_named_and_kept_to_its_field(self):
+        # Anything at all: a fault in the plumbing this engine does not have a
+        # structured error for. The batch still returns, and the exception's
+        # type is in the record rather than swallowed, so it is not
+        # indistinguishable from an ordinary provider failure.
+        adapter = _SequenceAdapter(
+            ValueError("adapter fell over"), self._ok(reported_cost=0.01))
+        results = run_checker_batch(
+            calls=self._calls("study.bad", "study.good"),
+            config=self._config(), adapter=adapter)
+        assert results["study.bad"]["error_origin"] is True
+        assert "ValueError: adapter fell over" == results["study.bad"]["error"]
+        assert results["study.bad"]["cost_usd"] == 0.0
+        assert results["study.good"]["verdict"] == "ok"
+
+
+class TestEveryRaiseCarriesItsSpend:
+    """A failed check reports what its calls cost. A raise with no spend on it
+    ledgers billed work at $0, and the run's total then reads low with nothing
+    in the artefact to contradict it."""
+
+    def _calls(self):
+        return [{"field_path": "study.x", "system_message_blocks": [],
+                 "user_message_blocks": []}]
+
+    def test_an_invalid_verdict_carries_the_call_that_produced_it(self):
+        # A verdict outside the vocabulary is an answer that arrived unusable.
+        # The call that produced it was billed exactly like one that answered.
+        client = _client_returning("maybe", "unsure", input_tokens=100,
+                                   output_tokens=20)
+        results = run_checker_batch(
+            calls=self._calls(), config=_config(), client=client)
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["input_tokens"] == 100
+        assert degraded["output_tokens"] == 20
+        assert degraded["cost_usd"] > 0
+
+    def test_a_provider_error_carries_the_asks_that_came_before_it(self):
+        # The first ask reached the provider, came back without a verdict, and
+        # was billed; the re-ask hit a provider error. The field is degraded
+        # holding the first ask's spend.
+        from direktoro import ProviderError
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("prose")], input_tokens=40,
+                             output_tokens=5),
+            ProviderError("gateway refused the re-ask"))
+        results = run_checker_batch(
+            calls=self._calls(), config=_config(), adapter=adapter)
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["input_tokens"] == 40
+        assert degraded["output_tokens"] == 5
+        assert degraded["cost_usd"] > 0
+
+    def test_a_fault_with_no_structured_error_is_priced_from_its_calls(
+            self, monkeypatch):
+        # A fault this module has no vocabulary for, raised AFTER the response
+        # came back: the ask was made and billed, whatever went wrong reading
+        # it. Only the check itself knows what had completed by then, so it is
+        # what prices the failure — the fan-out's backstop holds no responses
+        # and would ledger the call at $0.
+        import direktoro
+
+        def _boom(response, name):
+            raise ValueError("verdict reader fell over")
+
+        monkeypatch.setattr(direktoro, "extract_tool_call", _boom)
+        adapter = _SequenceAdapter(
+            _direct_response([_Text("prose")], input_tokens=90,
+                             output_tokens=12))
+        results = run_checker_batch(
+            calls=self._calls(), config=_config(), adapter=adapter)
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["error"] == "ValueError: verdict reader fell over"
+        assert degraded["input_tokens"] == 90
+        assert degraded["output_tokens"] == 12
+        assert degraded["cost_usd"] > 0
+
+    def test_a_failure_on_an_unpriced_model_states_no_cost(self):
+        # A direct model with no rate card: nothing prices its calls, and the
+        # tokens are the whole of the record. A failed check says so exactly
+        # as a successful one does — a 0.0 here would be this field asserting
+        # its calls were free, and it would let the run state a total that
+        # silently leaves them out.
+        client = _client_returning("maybe", "unsure", input_tokens=100,
+                                   output_tokens=20)
+        results = run_checker_batch(
+            calls=self._calls(), config=_config(rates=None), client=client)
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["input_tokens"] == 100
+        assert degraded["output_tokens"] == 20
+        assert degraded["cost_usd"] is None
+
+    def test_a_partial_spend_mapping_still_degrades_its_field(self):
+        # A CheckerError from a library caller, carrying half a spend record.
+        # The degradation is the fan-out's last line, so reading a counter it
+        # does not hold would raise out of the pool and take the batch's other
+        # verdicts with it — the exact failure this path exists to prevent.
+        class _PartialAdapter:
+            def create_message(self, **kwargs):
+                raise CheckerError("half a record",
+                                   spent={"input_tokens": 7})
+
+        results = run_checker_batch(
+            calls=self._calls(), config=_config(),
+            adapter=_PartialAdapter())
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["input_tokens"] == 7
+        assert degraded["output_tokens"] == 0
+        assert degraded["reprompted"] == 0
+        assert degraded["cost_usd"] == 0.0
+
+    def test_a_failure_that_reached_no_provider_costs_zero(self):
+        # The other side of it, and why the null above is not simply "unknown
+        # cost": no call was made, so zero tokens were billed, and zero tokens
+        # cost zero under any card or none. Withholding a figure here would
+        # withhold the run's total over a call that never happened.
+        results = run_checker_batch(
+            calls=self._calls(), config=_config(rates=None),
+            adapter=_RaisingAdapter())
+        degraded = results["study.x"]
+        assert degraded["error_origin"] is True
+        assert degraded["input_tokens"] == 0
+        assert degraded["cost_usd"] == 0.0
+
+
+class TestTruncationKeepsWhatItPaidFor:
+    """The cap is read AFTER the verdict. A tool call is the whole of what the
+    checker is asked for, so a reply that made one and then ran out of room
+    answered the question."""
+
+    def test_a_complete_verdict_on_a_capped_reply_is_kept(self):
+        client = _client_returning_content(
+            [_verdict_block("challenge", "the quote gives no denominator")],
+            stop_reason="max_tokens")
+        result = check_one_field(
+            system_message_blocks=[], user_message_blocks=[],
+            config=_config(), client=client)
+        assert result["verdict"] == "challenge"
+        assert result["rationale"] == "the quote gives no denominator"
+
+    def test_a_capped_reply_with_an_unusable_verdict_still_names_the_cap(self):
+        # The verdict is outside the vocabulary, so nothing was recovered and
+        # the cap is the fault worth naming — it is the line an operator would
+        # edit. Two faults describe this one reply, and the cap is the one
+        # that CAUSED the other: reported as an invalid verdict it would send
+        # an operator to look at a checker model that answered as well as a
+        # cut-off reply allowed. Not re-asked: a cap that truncated once will
+        # truncate again.
+        client = _client_returning_content(
+            [_verdict_block("maybe", "unsure")], stop_reason="max_tokens")
+        with pytest.raises(CheckerError, match="max_tokens cap") as exc:
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=_config(), client=client)
+        assert "Invalid verdict" not in str(exc.value)
+        assert client.messages.stream.call_count == 1
+
+    def test_a_capped_reply_with_no_verdict_at_all_names_the_cap(self):
+        # The other arm of the same guard: the cap cut the reply off before
+        # the tool call, so there is no verdict to keep. Read as an ordinary
+        # tool-free reply this would buy a second ask under the same cap and
+        # then report a checker that declined to call its tool — two claims
+        # about the model, for what is a number in pipeline.yaml.
+        client = _client_returning_content(
+            [_Text("Looking at the quote,")], stop_reason="max_tokens")
+        with pytest.raises(CheckerError, match="max_tokens cap") as exc:
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=_config(), client=client)
+        assert "no record_verdict call" not in str(exc.value)
+        assert client.messages.stream.call_count == 1
+
+
+class TestAReplyWithNothingToReadAVerdictFrom:
+    """A verdict is an object of named arguments. Anything else is an absence
+    of one, handled as any other tool-free reply and never as an exception
+    thrown from the middle of the check."""
+
+    def test_a_tool_input_that_is_not_an_object_is_a_tool_free_reply(self):
+        client = _client_returning_streams(
+            _stream_returning_content([_ToolUse(CHECKER_VERDICT_TOOL_NAME,
+                                                "ok")]),
+            _stream_returning_content([_ToolUse(CHECKER_VERDICT_TOOL_NAME,
+                                                "ok")]),
+        )
+        with pytest.raises(CheckerError, match="no record_verdict call") as exc:
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=_config(), client=client)
+        # What arrived is named, so the failure is not reported as a model
+        # that declined to call the tool when it called it with a string.
+        assert "not an object of arguments" in str(exc.value)
+        assert client.messages.stream.call_count == 2
+
+    def test_a_tool_call_with_no_arguments_at_all_is_named(self):
+        # Reads back as "no tool call and no reason why", which would leave
+        # the failure message trailing a bare `None`.
+        client = _client_returning_streams(
+            _stream_returning_content([_ToolUse(CHECKER_VERDICT_TOOL_NAME,
+                                                None)]),
+            _stream_returning_content([_ToolUse(CHECKER_VERDICT_TOOL_NAME,
+                                                None)]),
+        )
+        with pytest.raises(CheckerError, match="no arguments at all"):
+            check_one_field(
+                system_message_blocks=[], user_message_blocks=[],
+                config=_config(), client=client)
+
+    def test_it_degrades_the_field_rather_than_the_batch(self):
+        client = _client_returning_content(
+            [_ToolUse(CHECKER_VERDICT_TOOL_NAME, ["ok"])])
+        results = run_checker_batch(
+            calls=[{"field_path": "study.x", "system_message_blocks": [],
+                    "user_message_blocks": []}],
+            config=_config(), client=client)
+        assert results["study.x"]["error_origin"] is True
 
 
 class TestCheckerConfig:

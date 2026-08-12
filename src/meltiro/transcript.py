@@ -52,6 +52,7 @@ from meltiro.diagnostics import (
     captures_api_calls, captures_instrument, validate_diagnostics)
 from meltiro.errors import SessionError
 from meltiro.field_history import build_field_history
+from meltiro.rates import cost_with_coverage
 
 # The document `extract` writes at every stop, inside the session's
 # diagnostics directory: it is a record of the run, not the run's product.
@@ -252,13 +253,17 @@ class _Session:
     # -- convenience ------------------------------------------------------
 
     def checker_messages(self):
-        """`{(field_path, check_index): rendered user message}` from the wire
-        log.
+        """`{(field_path, check_index): [message per ask]}` from the wire log.
 
         The checker's per-field user message is rendered at call time and
         stored nowhere but the wire log, so this map is empty at any level
         below `full`. `check_index` disambiguates a field checked more than
-        once; both keys are logged on the call by `checker.run_checker_batch`.
+        once, and `ask` disambiguates the calls WITHIN one check: a reply that
+        called no verdict tool is re-asked, and both asks were sent, billed,
+        and logged. They are collected as a list in ask order rather than
+        keyed by (field, check) alone, which would keep whichever landed last
+        and hide the ask that made the re-ask necessary. Every key is logged on
+        the call by `checker.check_one_field`.
         """
         out = {}
         for call in self.api_calls:
@@ -270,8 +275,12 @@ class _Session:
             text = _user_text_from_request(call.get("request") or {})
             if text is None:
                 continue
-            out[(field_path, call.get("check_index"))] = text
-        return out
+            asks = out.setdefault((field_path, call.get("check_index")), [])
+            # `ask` is the 0-based ask number; a log written before it was
+            # recorded has none, and those keep their file order.
+            asks.append((call.get("ask") or 0, text))
+        return {key: [text for _ask, text in sorted(asks, key=lambda a: a[0])]
+                for key, asks in out.items()}
 
 
 def _user_text_from_request(request):
@@ -441,6 +450,22 @@ def _money(value):
     return f"${value:.6f}"
 
 
+def _run_cost_cell(meta):
+    """The run's total, and how much of the run it covers.
+
+    A call whose charge could not be read is counted in tokens and not in
+    dollars, which leaves the sum covering less than the run. Printing it bare
+    would understate the run by however many calls came back without a
+    receipt, so the figure carries the count of them, in the wording every
+    other cost cell here uses.
+    """
+    cost = meta.get("cost_usd")
+    if not meta.get("cost_incomplete"):
+        return _money(cost)
+    return cost_with_coverage(cost, _money(cost),
+                              meta.get("unreceipted_calls"))
+
+
 def _role_cost_cell(block):
     """One role's cost, distinguishing "nothing priced this" from "this never
     ran".
@@ -449,12 +474,37 @@ def _role_cost_cell(block):
     made calls nobody could price has spend the record cannot state, while a
     role that made no calls has none to state. Reading the counters is what
     tells them apart, and a run that stopped before the reviewer's turn puts
-    exactly that case in front of a reader.
+    exactly that case in front of a reader. A latched coverage flag is read
+    the same way: it is set by a call, so it is itself proof the role ran.
+
+    The coverage rides on the ROLE's own figure as well as on the run's,
+    because these are the rows a reader adds up when they want one stage's
+    bill: a floor that reached this table bare would be summed as a total.
     """
-    if block.get("cost_usd") is None and not any(
+    cost = block.get("cost_usd")
+    incomplete = block.get("cost_incomplete")
+    if cost is None and not incomplete and not any(
             block.get(counter) for counter in _TOKEN_COUNTERS):
         return "*(no calls)*"
-    return _money(block.get("cost_usd"))
+    if not incomplete:
+        return _money(cost)
+    return cost_with_coverage(cost, _money(cost),
+                              block.get("unreceipted_calls"))
+
+
+def _checker_cost_cell(aggregate):
+    """What the checker cost, and how much of the checking it covers.
+
+    The rule the run's own total follows, applied to the checker's share: a
+    check whose charge never arrived is billed and counted in tokens, so this
+    sum prices fewer calls than the checker made and is stated as the floor it
+    is.
+    """
+    cost = aggregate.get("checker_cost_usd")
+    if not aggregate.get("checker_cost_incomplete"):
+        return _money(cost)
+    return cost_with_coverage(cost, _money(cost),
+                              aggregate.get("checker_unreceipted_responses"))
 
 
 def _present(value, absent="*(not recorded)*"):
@@ -702,7 +752,11 @@ class _Renderer:
             "The configured id is the alias the config named. The reported id "
             "is what the provider said it served, read off the first call "
             "that role made. The decoding parameters are the exact dict the "
-            "adapter sent, after any provider quirk was applied."
+            "adapter sent, after any provider quirk was applied; what the "
+            "config asked for is recorded beside it in `run.json` as "
+            "`decoding_specified`, because a model that refuses a control is "
+            "sent none of it and the wire alone cannot say whether a value "
+            "was written at all."
         )
         self._p()
         self._block(_table(
@@ -778,7 +832,10 @@ class _Renderer:
              _present(caps.get("max_review_tool_calls"))),
             ("Extractor tool calls dispatched",
              _present(meta.get("tool_call_count"))),
-            ("Checker calls made", _present(meta.get("checker_calls_run"))),
+            # CHECKS, not calls: a check whose first reply recorded no verdict
+            # is re-asked, and that check made two provider calls. The wire log
+            # is where the calls are counted.
+            ("Checks run", _present(meta.get("checker_calls_run"))),
         ]))
         self._p(
             "The caps are the budget the CURRENT segment honoured. They ride "
@@ -792,7 +849,7 @@ class _Renderer:
         self._p("### Spend")
         self._p()
         self._block(_kv_table(["Meter", "Total"], [
-            ("Cost", _money(meta.get("cost_usd"))),
+            ("Cost", _run_cost_cell(meta)),
             ("Input tokens (charged in full)",
              _present(meta.get("input_tokens"))),
             ("Output tokens", _present(meta.get("output_tokens"))),
@@ -1564,17 +1621,30 @@ class _Renderer:
         self._p(f"**The checker looked at "
                 f"{_plural(len(verdicts), 'field')} written by this call.**")
         self._p()
+        # What this call actually put to the model, read off the event rather
+        # than assumed from the verdict: whether a failed check's text reached
+        # the extractor is a fact about the run being rendered, and a document
+        # that asserted the engine's current rule would misdescribe any
+        # session recorded under a different one.
+        challenged = set(result.get("checker_challenges") or {})
         for path, verdict in verdicts.items():
-            self._render_verdict(path, verdict or {})
+            self._render_verdict(path, verdict or {},
+                                 shown_to_extractor=path in challenged)
 
-    def _render_verdict(self, path, verdict):
+    def _render_verdict(self, path, verdict, *, shown_to_extractor=False):
         self._check_n += 1
         n = self._check_n
         anchor = f"check-{n}"
         kind = verdict.get("verdict", "(no verdict)")
         error_origin = bool(verdict.get("error_origin"))
         if error_origin:
-            headline = "challenge, but from an exhausted retry"
+            # No cause in the headline: a check ends without a verdict from
+            # exhausted retries, a reply that called no tool, a cut-off reply,
+            # a verdict outside the vocabulary, or a fault in the plumbing.
+            # Naming one of them here would be a claim about this check that
+            # the rationale below is the actual record of.
+            headline = ("challenge, but from a failed check — not a checker "
+                        "judgement")
             label = "check error"
         elif kind == "challenge":
             headline = "challenge"
@@ -1587,28 +1657,57 @@ class _Renderer:
             label = str(kind)
         ordinal = self._check_ordinal.get(path, 0) + 1
         self._check_ordinal[path] = ordinal
+        reprompted = verdict.get("reprompted")
+        reprompted = int(reprompted) if isinstance(reprompted, int) else 0
         self._p(_anchor(anchor))
         suffix = "" if ordinal == 1 else f" (check {ordinal} of this field)"
+        if reprompted:
+            times = "once" if reprompted == 1 else _plural(reprompted, "time")
+            suffix += f" (re-asked {times})"
         self._p(f"##### Check {n}. `{path}`: {headline}{suffix}")
         self._p()
         self._note(path, f"check {n} {label}", anchor)
 
         if error_origin:
+            reached = ("its text WAS put to the extractor in this call's "
+                       "tool result" if shown_to_extractor else
+                       "its text was not put to the extractor")
             self._p(
-                "This is not a judgement. The checker call failed after its "
-                "retries were exhausted and was degraded to a challenge so "
-                "the batch would not abort. It is an absence of information, "
-                "it spent one of the field's check slots, and it was billed "
-                "at zero because no call completed. No request reached the "
-                "wire log either, so there is no message to print below."
+                "This is not a judgement. The check failed, and the failure "
+                "was degraded to a challenge so that the other fields in its "
+                "batch would not fail with it. It is an absence of "
+                "information rather than an objection to the value: it spent "
+                f"one of the field's check slots, {reached}, and it cost "
+                # The same cell the table below prints, so a failed check's
+                # figure states its coverage in prose too: this is the check
+                # most likely to have lost a receipt, its call having gone
+                # wrong.
+                f"{self._verdict_cost_cell(verdict)} — the calls behind a "
+                "failed check may well have completed and been billed before "
+                "their answers turned out to be unusable. What was sent is "
+                "printed below whenever the session kept a wire log of it."
             )
             self._p()
 
-        message = self._checker_messages.get((path, ordinal))
-        if message is not None:
+        messages = self._checker_messages.get((path, ordinal)) or []
+        if len(messages) > 1:
+            # Every ask was its own single-turn call, and every one of them
+            # was sent and billed. The first is the one that came back without
+            # a verdict, which is the whole reason there is a second.
+            self._p(
+                f"This check took {_plural(len(messages), 'ask')}, each its "
+                f"own single-turn call. All of them in full:")
+            self._p()
+            for i, text in enumerate(messages, start=1):
+                which = ("the first ask" if i == 1 else
+                         "re-asked, with the nudge to record a verdict")
+                self._p(f"Ask {i} of {len(messages)}, {which}:")
+                self._p()
+                self._block(_fence(text, "text"))
+        elif messages:
             self._p("The message this check was sent, in full:")
             self._p()
-            self._block(_fence(message, "text"))
+            self._block(_fence(messages[0], "text"))
         elif not captures_api_calls(self.s.level):
             self._p(
                 "*The rendered user message for this check is not in the "
@@ -1632,8 +1731,14 @@ class _Renderer:
             ["Extractor's note, as it saw it",
              _value_cell(verdict.get("note_checked"))],
             ["Verdict", f"`{kind}`"],
+            # How many times the checker had to be re-asked before it recorded
+            # a verdict at all. It says something about the CHECKER MODEL
+            # rather than about this field, and it is beside the outcome
+            # because it is also what says how many calls the cost below
+            # covers.
+            ["Re-asks before a verdict", _present(reprompted)],
             ["Raised by", _code_cell(verdict.get("stage"))],
-            ["Cost", _money(verdict.get("cost_usd"))],
+            ["Cost", self._verdict_cost_cell(verdict)],
             ["Tokens",
              f"{_present(verdict.get('input_tokens'))} in, "
              f"{_present(verdict.get('output_tokens'))} out"],
@@ -1647,6 +1752,22 @@ class _Renderer:
             self._p("Its own note on the verdict:")
             self._p()
             self._block(_quote(verdict["notes"]))
+
+    @staticmethod
+    def _verdict_cost_cell(verdict):
+        """One check's cost, and how much of the check it covers.
+
+        A gateway-served call states its own charge, and a response that came
+        back without one leaves a figure that prices the rest. Saying so where
+        the number is printed is the difference between a small cost and an
+        understated one. One check can make more than one call — a re-ask is a
+        second — so the count is of this check's own calls.
+        """
+        cost = verdict.get("cost_usd")
+        if not verdict.get("cost_incomplete"):
+            return _money(cost)
+        return cost_with_coverage(cost, _money(cost),
+                                  verdict.get("unreceipted_responses"))
 
     def _render_run_event(self, event):
         text = _describe_run_event(event)
@@ -1698,10 +1819,13 @@ class _Renderer:
              _present(aggregate.get("challenges_revised"))],
             ["Challenges answered by standing by the value",
              _present(aggregate.get("challenges_overruled"))],
-            ["Checker calls lost to exhausted retries",
+            # Every way a check can end without a verdict — retries exhausted,
+            # a reply that recorded none, a cut-off reply, an answer outside
+            # the vocabulary — counts here. Naming one of them would read as a
+            # claim that the others did not happen.
+            ["Checks that ended with no verdict",
              _present(aggregate.get("check_errors"))],
-            ["What the checker cost",
-             _money(aggregate.get("checker_cost_usd"))],
+            ["What the checker cost", _checker_cost_cell(aggregate)],
         ]))
         self._p(
             "No arithmetic identity holds between these: one field can be "
@@ -1850,6 +1974,20 @@ def _describe_run_event(event):
     if name == "session_started":
         return "the session was created."
     if name == "resumed":
+        # The decoding sentence appears only on a segment that changed the
+        # blocks: the event carries the pair exactly then, and a control the
+        # model refuses moves no fingerprint, so this note is the only place
+        # such an edit is visible at all.
+        decoding = ""
+        if "decoding_specified" in event:
+            decoding = (
+                " The decoding this segment states is not the previous "
+                "segment's: "
+                + json.dumps(event.get("previous_decoding_specified"),
+                             ensure_ascii=False, sort_keys=True)
+                + " to "
+                + json.dumps(event.get("decoding_specified"),
+                             ensure_ascii=False, sort_keys=True) + ".")
         return (
             "the run was resumed. Extractor tool-call cap "
             f"{event.get('previous')} to {event.get('max_tool_calls')}, "
@@ -1859,7 +1997,7 @@ def _describe_run_event(event):
             f"{event.get('previous_diagnostics')} to "
             f"{event.get('diagnostics')}. The code tree was "
             + ("dirty" if event.get("git_dirty") else "clean")
-            + " at the start of this segment."
+            + " at the start of this segment." + decoding
         )
     if name == "extractor_reprompt":
         return ("the turn called no tool, so *meltiro* sent this back: "

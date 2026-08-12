@@ -33,10 +33,17 @@ class CheckerError(AgenticExtractionError):
     `cache_read_tokens`) plus `responses`, how many billed calls there were.
     It is empty for a failure that reached no provider (a missing key) or
     whose every attempt errored, and populated for one that got an answer and
-    could not use it — a truncated reply, or a run of replies that called no
-    tool. Those calls cost money, and a run that reported them as free would
-    understate its own spend; `run_checker_batch` reads this to price the
-    degraded field honestly.
+    could not use it — a truncated reply, a verdict outside the vocabulary, or
+    a run of replies that called no tool. Those calls cost money, and a run
+    that reported them as free would understate its own spend;
+    `run_checker_batch` reads this to price the degraded field honestly.
+
+    A routed call whose response carried no charge of its own adds
+    `cost_incomplete` and `unreceipted_responses` to the mapping: the dollar
+    figure then covers the receipts there were, and says how many calls it
+    does not cover. Costing a failure must not itself fail — a batch of paid
+    sibling verdicts hangs on it — so the absence is recorded here rather than
+    raised.
     """
 
     _NO_SPEND = {
@@ -47,8 +54,19 @@ class CheckerError(AgenticExtractionError):
         "cache_read_tokens": 0,
     }
 
+    @classmethod
+    def no_spend(cls):
+        """The counters for a failure that billed nothing.
+
+        Here rather than spelled again at each call site, so a caller that
+        degrades a field WITHOUT a CheckerError in hand (a plumbing fault that
+        arrived as some other exception) prices it in the same shape this
+        class carries.
+        """
+        return dict(cls._NO_SPEND)
+
     def __init__(self, message, spent=None):
-        self.spent = dict(spent) if spent else dict(self._NO_SPEND)
+        self.spent = dict(spent) if spent else self.no_spend()
         super().__init__(message)
 
 

@@ -33,7 +33,10 @@ def build_entry(session, *, input_tokens=0, output_tokens=0,
         cost_usd: aggregate USD across every call, or None when the run
             states no figure. None is never rendered as zero — an unpriced
             run was not a free one (see `rates.py`) — and the token counters
-            above are the durable record of what it spent.
+            above are the durable record of what it spent. A run whose
+            `run.json` marks the total as covering fewer calls than it made
+            carries that here too (`cost_incomplete`, `unreceipted_calls`),
+            because the figure is then a floor.
         cost_rates: `{role: card}`, the rate card each role's calls were
             costed at (`meltiro.rates.Rates.as_record()`, which carries the
             card's own provenance), null for a role that had none. Recorded
@@ -44,7 +47,10 @@ def build_entry(session, *, input_tokens=0, output_tokens=0,
             the same meters as the run-wide fields above split by role. The
             run-wide totals are sums over these and nothing else. A role's
             `cost_usd` is null on exactly the terms the run's is: unpriced,
-            never zero.
+            never zero. A role whose figure covers fewer calls than it made
+            carries the same pair the run does (`cost_incomplete`,
+            `unreceipted_calls`), so summing these blocks rebuilds the run's
+            floor as a floor rather than as a total.
         validation_passed: whether the run reached the status whose extraction
             is the canonical, usable answer (`status in VALIDATED_STATUSES`).
             A record of HOW THE RUN ENDED, not a fresh verdict on the shipped
@@ -98,6 +104,13 @@ def build_entry(session, *, input_tokens=0, output_tokens=0,
         "cache_creation_tokens": cache_creation_tokens,
         "cache_read_tokens": cache_read_tokens,
         "cost_usd": cost_usd,
+        # Carried only when a charge could not be read, and then saying how
+        # many calls the figure above does not cover. This is a cross-run
+        # index, read by a consumer summing many runs into one bill, so a
+        # floor that arrived here dressed as a total would be added up as one.
+        **({"cost_incomplete": True,
+            "unreceipted_calls": meta.get("unreceipted_calls")}
+           if meta.get("cost_incomplete") else {}),
         "cost_rates": cost_rates or {},
         "usage_by_role": usage_by_role or {},
         "validation_passed": validation_passed,

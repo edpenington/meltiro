@@ -238,6 +238,27 @@ def engine_identity():
             direktoro_version(), direktoro_source_hash())
 
 
+def current_engine_fp(identity=None):
+    """The `engine_fp` the code running right now would record.
+
+    One expression of "which engine is this", so every consumer of the answer
+    — the fingerprint a new session records, the one a resumed segment
+    records, the comparison a refused resume makes to name the axis that moved
+    — computes it the same way and can be compared against the others.
+
+    `identity` is an `engine_identity()` quadruple for a caller that already
+    has one and wants the fingerprint OF that reading; omitted, a fresh
+    reading is taken. Passing the one in hand is what keeps a segment's
+    recorded versions and its recorded fingerprint two views of a single
+    reading rather than two readings taken moments apart.
+
+    Imported lazily so this module keeps importing with nothing behind it.
+    """
+    from meltiro.fingerprint import engine_fingerprint
+    return engine_fingerprint(*(identity if identity is not None
+                                else engine_identity()))
+
+
 def _log_path(log_dir):
     """Resolve the run log file path."""
     return Path(log_dir) / "run_log.json"

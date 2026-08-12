@@ -437,8 +437,13 @@ a dollar sign.
 
 A gateway-routed model is priced from the charge the gateway reports on each
 response: a fact about what was billed rather than a prediction, so that role
-needs no card, is never looked up in the table, and a missing charge is a loud
-failure.
+needs no card and is never looked up in the table. A response that carries no
+charge is a loud failure for the extractor and the reviewer, whose call stands
+alone. For a checker call it is recorded instead — one field's check runs in a
+fan-out beside paid siblings, and its verdict is what the run is buying — so
+the figure covers the receipts there were and says how many calls it does not,
+`run.json` carries `cost_incomplete` and `unreceipted_calls`, and the CLI and
+transcript state the total as *at least* that much.
 
 Rates are commercial, not methodological. Two runs differing only in the prices
 you typed asked the same models the same questions of the same paper, so a rate
