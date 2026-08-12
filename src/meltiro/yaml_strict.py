@@ -9,10 +9,10 @@ the template, would change the run with no error.
 
 `strict_load` parses through `StrictLoader`, which rejects a duplicate key with
 a `yaml.constructor.ConstructorError` (a `yaml.YAMLError`, exactly what
-`safe_load` raises on malformed YAML). Every config parse site therefore keeps
-its existing YAML-error handling unchanged: the reference-list loader catches
+`safe_load` raises on malformed YAML). Every config parse site therefore
+handles it through its own YAML-error path: the reference-list loader catches
 the error and wraps it in a ConfigBundleError, the pipeline.yaml and template
-loaders let it propagate as they already do for any other malformed YAML.
+loaders let it propagate as they do for any other malformed YAML.
 
 Only config parsing uses this. Code that writes YAML or parses non-config data
 is unaffected.

@@ -18,17 +18,16 @@ Grouped by what they do:
 
 The model registry is not re-exported here. It belongs to the shared
 `direktoro` package, a declared dependency of this one, and a consumer that
-wants it imports it from there: a forwarding layer would only add a second name
-for the same object and a second thing to keep in step.
+wants it imports it from there.
 
 Everything above is importable with direktoro absent. That is what lets a
 bundle-reading consumer install this wheel `--no-deps` — a way of skipping the
-PROVIDER LAYER (direktoro, `anthropic`, `openai`), not a claim that the package
-has no dependencies. `pyyaml` is still required by this import itself
-(`meltiro.reference_lists`), and `python-dotenv` by the CLI, so such a consumer
-installs those two by hand. `meltiro.cli` imports direktoro at module scope and
-is outside the promise: the contract is about `import meltiro`, not about the
-command.
+PROVIDER LAYER (direktoro and the provider SDKs it brings), not a claim that
+the package has no dependencies. `pyyaml` is still required by this import
+itself (`meltiro.reference_lists`), and `python-dotenv` by the CLI, so such a
+consumer installs those two by hand. `meltiro.cli` imports direktoro at module
+scope and is outside the promise: the contract is about `import meltiro`, not
+about the command.
 """
 
 from meltiro.bundle import PaperBundle, load_bundle

@@ -67,8 +67,8 @@ def make_entry(call_type: str, request_kwargs: dict, response: Any,
     # and varies by model — a thinking spec, an output config, whichever
     # sampling controls that model accepts — so anything short of every key
     # omits exactly what nobody thought to enumerate. It is also the only copy
-    # on the Anthropic path, where the wire request IS this object and is
-    # suppressed below.
+    # wherever the canonical request IS the wire request, which is suppressed
+    # below.
     request = dict(request_kwargs)
     if "system" in request:
         request["system"] = redact_system(request["system"])

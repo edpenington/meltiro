@@ -317,7 +317,7 @@ class Orchestrator:
             self.extractor_model)
 
         # Cost / token accumulators across all calls in the session.
-        # `_input_tokens` matches Anthropic usage.input_tokens semantics:
+        # `_input_tokens` matches the `usage.input_tokens` a response reports:
         # it counts ONLY tokens charged at full price (cache misses + the
         # bit of the prompt that isn't cacheable). cache_creation_tokens
         # (write, 1.25x) and cache_read_tokens (read, 0.1x) are tracked
@@ -992,9 +992,9 @@ class Orchestrator:
         The same `resolved_decoding_params` the adapters call and the stage
         fingerprints fold in, so this reports what goes on the wire rather
         than what pipeline.yaml asked for. The two differ whenever a model
-        declares a refusal: a model that refuses a sampling control (Opus
-        4.7+, the GPT-5.x reasoning family) is sent none of it, so a specified
-        value is silently inert for that role and moves no fingerprint.
+        declares a refusal: a model that refuses a sampling control is sent
+        none of it, so a specified value is silently inert for that role and
+        moves no fingerprint.
 
         A disabled stage records None rather than a guessed dict: its model is
         not required, so it must not be resolved through the registry.
@@ -1378,10 +1378,11 @@ class Orchestrator:
                     # and an unchanged resume re-runs the same inputs into the
                     # same spiral.
                     return "text_only_stall"
-                # A GLM extractor (which cannot force a tool and so runs under
-                # "auto") that declined to call one is re-prompted with a firm
-                # nudge; count that auto-degrade retry in meta. No-op for a
-                # forcing model, whose text-only turn is the general guard.
+                # An extractor whose registry entry declares no forced tool
+                # choice (so it runs under "auto") and that declined to call a
+                # tool is re-prompted with a firm nudge; count that
+                # auto-degrade retry in meta. No-op for a forcing model, whose
+                # text-only turn is the general guard.
                 self._maybe_record_auto_degrade_retry("extractor")
                 reprompt = EXTRACTOR_TOOL_REPROMPT
                 self._append_user_text(reprompt)
@@ -1748,9 +1749,9 @@ class Orchestrator:
                     })
                     return ("review_text_only_stall", mutations_attempted,
                             mutations_applied)
-                # Auto-degrade provenance: a non-forcing (GLM) reviewer under
-                # "auto" that narrated without calling mark_complete is nudged
-                # once; count it. No-op for a forcing model (the general guard).
+                # Auto-degrade provenance: a non-forcing reviewer under "auto"
+                # that narrated without calling mark_complete is nudged once;
+                # count it. No-op for a forcing model (the general guard).
                 self._maybe_record_auto_degrade_retry("review")
                 reprompt = REVIEW_TOOL_REPROMPT
                 messages.append({
@@ -1937,9 +1938,10 @@ class Orchestrator:
         """(stage, model, key_present) for every enabled stage, in spend order.
 
         Each stage is checked against its OWN model, because that is what
-        decides which key the call needs: naming a GPT reviewer beside a Claude
-        extractor makes the run need two variables, and a run is short of a key
-        the moment any one enabled stage is.
+        decides which key the call needs: a reviewer reached through a
+        different endpoint from the extractor's makes the run need two
+        variables, and a run is short of a key the moment any one enabled
+        stage is.
         """
         out = [("extractor", self.extractor_model,
                 self._provider_key_present(self.extractor_model))]
@@ -2342,8 +2344,8 @@ class Orchestrator:
         """Record one auto-degrade retry for `stage` in meta, as provenance.
 
         Called at a tool-free re-prompt when the stage's model cannot force a
-        named tool_choice (the routed GLM vision endpoints: Z.AI 404s a
-        forced choice, so the loop sends tool_choice "auto" — meltiro never
+        named tool_choice (any model whose registry entry declares the forced
+        choice unsupported: the loop sends tool_choice "auto" — meltiro never
         forces a tool — and the model MAY decline to call one). The count is
         `meta.auto_degrade_retries[stage]`. It stays absent/zero for every
         FORCING model: their tool-free turns are still re-prompted, but that
@@ -2511,7 +2513,7 @@ class Orchestrator:
     def _role_usage(self, role):
         """One role's live meters, created zeroed on first use.
 
-        `cache_write_tokens` is the counter Anthropic reports as
+        `cache_write_tokens` is the counter a response reports as
         `cache_creation_input_tokens` and `meltiro.rates` prices as
         `cache_write_per_1m`; it is named for the rate here so a per-role record
         and the card that priced it read in the same vocabulary.
@@ -2702,9 +2704,9 @@ class Orchestrator:
         acc["cache_write_tokens"] += cache_create
         acc["cache_read_tokens"] += cache_read
         # Three costing paths. A ROUTED (gateway-served) model is priced FROM
-        # the response (OpenRouter usage.cost -> reported_cost), a charge the
-        # gateway states rather than one anybody predicts; a missing value is a
-        # loud fault, never a silent $0. A DIRECT model is priced against THIS
+        # the response (its `reported_cost`), a charge the gateway states
+        # rather than one anybody predicts; a missing value is a loud fault,
+        # never a silent $0. A DIRECT model is priced against THIS
         # ROLE's rate card, and the card is recorded with the figure so the
         # arithmetic stays checkable. A direct call whose role has no card is
         # not costed at all: its tokens are recorded, the role states no figure
@@ -2743,10 +2745,10 @@ class Orchestrator:
         A consumer building a per-run ledger row reads two provenance fields
         off each run's meta:
 
-          - `transport`: "direct" (only Anthropic/OpenAI direct calls),
+          - `transport`: "direct" (every call went straight to its endpoint),
             "openrouter" (only gateway-served calls), or "mixed" when a run's
             stages used both (e.g. a direct extractor with a routed checker).
-          - `generation_ids`: the OpenRouter generation ids of the routed calls,
+          - `generation_ids`: the gateway generation ids of the routed calls,
             in call order. These are external audit receipts a direct call has
             no equivalent for. Empty (but present) for a direct-only run.
 

@@ -42,9 +42,8 @@ _VALID_EVIDENCE = {"required", "optional"}
 # default: its value must match one of the options exactly (after
 # case/whitespace canonicalisation). Adding `allow_other: true` turns the
 # option list into a set of typical values while still accepting any
-# free-text string that fits none of them. There is no `soft`
-# enum flag and no separate `<name>_other` companion field: the free text
-# goes directly in the field's value.
+# free-text string that fits none of them; that free text goes directly in the
+# field's own value.
 
 # Allowed values for the per-field `role:` flag. A role marks a field for
 # mechanical wiring by the pipeline (never by field name):
@@ -52,7 +51,7 @@ _VALID_EVIDENCE = {"required", "optional"}
 #     context when the paper bundle carries no manifest `summary`.
 # `summary` is the only role: the study id is a pipeline concern sourced from
 # the bundle manifest and recorded in the run's output metadata, not a template
-# field, so there is no `role: study_id` (nor the retired `role: doi`).
+# field, so there is no `role: study_id`.
 # A role-bearing field must be a plain-string field, sit in its role's scope,
 # and at most one field may claim each role; these constraints are enforced in
 # load_template (`_resolve_role_fields`). Unknown role values are rejected in
@@ -89,9 +88,7 @@ _GATE_KEYS = {"when_field", "field", "allowed_values"}
 # optional human-facing name, `qa` an optional presentation flag marking the
 # section as quality assessment, `extraction_instruction` optional
 # section-level guidance, and `fields` the field list. Anything else is a load
-# error, so a mistyped key fails loudly instead of being ignored. The retired
-# section-level `notes:` block gets its own targeted message (see
-# `_parse_sections`) before this allowlist is applied.
+# error, so a mistyped key fails loudly instead of being ignored.
 _SECTION_KEYS = {"section", "label", "qa", "extraction_instruction", "fields"}
 
 # Keys one field may carry, in any block. `variable` (the stable identifier)
@@ -200,8 +197,7 @@ def _parse_records(raw):
     `_validate_checker_context_fields`.
 
     Exactly one record type is supported: zero entries or more than one is a
-    loud load error. Lifting that means threading a list of record types
-    through the parsed template, the tool builder, and the dispatcher.
+    loud load error.
     """
     if "records" not in raw or raw["records"] is None:
         raise ValueError(
@@ -351,8 +347,7 @@ def _resolve_field_type(f):
     every input this module reads.
 
     A literal "Other" entry inside an options list is a config error: free
-    text outside the option set is expressed with `allow_other: true`, not
-    with an "Other" option plus a companion field.
+    text outside the option set is expressed with `allow_other: true`.
     """
     var = f["variable"]
     has_options = "options" in f and f["options"] is not None

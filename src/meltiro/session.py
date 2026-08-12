@@ -46,9 +46,9 @@ them and must stay resolvable without knowing the invocation cwd.
 Resume reads `diagnostics/run.json` first (refuses if status != in_progress or
 if any supplied stage fingerprint, config_fp / checker_fp / review_fp, does not
 match), repairs a torn final jsonl line if a hard kill left one, then
-replays `tool_calls.jsonl` to rebuild the Anthropic conversation
-byte-identically (the assistant side from each turn's `assistant_message`
-event, the tool_result side from the same serialisation the live loop sent).
+replays `tool_calls.jsonl` to rebuild the conversation byte-identically (the
+assistant side from each turn's `assistant_message` event, the tool_result
+side from the same serialisation the live loop sent).
 """
 
 import json
@@ -337,7 +337,7 @@ class Session:
         the transcript view never needs to reach back to local config / paper
         text / figure directories:
 
-        - `tool_definitions.json`: the schema passed to the Anthropic API
+        - `tool_definitions.json`: the tool schema as sent
         - `system_prompt.txt`: the rendered EXTRACTOR system message text
         - `user_prompt.txt`: the rendered user-message text portion
           (paper text + image-label notice)
@@ -973,8 +973,9 @@ class Session:
     # ----------------------------------------------------------------------
 
     def replay_messages(self):
-        """Rebuild the Anthropic `messages` list from the saved tool_calls
-        jsonl, byte-identical to what the live run sent.
+        """Rebuild the `messages` list, in direktoro's canonical conversation
+        format, from the saved tool_calls jsonl, byte-identical to what the
+        live run sent.
 
         Each turn contributes an assistant message and (usually) a paired
         user message. The assistant message is the verbatim ordered content
@@ -1000,8 +1001,8 @@ class Session:
         explicit "extractor" too; anything else is excluded, which fails closed
         for any stage added later.
 
-        Returns the list of message dicts in the order the Anthropic API
-        expects.
+        Returns the list of message dicts in the order the canonical
+        conversation format expects.
         """
         events = self.read_events()
         # Group by turn_id (insertion order). Each turn collects the verbatim

@@ -223,11 +223,12 @@ that paused on its cap (`in_progress`) or finished `failed_validation`. `1` —
 status `error`, an invalid bundle, or any failure of the read-only subcommands.
 `2` — a usage error, or a resume refused for config drift.
 
-**Providers and keys.** Transport follows `direktoro`: Anthropic and OpenAI are
-called direct, and everything else (GLM, Qwen, …) routes through the OpenRouter
-gateway, pinned and fingerprinted. Three keys — `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `OPENROUTER_API_KEY` (see `.env.example`). A run needs only
-the keys its enabled roles use.
+**Providers and keys.** Transport follows `direktoro`: its registry decides,
+per model, which endpoint the call goes to, whether it is called direct or
+routed through a gateway, and which environment variable holds the key — all
+pinned and fingerprinted. A run needs only the keys its enabled roles' models
+use, and a missing one is named, with the stage that wanted it, before any
+spend.
 
 **Environment.** Beyond those keys, `CHECKER_CONCURRENCY` is the only variable
 *meltiro* reads, and it is a fallback for `checker_concurrency` that
@@ -674,9 +675,9 @@ registry is direktoro's own surface and is imported from there; the CLI does
 require it.
 
 **What `--no-deps` buys, exactly.** It is a way to install this wheel *without
-the provider layer* — direktoro, `anthropic` and `openai` — not a claim that
-the package has no dependencies. Two are still needed and pip will not fetch
-them for you:
+the provider layer* — direktoro and the provider SDKs it brings — not a claim
+that the package has no dependencies. Two are still needed and pip will not
+fetch them for you:
 
 ```bash
 pip install --no-deps "meltiro @ git+https://github.com/edpenington/meltiro"
@@ -685,8 +686,8 @@ pip install python-dotenv   # needed by the CLI only; omit for library use
 ```
 
 Without `pyyaml` the import itself fails (`meltiro.reference_lists` imports
-`yaml`). With it, and with direktoro, `anthropic`, `openai` and `python-dotenv`
-all absent, every name in `__all__` resolves and nothing pulls direktoro into
+`yaml`). With it, and with the whole provider layer and `python-dotenv`
+absent, every name in `__all__` resolves and nothing pulls direktoro into
 `sys.modules`. A `no-direktoro-import` job in CI installs exactly this way and
 asserts precisely that.
 

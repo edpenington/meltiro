@@ -223,7 +223,7 @@ def compute_prompt_config_hash(*, system_prompt_path,
 
 
 def system_message_blocks(text):
-    """Wrap the rendered system text in the Anthropic cache_control shape."""
+    """Wrap the rendered system text in the canonical cache_control shape."""
     return [
         {
             "type": "text",

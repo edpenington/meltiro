@@ -1,4 +1,4 @@
-"""Anthropic tool definitions + dispatcher.
+"""Tool definitions in direktoro's canonical tool shape, plus the dispatcher.
 
 Ten tools the extractor can call, nine of which the final reviewer also gets.
 Each tool's input_schema is a JSON Schema the API uses to coax the model into
@@ -202,10 +202,9 @@ def _record_id_examples(ent):
 # Every declared template field is an ordinary extractable field: it appears in
 # the LLM tool schema and is validated per its scope (the checker fans out over
 # every study and record field, quality-assessment ones included).
-# There is no "identity" or pipeline-managed field concept. The one value the
-# pipeline owns, the study id, is not a template field at all: the engine reads
-# it from the bundle manifest and records it in the run's output metadata
-# (run.json `study_id`), never as a per-record extracted field.
+# The one value the pipeline owns, the study id, is not a template field at
+# all: the engine reads it from the bundle manifest and records it in the run's
+# output metadata (run.json `study_id`), never as a per-record extracted field.
 
 
 # ---------------------------------------------------------------------------
@@ -479,9 +478,9 @@ def _properties_from_sections(sections, *, envelope, exclude_vars=(),
     map suitable for use as a JSON Schema `properties` block.
 
     Every declared field is offered to the model: no field is pipeline-managed
-    or hidden from the schema, and there is no `_other` companion convention
-    (free text goes directly in an allow_other field's value). The
-    `exclude_vars` argument is the only exclusion.
+    or hidden from the schema, and an allow_other field's free text goes
+    directly in its own value. The `exclude_vars` argument is the only
+    exclusion.
 
     `slim=True` (envelope blocks only) emits bare {value, evidence, notes}
     envelopes with no per-field description and no enum list; used by
@@ -881,7 +880,7 @@ def _view_record_tool(template):
 
 
 def get_tool_definitions(template, role=ROLE_EXTRACTOR):
-    """Build the list of Anthropic tool definitions for one role.
+    """Build the list of tool definitions for one role.
 
     Schemas are derived from `template` so editing the extraction
     template propagates to tool_set_hash, and the model sees enum

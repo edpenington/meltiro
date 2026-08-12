@@ -38,9 +38,8 @@ Four rules define a window.
    of the character budget and of the slack in rule 2. This is the rule that
    resolves the motivating case: a fixed window cuts a wide table mid-row, and
    the header row is exactly what says whether a number is a count or a
-   percentage. It is the one deliberate exemption, and it is not a candidate
-   for later tidying: bounding it would give back the only thing the window
-   was built to buy.
+   percentage. It is the one deliberate exemption: bounding it would give back
+   the only thing the window was built to buy.
 
 Positions come from `quote_check.locate_quote`, which reports where each
 fragment landed in the paper text as the paper actually writes it. A quote
@@ -58,9 +57,9 @@ from meltiro.quote_check import locate_quote
 
 # The markers wrapping the quoted span inside a rendered window. The checker
 # must never mistake surrounding paper text for the evidence it was handed, so
-# the span is delimited explicitly rather than by position. The forms are
-# chosen to be absent from research-paper prose (as `<q>` is on the extractor's
-# side) and to survive inside a markdown table cell.
+# the span is delimited explicitly. The forms are chosen to be absent from
+# research-paper prose (as `<q>` is on the extractor's side) and to survive
+# inside a markdown table cell.
 QUOTE_OPEN_MARKER = "[[QUOTE]]"
 QUOTE_CLOSE_MARKER = "[[/QUOTE]]"
 
@@ -255,8 +254,7 @@ def _window_bounds(paper_text, index, start, end, context_chars):
     snapping is bounded by `_LINE_SNAP_SLACK`, so the window is at most
     `context_chars + _LINE_SNAP_SLACK` per side. The TABLE rule is deliberately
     not: reaching a table's header row and caption is the point of the feature,
-    and a header out of budget is exactly the case that motivated it, so it is
-    never traded away for a tidier window size.
+    and a header out of budget is exactly the case that motivated it.
     """
     ws = _snap_start(paper_text, index,
                      max(0, start - context_chars))

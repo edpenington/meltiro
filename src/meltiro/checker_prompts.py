@@ -12,9 +12,9 @@ bundle's checker prompt file with `{include:...}` partials expanded and
 `{reference:...}` lists rendered in, nothing else. No field catalogue (the
 `template` argument is accepted for signature stability and discarded);
 every field-specific detail reaches the checker through the user message.
-`build_checker_user_message(...)` returns that message as a list of Anthropic
-content blocks: the rendered text, preceded for an image-sourced field by a
-caption block and the cropped PNG, which IS the evidence. The cache_control
+`build_checker_user_message(...)` returns that message as a list of content
+blocks: the rendered text, preceded for an image-sourced field by a caption
+block and the cropped PNG, which IS the evidence. The cache_control
 wrapper is `prompt_builder.system_message_blocks`, re-exported here so a
 checker call site need not reach across to the extractor's module.
 
@@ -452,10 +452,10 @@ def _image_caption(label):
 
 def _attach_image_block(label, figures):
     """Read the cropped PNG for an image-cited field from the paper
-    bundle's `figures` map (label -> Path) and return an Anthropic image
-    content block. Lookup is case-insensitive so it tolerates the
-    checker's lower-cased label. Returns None if the label isn't in the
-    map or the file is missing (caller decides how to surface that)."""
+    bundle's `figures` map (label -> Path) and return an image content block.
+    Lookup is case-insensitive so it tolerates the checker's lower-cased
+    label. Returns None if the label isn't in the map or the file is missing
+    (caller decides how to surface that)."""
     if not figures:
         return None
     lookup = {str(k).lower(): v for k, v in figures.items()}
@@ -512,9 +512,9 @@ def build_checker_user_message(
             side of a matched quote (`checker_context_chars` in
             pipeline.yaml). 0, the default here, renders no context at all.
 
-    Returns a list of Anthropic content blocks suitable for the user
-    message of the checker call: the rendered text as one block, preceded for
-    an image-sourced field by a caption block and the cropped PNG per image
+    Returns a list of content blocks suitable for the user message of the
+    checker call: the rendered text as one block, preceded for an
+    image-sourced field by a caption block and the cropped PNG per image
     its evidence cites. No cache_control on any of them: what the checker's
     calls share is the system prompt, and that is where the marker goes
     (`prompt_builder.system_message_blocks`); this message is one field's.
@@ -557,9 +557,9 @@ def build_checker_user_message(
     blocks = [{"type": "text", "text": rendered}]
 
     # Attach every cropped PNG referenced by an <img>...</img> tag in the
-    # evidence string. Images go BEFORE the text in the user message per
-    # Anthropic's image-grounded-task guidance; a tiny "[label]" caption
-    # block precedes each image so the checker can correlate them with
+    # evidence string. Images go BEFORE the text in the user message, so the
+    # checker reads the question after the image it is about; a tiny "[label]"
+    # caption block precedes each image so the checker can correlate them with
     # the references in the text body.
     if image_attach_labels and figures:
         image_blocks = []

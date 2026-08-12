@@ -1090,8 +1090,8 @@ class _Renderer:
         self._p("### Routing receipts")
         self._p()
         self._p(
-            "One OpenRouter generation id per gateway-routed call, in call "
-            "order. A directly served call has no equivalent receipt."
+            "One gateway generation id per routed call, in call order. A "
+            "directly served call has no equivalent receipt."
         )
         self._p()
         self._block(_fence("\n".join(str(i) for i in ids), "text"))

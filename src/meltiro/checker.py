@@ -93,9 +93,9 @@ VALID_VERDICTS = frozenset(CHECKER_VERDICTS)
 
 # How many times one field's check may be re-asked when the reply records no
 # verdict. One: a checker model under a forced tool_choice should not need
-# even that, and a model that declines twice is not going to answer on a third
-# ask — it is misconfigured, and the error-origin challenge says so at a cost
-# of one extra call rather than several.
+# even that, and a model that declines twice is misconfigured — the
+# error-origin challenge says so at a cost of one extra call rather than
+# several.
 MAX_TOOL_FREE_REPROMPTS = 1
 
 # The correction a verdict-free checker reply is re-asked with. Four replies
@@ -383,11 +383,11 @@ def _spend(config, responses):
     and reporting only the second would understate the run.
 
     Three costing paths: a ROUTED checker model is priced FROM the responses
-    (OpenRouter usage.cost -> reported_cost); a DIRECT model is priced against
-    the checker's rate card, which is recorded with the run so the figure stays
-    checkable; a DIRECT model with no rate card states no cost at all, leaving
-    the token counters as the record. None is deliberate there and is never a
-    0.0, which would read as a free call.
+    (the charge the gateway reported, as `reported_cost`); a DIRECT model is
+    priced against the checker's rate card, which is recorded with the run so
+    the figure stays checkable; a DIRECT model with no rate card states no cost
+    at all, leaving the token counters as the record. None is deliberate there
+    and is never a 0.0, which would read as a free call.
 
     Costing NEVER raises, on any path. A routed response that came back
     without a charge on it is recorded rather than refused: the returned
@@ -457,8 +457,8 @@ def _spend(config, responses):
 def reported_cost_or_raise(model, response):
     """The response-reported USD cost for a ROUTED (gateway-served) call.
 
-    Routed models take their cost FROM the response (OpenRouter `usage.cost` ->
-    `NormalisedResponse.reported_cost`). That figure is a charge the gateway
+    Routed models take their cost FROM the response
+    (`NormalisedResponse.reported_cost`). That figure is a charge the gateway
     states, not one anybody predicts, so it needs no rate card and is recorded
     whether or not the run configures one. A routed response that carries no
     reported cost is a plumbing fault (`usage.include` did not reach the
@@ -757,10 +757,10 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
                 # Audit-side errors must not abort the checker call.
                 pass
 
-        # Read the verdict off the response by BLOCK TYPE rather than by
-        # position, so any leading block a model or endpoint emits ahead of
-        # the tool call — reasoning, a sentence of preamble — is skipped
-        # rather than mistaken for the answer.
+        # Read the verdict off the response by BLOCK TYPE, so any leading
+        # block a model or endpoint emits ahead of the tool call — reasoning,
+        # a sentence of preamble — is skipped rather than mistaken for the
+        # answer.
         tool_input, last_error = extract_tool_call(
             response, CHECKER_VERDICT_TOOL_NAME)
         if not isinstance(tool_input, dict):

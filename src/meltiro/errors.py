@@ -34,9 +34,8 @@ class CheckerError(AgenticExtractionError):
     It is empty for a failure that reached no provider (a missing key) or
     whose every attempt errored, and populated for one that got an answer and
     could not use it — a truncated reply, a verdict outside the vocabulary, or
-    a run of replies that called no tool. Those calls cost money, and a run
-    that reported them as free would understate its own spend;
-    `run_checker_batch` reads this to price the degraded field honestly.
+    a run of replies that called no tool. Those calls cost money, so
+    `run_checker_batch` reads this to price the degraded field.
 
     A routed call whose response carried no charge of its own adds
     `cost_incomplete` and `unreceipted_responses` to the mapping: the dollar
