@@ -512,11 +512,12 @@ def build_review_user_blocks(study_id, paper_text, figures,
             "--- ASSEMBLED EXTRACTION OUTPUT (to review) ---\n"
             + extraction_record_text
             + "\n--- END EXTRACTION OUTPUT ---\n\n"
-            "If the extraction output is correct, call `mark_complete` with a one-"
-            "sentence summary. If it needs revisions, call `update_study` "
+            "If the extraction output is correct, call `mark_complete`. "
+            "If it needs revisions, call `update_study` "
             "/ `update_record` / `add_record` / "
             "`remove_record` first, then `mark_complete`. The review ends only "
-            "when you call `mark_complete`, so call it once you are satisfied."
+            "when you call a terminating tool, so call `mark_complete` once "
+            "you are satisfied."
         ),
     })
 

@@ -566,6 +566,32 @@ class TestItReadsStartToFinish:
             assert f"`{exhibit['label']}`" in figures
             assert exhibit["caption"] in figures
 
+    def test_2_6_reads_an_exhibits_record_that_carries_labels_alone(
+            self, session):
+        """The section's tolerance, matching the rest of the document's: an
+        exhibits record whose entries are bare labels still renders. Each
+        label is named, and the caption cell reports the caption as not
+        recorded rather than the render failing or a caption being invented
+        for it.
+        """
+        path = session.session.instrument_dir / "image_labels.json"
+        exhibits = json.loads(path.read_text())
+        captions = [e["caption"] for e in exhibits if e.get("caption")]
+        assert captions, "the fixture recorded no caption to do without"
+        path.write_text(json.dumps([e["label"] for e in exhibits]),
+                        encoding="utf-8")
+
+        figures = _between(render_transcript(session.session.session_dir),
+                           "### 2.6 The figures",
+                           "### 2.7 The checker's per-field scaffold")
+        assert "| Label | Caption |" in figures
+        for exhibit in exhibits:
+            assert f"`{exhibit['label']}`" in figures
+        assert "*(not recorded)*" in figures
+        # Nothing stood in for the captions the record does not carry.
+        for caption in captions:
+            assert caption not in figures
+
     def test_the_appendix_prints_every_definition_in_full(self, session):
         """Moved, not summarised: every description and every schema is still
         in the document, byte for byte."""

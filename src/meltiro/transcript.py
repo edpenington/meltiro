@@ -1342,9 +1342,14 @@ class _Renderer:
                     "session.*")
             self._p()
             return
-        # Each entry is `{"label", "caption"}`: the label an `<img>` citation
+        # An entry is `{"label", "caption"}`: the label an `<img>` citation
         # names, and the paper's own caption for the crop, which is the half a
-        # label cannot carry and the bundle directory need no longer hold.
+        # label cannot carry and the bundle directory need no longer hold. A
+        # bare string is a label on its own, from a session whose record keeps
+        # no captions; it is read as an exhibit whose caption is unknown, and
+        # the caption cell says so rather than the section failing to render.
+        exhibits = [{"label": e, "caption": None} if isinstance(e, str) else e
+                    for e in exhibits]
         labels = [e["label"] for e in exhibits]
         if not exhibits:
             self._p(

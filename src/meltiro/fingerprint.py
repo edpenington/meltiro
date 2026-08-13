@@ -254,12 +254,11 @@ def review_config_fingerprint(call_identity,
     one alone. `call_identity` is the review model's provider-call identity
     block (see the module docstring). `system_prompt_text` is the CONFIG's
     half of the review system prompt (`prompt_builder.build_config_prompt_text`):
-    reference placeholders already substituted, image labels rendered empty, so
-    two papers under one config share the fingerprint, and the engine's own
-    reviewer prompts outside it. `reference_hash` is here because the reviewer
-    drives the
-    same `ToolDispatcher` the extractor does: an alias edit — rendered into
-    no prompt — changes which values its tool calls may write.
+    reference placeholders already substituted, so two papers under one config
+    share the fingerprint, and the engine's own reviewer prompts outside it.
+    `reference_hash` is here because the reviewer drives the same
+    `ToolDispatcher` the extractor does: an alias edit — rendered into no
+    prompt — changes which values its tool calls may write.
     """
     sp = _sha256(system_prompt_text)
     key = (f"{call_identity}|{sp}|{tool_set_hash}|{structure_hash}"
