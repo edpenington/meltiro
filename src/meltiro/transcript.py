@@ -218,6 +218,7 @@ class _Session:
             ("extractor_user", "user_prompt.txt", False),
             ("review_system", "review_system_prompt.txt", False),
             ("checker_system", "checker_system_prompt.txt", False),
+            ("checker_scaffold", "checker_user_scaffold.txt", False),
             ("tools", "tool_definitions.json", True),
             ("image_labels", "image_labels.json", True),
         ):
@@ -1187,6 +1188,30 @@ class _Renderer:
         )
         self._render_tool_index()
         self._render_figures()
+        self._render_checker_scaffold()
+
+    def _render_checker_scaffold(self):
+        """2.7: the scaffold the run's checks were rendered from.
+
+        Absent for a run with no checker, which captures none, and 2.4 above
+        has already said the stage was off; a heading over a note repeating it
+        would be a subsection about a message nothing sent. So this one is
+        skipped outright rather than reported absent, and the numbering above
+        it stays put whether it appears or not.
+        """
+        text = self.s.instrument["checker_scaffold"]
+        if text is None:
+            return
+        self._render_prompt(
+            "instrument-checker-scaffold",
+            "2.7 The checker's per-field scaffold",
+            text,
+            "Every check the run made was rendered from this text, with the "
+            "per-field slots left standing as the tokens they are. A check "
+            "fills them with the field's own definition, the extractor's "
+            "value, evidence and note, and the paper around each quote it "
+            "cites; what is printed here is what every check had in common.",
+        )
 
     def _render_prompt(self, anchor, heading, text, blurb, off_note=None):
         self._p(_anchor(anchor))

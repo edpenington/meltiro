@@ -157,9 +157,9 @@ def _parse_args(argv=None):
                     help="Render the full system prompt, tool catalogue, "
                          "figure labels, stage fingerprints and — with the "
                          "checker on — the per-field scaffold every check is "
-                         "asked through plus one specimen check, print them "
-                         "untruncated, and exit (no API calls, no session "
-                         "created).")
+                         "asked through plus a specimen check for the first "
+                         "field a check could reach, print them untruncated, "
+                         "and exit (no API calls, no session created).")
     ex.add_argument("--extractor-model", help="Override extractor model.")
     ex.add_argument("--checker-model", help="Override checker model.")
     ex.add_argument("--review-model", help="Override final-review model.")

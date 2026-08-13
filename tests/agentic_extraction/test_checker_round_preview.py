@@ -22,6 +22,7 @@ Everything here is offline: no provider call is made or stubbed, because a dry
 run makes none and a prepared session makes none before its first turn.
 """
 
+import re
 import shutil
 
 import pytest
@@ -44,6 +45,40 @@ CHECKER = "claude-sonnet-4-6"
 
 SCAFFOLD_FILE = "checker_user_scaffold.md"
 SPECIMEN_FILE = "checker_round_sample.md"
+
+# The scaffold slots a live check fills from the extraction and the paper, and
+# that the specimen therefore fills with engine-written content. Every other
+# slot takes the template's own text — the field, its description, what it
+# may hold — which no preview fabricates.
+FABRICATED_SLOTS = ("identity_context", "evidence_block", "value",
+                    "notes_block")
+
+_SLOT = re.compile(r"\{([a-z_]+)\}")
+
+# What may follow the marker at the end of a fabricated string: the quote marks
+# a string value is rendered inside, and the sentence punctuation the sample
+# paper text carries. Never a bracket — the marker itself ends in one.
+_CLOSERS = " \t\n\"'`.,;:!?"
+
+
+def _rendered_slots(scaffold, specimen):
+    """What the specimen holds where the scaffold holds each slot.
+
+    Carved out of the two artefacts themselves: the scaffold's literal text
+    between its slots is the anchor, so this reads whatever slots the scaffold
+    declares rather than a list kept here that could fall behind it.
+    """
+    pattern, names, pos = [], [], 0
+    for slot in _SLOT.finditer(scaffold):
+        pattern.append(re.escape(scaffold[pos:slot.start()]))
+        pattern.append(f"(?P<{slot.group(1)}>.*?)")
+        names.append(slot.group(1))
+        pos = slot.end()
+    pattern.append(re.escape(scaffold[pos:]))
+    filled = re.fullmatch("".join(pattern), specimen, re.DOTALL)
+    assert filled, ("the specimen is not this scaffold with its slots filled "
+                    "in, so nothing here is reading the slot it names")
+    return {name: filled.group(name) for name in names}
 
 
 def _orch(config_dir, bundle_dir, out_dir, *, max_checks_per_field=2,
@@ -221,6 +256,16 @@ class TestTheSpecimenUsesARealField:
 
 
 class TestNothingInTheSpecimenReadsAsRealContent:
+    """The guarantee is about the ARTEFACT, not about the constants behind it.
+
+    A preview whose sample content could be mistaken for a paper's own is
+    worse than no preview, and the constants are only one route into it: text
+    composed at the render site, or added around a constant there, reaches an
+    operator's screen having passed through no `_SAMPLE_*` name at all. So the
+    marker is asserted over the rendered round — slot by slot, and paragraph
+    by paragraph — with the constants kept as the fast first line.
+    """
+
     def test_every_value_the_engine_writes_says_it_is_a_sample(self):
         # The property at its source, so a value added later without a marker
         # fails here rather than shipping into a preview an operator reads as
@@ -230,6 +275,42 @@ class TestNothingInTheSpecimenReadsAsRealContent:
         assert written
         for name, value in written.items():
             assert SAMPLE_MARKER in value, name
+
+    @pytest.mark.parametrize("slot", FABRICATED_SLOTS)
+    def test_each_fabricated_slot_ends_in_the_marker(
+            self, config_dir, bundle_minimal_dir, tmp_path, slot):
+        """Where a live check would carry the paper's content, the specimen
+        carries the engine's, and the last thing an operator reads in that slot
+        says so. Ending with it rather than merely containing it is what
+        catches content written around a marked constant: a sentence appended
+        after the marker leaves the slot finishing on words nothing labels."""
+        _, report_dir = _report(config_dir, bundle_minimal_dir, tmp_path)
+        slots = _rendered_slots(
+            (report_dir / SCAFFOLD_FILE).read_text(encoding="utf-8"),
+            (report_dir / SPECIMEN_FILE).read_text(encoding="utf-8"))
+        assert slot in slots, "the scaffold no longer carries this slot"
+        rendered = slots[slot].rstrip(_CLOSERS)
+        assert rendered, f"{slot} rendered empty, so it asserts nothing"
+        assert rendered.endswith(SAMPLE_MARKER), (
+            f"the specimen's {slot} ends on content nothing marks as the "
+            f"engine's: ...{slots[slot][-120:]!r}")
+
+    def test_no_marked_paragraph_trails_off_into_unmarked_content(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        """The same property inside a slot. A slot holds engine framing as
+        well as sample content (the quote-context lead-in, the note's
+        preamble), and framing carries no marker and needs none. What may not
+        happen is a paragraph that IS sample content running on into content
+        that is not: once a paragraph carries the marker, the marker is the
+        last thing in it."""
+        _, report_dir = _report(config_dir, bundle_minimal_dir, tmp_path)
+        specimen = (report_dir / SPECIMEN_FILE).read_text(encoding="utf-8")
+        marked = [p for p in specimen.split("\n\n") if SAMPLE_MARKER in p]
+        assert len(marked) >= 4, "too few sample paragraphs to be reading one"
+        for paragraph in marked:
+            assert paragraph.rstrip(_CLOSERS).endswith(SAMPLE_MARKER), (
+                "a paragraph of sample content runs on into content nothing "
+                f"marks as the engine's: {paragraph!r}")
 
     @pytest.mark.parametrize("name", ["_SAMPLE_SUMMARY", "_SAMPLE_QUOTE",
                                       "_SAMPLE_VALUE", "_SAMPLE_NOTE"])

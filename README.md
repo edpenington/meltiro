@@ -177,10 +177,10 @@ without spending anything:
 A dry run makes no API call, needs no key, and creates no session. It loads and
 validates both bundles and prints the rendered prompts, the tool catalogue, the
 figure labels and the fingerprints. With the Checker on it also prints the
-scaffold every per-field check is asked through and one specimen check filled
-in from it, so the question a check puts can be read before one is paid for.
-Add `--out DIR` to write them to
-`{out}/{study}/dry_run/` as well. The same command without `--dry-run` calls
+scaffold every per-field check is asked through, and fills it in as a specimen
+check for the first field of your template a check could reach, so the question
+a check puts can be read before one is paid for. Add `--out DIR` to write them
+to `{out}/{study}/dry_run/` as well. The same command without `--dry-run` calls
 the providers and needs their keys.
 
 ## Usage
@@ -329,12 +329,13 @@ receives prompts from the engine that enable their core functionality. These
 prompts can be overwritten as part of config.
 
 Each role's system message opens with its engine prompts, in the order below,
-then one engine sentence marking the handover, and your prompt file for that
-role is appended after that. Your file supplies the review: its scope and
-criteria, what counts as one record, what each field means. Two sections are conditional on the run's structure, and are left out
-entirely when their stage is switched off. `checker_user` is the one that is
-not a system prompt: it is the scaffold each per-field checker message is
-rendered from, and the Checker's own system message is the three above it.
+and your prompt file for that role is appended after them; wherever both are
+present, one engine sentence marks the handover between the two. Your file
+supplies the review: its scope and criteria, what counts as one record, what
+each field means. Two sections are conditional on the run's structure, and are
+left out entirely when their stage is switched off. `checker_user` is the one
+that is not a system prompt: it is the scaffold each per-field checker message
+is rendered from, and the Checker's own system message is the three above it.
 
 | Section | Role | What it states |
 |---|---|---|

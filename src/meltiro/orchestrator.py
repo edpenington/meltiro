@@ -1047,10 +1047,9 @@ class Orchestrator:
         # dry run shows them too. Each is omitted when its stage is off.
         checker_system = (self._render_checker_system_text()
                           if self.checker_enabled else None)
-        # The checker's per-field half, which no other artefact shows: the
-        # scaffold every check is rendered from, and one specimen check filled
-        # in from it. A checker round is otherwise the one part of a run an
-        # operator cannot read without paying for it.
+        # The checker's per-field half. The specimen is None for a template
+        # declaring no field a check could ever reach, and the report then
+        # carries the scaffold alone.
         checker_scaffold = (self.instrument.render_checker_user_scaffold()
                             if self.checker_enabled else None)
         checker_round = (

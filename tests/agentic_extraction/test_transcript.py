@@ -333,6 +333,44 @@ class TestTheDocument:
             text = (instrument / name).read_text(encoding="utf-8")
             assert document.count(text) == 1, name
 
+    def test_the_scaffold_the_checks_were_rendered_from_is_printed(
+            self, session):
+        """The other half of every check. The system prompt above it is one
+        string for the whole run and so is this, so the document prints it
+        once, beside the prompts, with its slots standing as the tokens they
+        are."""
+        scaffold = (session.session.instrument_dir /
+                    "checker_user_scaffold.txt").read_text(encoding="utf-8")
+        assert "{field_path}" in scaffold
+        document = (session.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        assert "### 2.7 The checker's per-field scaffold" in document
+        assert document.count(scaffold) == 1
+
+    def test_a_session_that_captured_no_scaffold_renders_without_one(
+            self, session):
+        """A session recorded before the capture existed has every other
+        instrument file and not this one. The document is then the document it
+        would have been: the subsection is skipped outright rather than
+        reported absent, and nothing above it moves."""
+        document = (session.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        (session.session.instrument_dir /
+         "checker_user_scaffold.txt").unlink()
+        without = render_transcript(session.session.session_dir)
+
+        assert "2.7 The checker's per-field scaffold" not in without
+        assert "instrument-checker-scaffold" not in without
+        # No note in its place either: an absent file that the level never
+        # promised is not a degradation to report.
+        assert "checker_user_scaffold" not in without
+        # And the rest is untouched, byte for byte, on both sides of where the
+        # subsection sat.
+        head = document[:document.index(
+            '<a id="instrument-checker-scaffold"></a>')]
+        tail = document[document.index('<a id="sec-extraction"></a>'):]
+        assert without == head + tail
+
     def test_the_captured_instrument_is_what_the_run_actually_sends(
             self, session):
         """The document is only honest if the captured prompt is the one that

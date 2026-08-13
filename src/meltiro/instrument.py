@@ -3,12 +3,12 @@ what.
 
 An instrument is everything the config author wrote plus what it implies. It is
 the extraction template, the three role system prompts as they render, the
-per-field scaffold each check is asked through, the tool catalogues those
-prompts describe, the reference lists their values are drawn from, and the
-pipeline structure (whether a checker runs, how many times it may look at one
-field, whether a reviewer runs, whether the reviewer's own writes are checked).
-Two runs that share an instrument asked the same question, and their answers
-may be compared as answers to it.
+per-field scaffold each check is asked through (engine text until a bundle
+overrides it), the tool catalogues those prompts describe, the reference lists
+their values are drawn from, and the pipeline structure (whether a checker
+runs, how many times it may look at one field, whether a reviewer runs, whether
+the reviewer's own writes are checked). Two runs that share an instrument asked
+the same question, and their answers may be compared as answers to it.
 
 A run is the product of three independent things (the same line
 `fingerprint.instrument_fingerprint` draws):

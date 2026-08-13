@@ -11,9 +11,9 @@ max_review_tool_calls: 30
 # they ride in structure_hash and move config_fp and instrument_fp with it.
 final_review: true
 check_reviewer_edits: false
-# The checker's own structure rather than an operational budget: 0 turns the
-# checker off altogether, and any higher number is the total checks a single
-# field may receive across the whole run.
+# The checker's own structure: 0 turns the checker off altogether, and any
+# higher number is the total checks a single field may receive across the whole
+# run.
 max_checks_per_field: 2
 
 # Model defaults
