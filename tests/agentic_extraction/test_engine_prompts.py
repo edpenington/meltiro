@@ -19,15 +19,20 @@ The two boundaries pinned here:
     (`prompts/partials/meltiro/NAME.md`) is text the config author wrote, so it
     rides in the config fingerprints like any other prose of theirs, empty
     overrides included: leaving a section out is a methodological choice.
+
+The engine's half ends with one transition sentence handing the role over to
+the review's own briefing. It is composed rather than shipped as a section, and
+it falls on the engine's side of both boundaries above.
 """
 
 import shutil
 
 import pytest
 
-from meltiro import prompt_partials
+from meltiro import checker_prompts, prompt_builder, prompt_partials
 from meltiro.checker import CheckerConfig
 from meltiro.checker_prompts import (
+    CHECKER_BUNDLE_TRANSITION,
     build_checker_system_text,
     build_checker_user_message,
     render_checker_user_template,
@@ -44,10 +49,13 @@ from meltiro.fingerprint import (
     structure_hash,
 )
 from meltiro.prompt_builder import (
+    EXTRACTOR_BUNDLE_TRANSITION,
+    REVIEW_BUNDLE_TRANSITION,
     build_config_prompt_text,
     build_review_system_message,
     build_system_message,
     compute_prompt_config_hash,
+    render_bundle_prompt_text,
 )
 from meltiro.prompt_partials import (
     ENGINE_SPINES,
@@ -103,6 +111,65 @@ def _checker(bundle, predicates=PREDICATES, **kwargs):
         system_prompt_path=bundle.checker_system_path,
         reference_lists=bundle.reference_lists, predicates=predicates,
         max_checks_per_field=2, **kwargs)
+
+
+def _engine_half(bundle, *, max_checks_per_field=2, final_review=True):
+    """The extractor's system message with the bundle's own text cut out.
+
+    What is left is the engine's half: the spine and the transition sentence
+    after it. A review may write whatever it likes in its own prompt file, so
+    a claim about what the ENGINE tells a model has to be made against this
+    rather than against the whole message.
+    """
+    predicates = stage_predicates(max_checks_per_field, final_review)
+    appended = render_bundle_prompt_text(
+        bundle.extractor_system_path, predicates=predicates,
+        reference_lists=bundle.reference_lists,
+        max_checks_per_field=max_checks_per_field)
+    whole = _extractor(bundle, max_checks_per_field=max_checks_per_field,
+                       final_review=final_review)
+    assert appended and appended in whole, (
+        "the bundle's appended text is not in the message verbatim, so "
+        "subtracting it leaves something other than the engine's half")
+    return whole.replace(appended, "")
+
+
+def _config_fingerprints(bundle_dir, config_dir):
+    """Every fingerprint a config bundle owns, in one dict.
+
+    The whole config side of the ownership boundary, so a test asking whether
+    some piece of engine text reaches any of them compares one value and gets
+    an answer about all five.
+    """
+    template = load_template(config_dir / "extraction_template.yaml")
+    references = load_reference_lists(config_dir / "reference")
+    bundle = load_config_bundle(bundle_dir)
+    checker = CheckerConfig(
+        max_tokens=1024,
+        checker_model="claude-sonnet-4-6",
+        system_prompt_path=str(bundle.checker_system_path),
+    )
+    return {
+        "prompts_hash": bundle.prompts_hash,
+        "instrument_fp": bundle.instrument_fp,
+        "config_fp": config_fingerprint(
+            PINNED_CALL_IDENTITY,
+            compute_prompt_config_hash(
+                system_prompt_path=bundle.extractor_system_path,
+                max_checks_per_field=2,
+                reference_lists=bundle.reference_lists),
+            bundle.template_hash),
+        "checker_fp": checker.fingerprint(
+            template, references, predicates=PREDICATES,
+            max_checks_per_field=2),
+        "review_fp": review_config_fingerprint(
+            PINNED_CALL_IDENTITY,
+            build_config_prompt_text(
+                REVIEW_SYSTEM,
+                system_prompt_path=bundle.review_system_path,
+                max_checks_per_field=2,
+                reference_lists=bundle.reference_lists)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +314,7 @@ class TestEveryRoleIsBriefed:
     def test_the_extractor_is_told_the_budget(self, config_dir):
         rendered = _extractor(load_config_bundle(config_dir),
                               max_checks_per_field=3)
-        assert "at most 3 check(s)" in rendered
+        assert "check budget for this run is 3" in rendered
 
     def test_the_checker_budget_is_substituted(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
@@ -321,6 +388,27 @@ class TestAStageThatDoesNotRunIsNotDescribed:
         three_prompts, zero_fp = hashes(0)
         assert two_prompts == three_prompts
         assert two_fp != zero_fp
+
+    def test_a_checker_off_extractor_is_never_told_a_checker_exists(
+            self, config_dir):
+        # Stronger than the section going: a stage that does not run is not
+        # named at all. The conditional section carries every checker fact, so
+        # the unconditional ones around it describe the machinery an extractor
+        # is always in and nothing else.
+        assert "checker" not in _engine_half(
+            load_config_bundle(config_dir), max_checks_per_field=0).lower()
+
+    def test_with_the_checker_on_it_is_described_in_full(self, config_dir):
+        # The other half of the pair. Without it the assertion above would
+        # pass just as well if the word had left the engine's vocabulary
+        # altogether, and the extractor would be running blind to a stage that
+        # answers it back.
+        engine_half = _engine_half(load_config_bundle(config_dir),
+                                   max_checks_per_field=2)
+        assert "checker" in engine_half.lower()
+        # The one fact that has nowhere else to live once the unconditional
+        # sections stop naming the checker.
+        assert "Scope notes are not among them:" in engine_half
 
     def test_an_override_of_a_silenced_section_is_not_this_runs_question(
             self, tmp_path, config_dir):
@@ -596,6 +684,82 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
 
 # ---------------------------------------------------------------------------
+# The handover from the engine's half to the review's
+# ---------------------------------------------------------------------------
+
+class TestTheTransitionSentence:
+    """One engine sentence between a role's spine and the bundle's own text.
+
+    A system message is two halves written by two authors, and read straight
+    through the seam is invisible: the machinery stops being described and the
+    review starts, mid-message, with nothing to mark it. The sentence marks it.
+
+    It is emitted only where it is true. A bundle prompt file that is empty is
+    promised no briefing, and a bundle that overrode every section away gets no
+    lone engine sentence in front of its own opening line.
+    """
+
+    def test_each_role_reads_it_between_the_two_halves(self, config_dir):
+        bundle = load_config_bundle(config_dir)
+        cases = (
+            (_extractor(bundle), EXTRACTOR_BUNDLE_TRANSITION,
+             "recording_conventions"),
+            (_reviewer(bundle), REVIEW_BUNDLE_TRANSITION,
+             "reviewer_workflow"),
+            (_checker(bundle), CHECKER_BUNDLE_TRANSITION, "checker_verdict"),
+        )
+        for rendered, transition, last_section in cases:
+            spine_tail = _engine_text(last_section).splitlines()[-1]
+            assert rendered.index(spine_tail) < rendered.index(transition) \
+                < rendered.index("<review_context>")
+
+    def test_an_empty_bundle_prompt_gets_none(self, tmp_path, config_dir):
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        for name in ("extractor_system", "review_system", "checker_system"):
+            (bundle_dir / "prompts" / f"{name}.md").write_text(
+                "", encoding="utf-8")
+        bundle = load_config_bundle(bundle_dir)
+        assert EXTRACTOR_BUNDLE_TRANSITION not in _extractor(bundle)
+        assert REVIEW_BUNDLE_TRANSITION not in _reviewer(bundle)
+        assert CHECKER_BUNDLE_TRANSITION not in _checker(bundle)
+
+    def test_a_spine_overridden_away_gets_none_either(self, tmp_path,
+                                                      config_dir):
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        for name, _ in ENGINE_SPINES["extractor_system"]:
+            _write_override(bundle_dir, name, "")
+        rendered = _extractor(load_config_bundle(bundle_dir))
+        assert EXTRACTOR_BUNDLE_TRANSITION not in rendered
+        assert rendered.startswith("<review_context>")
+
+    def test_it_moves_no_config_fingerprint(self, tmp_path, config_dir,
+                                            monkeypatch):
+        # Compose-time framing, so it belongs to the engine on exactly the
+        # terms a spine section does: the model reads it, `engine_fp` carries
+        # it, and no config preimage names it. Asserted by rewording all three
+        # and finding every config fingerprint where it was.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        before = _config_fingerprints(bundle_dir, config_dir)
+
+        def wire():
+            bundle = load_config_bundle(bundle_dir)
+            return (_extractor(bundle), _reviewer(bundle), _checker(bundle))
+
+        wire_before = wire()
+        monkeypatch.setattr(prompt_builder, "EXTRACTOR_BUNDLE_TRANSITION",
+                            "A later release hands the extractor over so.")
+        monkeypatch.setattr(prompt_builder, "REVIEW_BUNDLE_TRANSITION",
+                            "And the reviewer so.")
+        monkeypatch.setattr(checker_prompts, "CHECKER_BUNDLE_TRANSITION",
+                            "And the checker so.")
+        # The rewording really did reach all three messages: without this the
+        # equality below would hold for an edit that changed nothing.
+        for after, was in zip(wire(), wire_before):
+            assert after != was
+        assert _config_fingerprints(bundle_dir, config_dir) == before
+
+
+# ---------------------------------------------------------------------------
 # The per-field checker scaffold
 # ---------------------------------------------------------------------------
 
@@ -782,43 +946,12 @@ class TestEditingAnEngineSection:
     def bundle_dir(self, tmp_path, config_dir):
         return _copy_bundle(tmp_path, config_dir)
 
-    def _fingerprints(self, bundle_dir, config_dir):
-        template = load_template(config_dir / "extraction_template.yaml")
-        references = load_reference_lists(config_dir / "reference")
-        bundle = load_config_bundle(bundle_dir)
-        checker = CheckerConfig(
-            max_tokens=1024,
-            checker_model="claude-sonnet-4-6",
-            system_prompt_path=str(bundle.checker_system_path),
-        )
-        return {
-            "prompts_hash": bundle.prompts_hash,
-            "instrument_fp": bundle.instrument_fp,
-            "config_fp": config_fingerprint(
-                PINNED_CALL_IDENTITY,
-                compute_prompt_config_hash(
-                    system_prompt_path=bundle.extractor_system_path,
-                    max_checks_per_field=2,
-                    reference_lists=bundle.reference_lists),
-                bundle.template_hash),
-            "checker_fp": checker.fingerprint(
-                template, references, predicates=PREDICATES,
-                max_checks_per_field=2),
-            "review_fp": review_config_fingerprint(
-                PINNED_CALL_IDENTITY,
-                build_config_prompt_text(
-                    REVIEW_SYSTEM,
-                    system_prompt_path=bundle.review_system_path,
-                    max_checks_per_field=2,
-                    reference_lists=bundle.reference_lists)),
-        }
-
     def _wire(self, bundle_dir):
         return _extractor(load_config_bundle(bundle_dir))
 
     def test_no_config_fingerprint_moves(self, engine_dir, bundle_dir,
                                          config_dir):
-        before = self._fingerprints(bundle_dir, config_dir)
+        before = _config_fingerprints(bundle_dir, config_dir)
         wire_before = self._wire(bundle_dir)
         for name in ("extractor_workflow", "recording_notes",
                      "checker_briefing", "reviewer_workflow"):
@@ -829,7 +962,7 @@ class TestEditingAnEngineSection:
         # The edit really did reach the prompts: without this the equality
         # below would hold just as well for an edit that changed nothing.
         assert self._wire(bundle_dir) != wire_before
-        after = self._fingerprints(bundle_dir, config_dir)
+        after = _config_fingerprints(bundle_dir, config_dir)
         assert before == after
 
     def test_but_the_model_reads_the_edit(self, engine_dir, bundle_dir):

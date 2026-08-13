@@ -155,7 +155,9 @@ def _parse_args(argv=None):
                          "given.")
     ex.add_argument("--dry-run", action="store_true",
                     help="Render the full system prompt, tool catalogue, "
-                         "figure labels, and stage fingerprints, print them "
+                         "figure labels, stage fingerprints and — with the "
+                         "checker on — the per-field scaffold every check is "
+                         "asked through plus one specimen check, print them "
                          "untruncated, and exit (no API calls, no session "
                          "created).")
     ex.add_argument("--extractor-model", help="Override extractor model.")

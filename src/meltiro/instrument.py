@@ -2,12 +2,13 @@
 what.
 
 An instrument is everything the config author wrote plus what it implies. It is
-the extraction template, the three role system prompts as they render, the tool
-catalogues those prompts describe, the reference lists their values are drawn
-from, and the pipeline structure (whether a checker runs, how many times it may
-look at one field, whether a reviewer runs, whether the reviewer's own writes
-are checked). Two runs that share an instrument asked the same question, and
-their answers may be compared as answers to it.
+the extraction template, the three role system prompts as they render, the
+per-field scaffold each check is asked through, the tool catalogues those
+prompts describe, the reference lists their values are drawn from, and the
+pipeline structure (whether a checker runs, how many times it may look at one
+field, whether a reviewer runs, whether the reviewer's own writes are checked).
+Two runs that share an instrument asked the same question, and their answers
+may be compared as answers to it.
 
 A run is the product of three independent things (the same line
 `fingerprint.instrument_fingerprint` draws):
@@ -38,7 +39,11 @@ preview a real run's fingerprints exactly.
 """
 
 from direktoro import model_supports_images
-from meltiro.checker_prompts import build_checker_system_text
+from meltiro.checker_prompts import (
+    build_checker_system_text,
+    render_checker_round_sample,
+    render_checker_user_template,
+)
 from meltiro.fingerprint import (
     reference_lists_hash,
     structure_hash,
@@ -313,6 +318,39 @@ class Instrument:
             max_checks_per_field=self.max_checks_per_field,
             system_prompt_path=self.config.checker_system_path,
             reference_lists=self.reference_lists,
+        )
+
+    def render_checker_user_scaffold(self):
+        """The per-field scaffold every check of this run is rendered from.
+
+        The engine's `checker_user` section or the bundle's override of it,
+        with its reference lists rendered in and its per-field slots left as
+        the tokens they are: the text an author overrides, shown as itself.
+        Captured beside the three system prompts so a session records the
+        wording its checks were built on, and printed by a dry run so that
+        wording can be read before a run starts.
+        """
+        return render_checker_user_template(
+            self.config.partials_dir,
+            predicates=self.predicates(),
+            reference_lists=self.reference_lists,
+        )
+
+    def render_checker_round_sample(self, checker_config):
+        """One specimen check, for a dry run to print.
+
+        The scaffold above filled in for a real field of this template, framed
+        at this run's own window width. A preview rather than a record of
+        anything: the values a live check reads off the extraction and the
+        paper are written by the engine and marked as samples, so this belongs
+        to the dry run and never to a session's instrument capture.
+        """
+        return render_checker_round_sample(
+            self.template,
+            self.config.partials_dir,
+            predicates=self.predicates(),
+            reference_lists=self.reference_lists,
+            context_chars=checker_config.context_chars,
         )
 
     def checker_fingerprint(self, checker_config):

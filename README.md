@@ -176,7 +176,10 @@ without spending anything:
 
 A dry run makes no API call, needs no key, and creates no session. It loads and
 validates both bundles and prints the rendered prompts, the tool catalogue, the
-figure labels and the fingerprints. Add `--out DIR` to write them to
+figure labels and the fingerprints. With the Checker on it also prints the
+scaffold every per-field check is asked through and one specimen check filled
+in from it, so the question a check puts can be read before one is paid for.
+Add `--out DIR` to write them to
 `{out}/{study}/dry_run/` as well. The same command without `--dry-run` calls
 the providers and needs their keys.
 
@@ -326,9 +329,9 @@ receives prompts from the engine that enable their core functionality. These
 prompts can be overwritten as part of config.
 
 Each role's system message opens with its engine prompts, in the order below,
-and your prompt file for that role is appended after them. Your file supplies
-the review: its scope and criteria, what counts as one record, what each field
-means. Two sections are conditional on the run's structure, and are left out
+then one engine sentence marking the handover, and your prompt file for that
+role is appended after that. Your file supplies the review: its scope and
+criteria, what counts as one record, what each field means. Two sections are conditional on the run's structure, and are left out
 entirely when their stage is switched off. `checker_user` is the one that is
 not a system prompt: it is the scaffold each per-field checker message is
 rendered from, and the Checker's own system message is the three above it.
@@ -342,7 +345,7 @@ rendered from, and the Checker's own system message is the three above it.
 | `extractor_review_handoff` | Extractor | the handoff to the Reviewer — only when the Reviewer runs |
 | `extractor_tool_budget` | Extractor | the finite call budget, `abandon_extraction`, the view tools |
 | `recording_evidence` | Extractor | the `<q>` / `<img>` evidence grammar: normalisation, elision, insertion brackets, and the image-label list |
-| `recording_notes` | Extractor | field notes versus scope notes, and who is shown which |
+| `recording_notes` | Extractor | field notes versus scope notes, and why what a value depends on belongs in the field's own |
 | `recording_conventions` | Extractor | record-id assignment, strict versus open lists, reference-list fields, warnings versus errors |
 | `checker_role` | Checker | what the checker is and what it judges |
 | `checker_briefing` | Checker | the checker's one-field isolation, the quote window and its table expansion, the allowed-values briefing, no memory across checks |

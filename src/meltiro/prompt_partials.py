@@ -8,6 +8,11 @@ be lost by accident — the spine is chosen by the engine and the bundle's file
 is required — so a model is briefed on the machinery whatever the bundle says
 about the review.
 
+Between the two halves the engine writes one transition sentence, so a model
+reading straight through knows where its briefing on the machinery ends and the
+review's own briefing begins (`join_role_message`; each builder holds its
+role's wording).
+
 The spines are declared in `ENGINE_SPINES`, one entry per role, each section
 paired with the pipeline stage it depends on or `None` for a section that is
 always composed:
@@ -430,6 +435,27 @@ def join_blocks(*blocks):
     hashed, so whitespace is content.
     """
     return BLOCK_SEPARATOR.join(b for b in (b.strip() for b in blocks) if b)
+
+
+def join_role_message(spine, transition, bundle_text):
+    """Join one role's system message: spine, transition sentence, bundle text.
+
+    The transition is the engine's signpost from its own half of the message to
+    the review's, and each role has its own (the builders hold the wording,
+    beside the rest of their framing). It is emitted only when there is text on
+    BOTH sides of it: a bundle whose prompt file is empty is promised no
+    briefing that never arrives, and a bundle that overrode every section away
+    reads its own opening line first rather than a lone engine sentence.
+
+    Compose-time framing, so it is engine text like the user-block headers: it
+    reaches the wire and `engine_fp`, and no config preimage is built through
+    here (see `config_prompt_preimage`, which takes the bundle's text on its
+    own).
+    """
+    blocks = [spine, bundle_text]
+    if spine.strip() and bundle_text.strip():
+        blocks.insert(1, transition)
+    return join_blocks(*blocks)
 
 
 def _read_partial(name, partials_dir, placeholder):

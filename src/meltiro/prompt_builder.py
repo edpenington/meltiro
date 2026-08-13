@@ -1,11 +1,11 @@
 """Build the extractor's and reviewer's system + user messages.
 
 The system message is the LARGE cacheable block: the role's engine spine
-(`meltiro.prompt_partials`) followed by the config bundle's own prompt file
-for that role, with the image-label list and the rendered reference lists
-substituted into both halves. The field catalogue is NOT in it; it lives in
-the tool `input_schema`s, which are built from the extraction template (see
-`meltiro.tools`).
+(`meltiro.prompt_partials`), one transition sentence, and then the config
+bundle's own prompt file for that role, with the image-label list and the
+rendered reference lists substituted into both halves. The field catalogue is
+NOT in it; it lives in the tool `input_schema`s, which are built from the
+extraction template (see `meltiro.tools`).
 The initial user message is also cached: paper text + every cropped
 image. Both get `cache_control: ephemeral` markers so turns 2..N pay the
 0.1x cache-read rate on the bulk of the prompt.
@@ -16,9 +16,11 @@ After the first turn the orchestrator only appends `tool_use` /
 This module owns every piece of engine-authored FRAMING for the extractor
 and reviewer roles: the text *meltiro* itself writes around the config
 bundle's prompts, as opposed to the prompt files (config) and the paper
-(input). That includes the user-block headers and each role's tool re-prompt
-(separate texts naming separate tools). Each piece of engine wording lives
-here, next to the builders that emit it, so it has a single home.
+(input). That includes the user-block headers, each role's tool re-prompt
+(separate texts naming separate tools), and the sentence handing a role over
+from the engine's half of its system message to the review's. Each piece of
+engine wording lives here, next to the builders that emit it, so it has a
+single home.
 
 Nothing here tells the reviewer that a checker exists. The reviewer is shown
 the paper, the figures, and the assembled extraction output, and nothing
@@ -41,7 +43,7 @@ from meltiro.prompt_partials import (
     compose_engine_spine,
     config_prompt_preimage,
     engine_override_pairs,
-    join_blocks,
+    join_role_message,
     stage_predicates,
     substitute_include_placeholders,
 )
@@ -103,6 +105,22 @@ REVIEW_TOOL_REPROMPT = (
     "to inspect the extraction output, update_study / "
     "update_record / add_record / remove_record to revise it, "
     "or mark_complete when you are satisfied with it."
+)
+
+# The sentence the engine writes where its own half of a system message ends
+# and the config bundle's begins. One per role, because each names the reader:
+# the extractor's briefing is not the reviewer's, and a signpost saying whose
+# it is reads as one. Emitted only when the bundle actually appends something
+# (`prompt_partials.join_role_message`), so it never promises a briefing that
+# does not follow.
+EXTRACTOR_BUNDLE_TRANSITION = (
+    "Everything that follows is the review's own briefing: its context, its "
+    "criteria, and any guidance it has for the extractor."
+)
+
+REVIEW_BUNDLE_TRANSITION = (
+    "Everything that follows is the review's own briefing: its context, its "
+    "criteria, and any guidance it has for the reviewer."
 )
 
 # Stand-in text for an assistant turn that carried neither text nor a tool
@@ -222,9 +240,10 @@ def build_system_message(image_labels, *,
     slots = dict(reference_lists=reference_lists, image_labels=image_labels,
                  image_captions=image_captions,
                  max_checks_per_field=max_checks_per_field)
-    return join_blocks(
+    return join_role_message(
         _render_spine(EXTRACTOR_SYSTEM, system_prompt_path,
                       predicates=predicates, **slots),
+        EXTRACTOR_BUNDLE_TRANSITION,
         render_bundle_prompt_text(system_prompt_path, predicates=predicates,
                                   **slots),
     )
@@ -383,9 +402,10 @@ def build_review_system_message(image_labels, *,
     slots = dict(reference_lists=reference_lists, image_labels=image_labels,
                  image_captions=image_captions,
                  max_checks_per_field=max_checks_per_field)
-    return join_blocks(
+    return join_role_message(
         _render_spine(REVIEW_SYSTEM, system_prompt_path,
                       predicates=predicates, **slots),
+        REVIEW_BUNDLE_TRANSITION,
         render_bundle_prompt_text(system_prompt_path, predicates=predicates,
                                   **slots),
     )

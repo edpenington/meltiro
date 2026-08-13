@@ -39,7 +39,7 @@ def test_system_message_includes_key_sections(synthetic_template,
     assert "50 tool calls" not in txt
     # The per-field check budget is still interpolated (a genuine structure
     # signal), and it reads as a count of checks per field, not of rounds.
-    assert "at most 3 check(s)" in txt
+    assert "check budget for this run is 3" in txt
     # Whole word. The prompt legitimately says "surrounding text" and "the
     # ground on which", and a bare substring test reads both of those as the
     # check budget being described in rounds.

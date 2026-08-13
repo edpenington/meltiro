@@ -26,9 +26,9 @@ the deterministic record of how the process went, and lives under
     to hashes. Written only at `--diagnostics full`.
   - `diagnostics/instrument/`: the instrument as sent (`system_prompt.txt`,
     `user_prompt.txt`, `review_system_prompt.txt`,
-    `checker_system_prompt.txt`, `tool_definitions.json`,
-    `image_labels.json`), captured once at session creation at
-    `--diagnostics standard` and above.
+    `checker_system_prompt.txt`, `checker_user_scaffold.txt`,
+    `tool_definitions.json`, `image_labels.json`), captured once at session
+    creation at `--diagnostics standard` and above.
   - `diagnostics/transcript.md`: the whole session as one readable document,
     rendered from the files above at every stop (see meltiro.transcript).
 
@@ -355,6 +355,7 @@ class Session:
                runs_dir, tool_definitions=None, system_prompt=None,
                user_prompt=None, image_labels=None,
                review_system_prompt=None, checker_system_prompt=None,
+               checker_user_scaffold=None,
                caps=None, structure=None, images_omitted=None,
                checker_context_chars=None, decoding_specified=None,
                diagnostics=DEFAULT_DIAGNOSTICS):
@@ -373,6 +374,9 @@ class Session:
           absent when the reviewer stage is off
         - `checker_system_prompt.txt`: the rendered checker system message,
           one string for the whole run, absent when the checker is off
+        - `checker_user_scaffold.txt`: the per-field scaffold every check of
+          this run was rendered from, slot tokens and all, absent when the
+          checker is off
         - `image_labels.json`: the image labels attached, in order
 
         All three prompts render deterministically from the config bundle,
@@ -601,6 +605,9 @@ class Session:
             if checker_system_prompt is not None:
                 (s.instrument_dir / "checker_system_prompt.txt").write_text(
                     checker_system_prompt, encoding="utf-8")
+            if checker_user_scaffold is not None:
+                (s.instrument_dir / "checker_user_scaffold.txt").write_text(
+                    checker_user_scaffold, encoding="utf-8")
             if image_labels is not None:
                 _atomic_write_json(
                     s.instrument_dir / "image_labels.json", list(image_labels))

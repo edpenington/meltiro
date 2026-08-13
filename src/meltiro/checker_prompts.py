@@ -9,10 +9,10 @@ context: nothing from the earlier check is carried in.
 
 `build_checker_system_text(...)` returns the cacheable system prompt: the
 checker's engine spine (what the checker is, what it is shown, what a verdict
-means) followed by the bundle's checker prompt file, with `{include:...}`
-partials expanded, `{reference:...}` lists rendered in, and the run's
-per-field check budget substituted. No field catalogue: every field-specific
-detail reaches the checker through the user message.
+means), one transition sentence, and then the bundle's checker prompt file,
+with `{include:...}` partials expanded, `{reference:...}` lists rendered in,
+and the run's per-field check budget substituted. No field catalogue: every
+field-specific detail reaches the checker through the user message.
 `build_checker_user_message(...)` returns that message as a list of content
 blocks: the rendered text, preceded for an image-sourced field by a caption
 block and the cropped PNG, which IS the evidence. The cache_control
@@ -43,6 +43,12 @@ one fails there instead of shipping the literal token to the model. Slot
 wording is FRAMING — engine text, not config — so it rides in no
 fingerprint; the run's recorded `engine_fp` identifies it.
 
+`render_checker_round_sample(...)` fills that scaffold in for one real field of
+the loaded template, writing the per-call values a live check would read off
+the extraction and the paper. Every one it writes carries `SAMPLE_MARKER`, so
+nothing in it can be mistaken for the paper's own content. A dry run prints it
+beside the scaffold, so a whole check can be read before one is paid for.
+
 `{reference:NAME}` resolves in the scaffold on the same terms as in the three
 system spines: the composed text is substituted once, before any per-field
 slot is filled, so an override that cites a list gets the same rendered block
@@ -72,7 +78,7 @@ from meltiro.prompt_partials import (
     compose_engine_spine,
     config_prompt_preimage,
     engine_override_pairs,
-    join_blocks,
+    join_role_message,
     substitute_include_placeholders,
 )
 from meltiro.quote_context import (
@@ -86,6 +92,16 @@ from meltiro.quote_context import (
 # ---------------------------------------------------------------------------
 # System message
 # ---------------------------------------------------------------------------
+
+# The checker's own sentence marking where the engine's half of its system
+# message ends and the review's begins, the counterpart of the extractor's and
+# the reviewer's in `prompt_builder`. Framing, so it rides in `engine_fp` and
+# in no config preimage.
+CHECKER_BUNDLE_TRANSITION = (
+    "Everything that follows is the review's own briefing: its context, its "
+    "criteria, and any guidance it has for the checker."
+)
+
 
 def _load(path):
     return Path(path).read_text(encoding="utf-8").strip()
@@ -157,9 +173,10 @@ def build_checker_system_text(*, system_prompt_path, max_checks_per_field,
     spine = compose_engine_spine(
         CHECKER_SYSTEM, _partials_dir(system_prompt_path),
         predicates=predicates)
-    return join_blocks(
+    return join_role_message(
         _fill_slots(spine, system_prompt_path, reference_lists,
                     max_checks_per_field),
+        CHECKER_BUNDLE_TRANSITION,
         render_checker_bundle_text(
             system_prompt_path=system_prompt_path,
             max_checks_per_field=max_checks_per_field,
@@ -684,6 +701,129 @@ def build_checker_user_message(
         blocks = image_blocks + blocks
 
     return blocks
+
+
+# ---------------------------------------------------------------------------
+# The specimen round a dry run previews
+# ---------------------------------------------------------------------------
+
+# Every fabricated string in the specimen round carries this marker. A dry-run
+# reader is looking at a message shaped exactly like a real one, and the only
+# thing separating the two is that the per-call content here was written by the
+# engine rather than read off a paper — so each such string says so in its own
+# words rather than relying on the file it sits in.
+SAMPLE_MARKER = "(sample)"
+
+_SAMPLE_SUMMARY = f"a one-line summary of the study {SAMPLE_MARKER}"
+
+_SAMPLE_CONTEXT_VALUE = f"a context field's value {SAMPLE_MARKER}"
+
+_SAMPLE_QUOTE = f"the sentence the extractor quoted {SAMPLE_MARKER}"
+
+_SAMPLE_VALUE = f"the value the extractor recorded {SAMPLE_MARKER}"
+
+_SAMPLE_NOTE = f"the note the extractor wrote on this field {SAMPLE_MARKER}"
+
+# Paper text for the specimen's window. The quote sits in the middle of it, so
+# the rendered window shows the markers and the surrounding text doing their
+# real work rather than an empty frame.
+_SAMPLE_PAPER_TEXT = (
+    f"The paper's own text before the quote {SAMPLE_MARKER}. "
+    f"{_SAMPLE_QUOTE}. "
+    f"The paper's own text after the quote {SAMPLE_MARKER}."
+)
+
+
+def sample_checker_field(template):
+    """The field a specimen checker round is rendered for.
+
+    Returns `(field_path, field_spec, record_or_None)`, or None when the
+    template declares no field a check could ever reach.
+
+    The choice is the template's own first evidence-requiring field — study
+    fields before record fields, declaration order within each — so one
+    template always previews the same round and two dry runs of it agree. A
+    template that requires evidence nowhere falls back to its first envelope
+    field, since a field carrying optional evidence is checked whenever it
+    carries any.
+    """
+    from meltiro.template import iter_fields
+
+    scopes = (
+        ("study", template.get("study_fields") or []),
+        ("record", template.get("record_fields") or []),
+    )
+    fallback = None
+    for scope, sections in scopes:
+        for spec in iter_fields(sections):
+            if spec.get("evidence") is None:
+                continue
+            if spec["evidence"] == "required":
+                return _sample_field_for(scope, spec, template)
+            if fallback is None:
+                fallback = (scope, spec)
+    if fallback is None:
+        return None
+    return _sample_field_for(fallback[0], fallback[1], template)
+
+
+def _sample_field_for(scope, spec, template):
+    """Resolve one chosen field into the triple the specimen round needs."""
+    if scope == "study":
+        return f"study.{spec['variable']}", spec, None
+    # The record id the engine would have minted for the first record of this
+    # template's entity, so the path and the label read exactly as a real
+    # round's do.
+    record_id = f"{template['record_entity']['singular']}_1"
+    record = {"record_id": record_id}
+    for var in template.get("checker_context_fields") or []:
+        record[var] = {"value": _SAMPLE_CONTEXT_VALUE}
+    return f"record.{record_id}.{spec['variable']}", spec, record
+
+
+def render_checker_round_sample(template, partials_dir, *, predicates,
+                                reference_lists=None, context_chars=0):
+    """One specimen per-field checker round, as a dry run prints it.
+
+    The scaffold filled in for a real field of the loaded template, through the
+    same `build_checker_user_message` a run calls: the field's path, its
+    description and extraction instruction, its allowed values and the identity
+    label its scope produces are the template's own. Only the values a live
+    check reads off the extraction and the paper are written here — the value,
+    the evidence, the note, and the paper text the quote is windowed into — and
+    every one of them carries `SAMPLE_MARKER`.
+
+    `context_chars` is the run's configured window width, so the preview shows
+    the quote framed as this run would frame it. Returns the message text, or
+    None when the template has no field a check could reach.
+    """
+    chosen = sample_checker_field(template)
+    if chosen is None:
+        return None
+    field_path, field_spec, record = chosen
+
+    identity_context = render_study_identity_context(_SAMPLE_SUMMARY)
+    if record is not None:
+        identity_context = render_record_identity_context(
+            identity_context,
+            build_record_context(
+                record, template.get("checker_context_fields") or []))
+
+    blocks = build_checker_user_message(
+        field_path,
+        field_spec,
+        {"value": _SAMPLE_VALUE,
+         "evidence": f"<q>{_SAMPLE_QUOTE}</q>",
+         "notes": _SAMPLE_NOTE},
+        identity_context,
+        set(),
+        partials_dir=partials_dir,
+        paper_text=_SAMPLE_PAPER_TEXT,
+        context_chars=context_chars,
+        predicates=predicates,
+        reference_lists=reference_lists,
+    )
+    return "".join(b.get("text", "") for b in blocks)
 
 
 def _format_value(value):

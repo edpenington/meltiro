@@ -1,6 +1,6 @@
 The `update_study` and `add_record` schemas are the authoritative reference for what each field means, what it accepts, and whether it must carry verbatim evidence. To save context, `update_record` accepts the same record-field envelopes without repeating that catalogue. Field names are case-sensitive.
 
-Each record's id is assigned automatically by `add_record` in call order, in the form the `add_record` schema shows; do not assign it. The study's own identifier is not a field to extract: the engine records it from the study manifest. Bibliographic fields such as title, authors, year, journal, and DOI are ordinary extracted fields.
+Each record's id is assigned automatically by `add_record` in call order, in the form the `add_record` schema shows; do not assign it. The study's own identifier is not a field to extract: the engine records it from the study manifest.
 
 Categorical fields come in two kinds, distinguished at the field level by the tool schema. Strict-list fields require a match to one of the listed options; if no listed option applies the value must be null. Open-list fields treat the listed options as typical values but accept any string, written directly as free text when none of them fits. A few fields are validated against a reference list: the value must be an exact name from that list, or a JSON array of exact names for a list-typed field. A list may also declare aliases for an entry, and a value entered as one is stored under the canonical name it stands for.
 

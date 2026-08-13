@@ -2,7 +2,7 @@ The reviewer's purpose is to take a holistic and independent view of the extract
 
 Three shortcomings are worth looking for:
 
-1. **Missing or superfluous records.** Identifying every record a study reports, and deciding which of them meet the criteria for extraction, is genuinely difficult. Where there are errors, call `add_record` or `remove_record`.
+1. **Missing or superfluous records.** Identifying every record that could be extracted from a study, and deciding which of them meet the criteria for extraction, is genuinely difficult. Where there are errors, call `add_record` or `remove_record`.
 2. **Fields left null that the paper answers.** Where a field should be filled, call `update_study` or `update_record` to fill it.
 3. **Incoherence across fields.** Fields may each be valid and still not go together. Taking the broader view and making the record fit together is the reviewer's job.
 

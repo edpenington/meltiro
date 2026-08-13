@@ -42,6 +42,7 @@ EXTRACTOR = "claude-opus-4-8"
 # only place any of them survives.
 INSTRUMENT_FILES = {"system_prompt.txt", "user_prompt.txt",
                     "review_system_prompt.txt", "checker_system_prompt.txt",
+                    "checker_user_scaffold.txt",
                     "tool_definitions.json", "image_labels.json"}
 
 
@@ -57,6 +58,7 @@ def _create(tmp_path, **over):
         tool_definitions=[{"name": "update_study"}],
         system_prompt="SYSTEM", user_prompt="USER",
         review_system_prompt="REVIEW", checker_system_prompt="CHECKER",
+        checker_user_scaffold="SCAFFOLD",
         image_labels=["fig_01"],
         runs_dir=tmp_path,
     )
@@ -90,6 +92,8 @@ class TestLayout:
                 "review_system_prompt.txt").read_text() == "REVIEW"
         assert (s.instrument_dir /
                 "checker_system_prompt.txt").read_text() == "CHECKER"
+        assert (s.instrument_dir /
+                "checker_user_scaffold.txt").read_text() == "SCAFFOLD"
         assert json.loads(
             (s.instrument_dir / "image_labels.json").read_text()) == ["fig_01"]
 

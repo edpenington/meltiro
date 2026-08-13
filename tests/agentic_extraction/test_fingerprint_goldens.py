@@ -120,7 +120,7 @@ PINNED_DIREKTORO_SOURCE = (
 GOLDEN_TEMPLATE_HASH = \
     "1821dbceb8ba6c4c8ac4835b155420d954a3c6c52ab1d1b42ee477e46c834ce5"
 GOLDEN_PROMPTS_HASH = \
-    "bc1d75f039c3c163ccd216054fa63d80ca81f96438d5a3d1a2a81b7f95f70ce1"
+    "4b28100d08dd2f906de4edc46cd152c4a9ef41de77ec50b945d2b5b0de8bad54"
 GOLDEN_REFERENCE_LISTS_HASH = \
     "51c7c7184b640abd363e95f5c169cb963760badb1792400a6ac5f017897fbcf6"
 GOLDEN_TOOL_SET_HASH = \
@@ -128,18 +128,18 @@ GOLDEN_TOOL_SET_HASH = \
 GOLDEN_FIELD_CATALOGUE_HASH = \
     "aaf68cbd050c4f25e4981c0bb15e9255875c72ef34e033cc276f395bc2b60d94"
 GOLDEN_EXTRACTOR_PROMPT_HASH = \
-    "1efa5a75b25a6a14d3b40dd5fb2b5664ec51ab4b448ddf0cbf237062520f3a16"
+    "a0998ed2c4231b7f49e0ce1b713e4c6deb4199bdbaf08138534b901b0bc1b943"
 
 # The instrument axis, as a run and `meltiro fingerprint` both record it.
 GOLDEN_INSTRUMENT_FP = ("instrument_fp:"
-                        "cf414ea2598141a1f6d3f7c453f9f9897345b4898ad93c511"
-                        "8d805b1f4fede22")
+                        "004336b29d085c079001e0108a60fb9acdd0aa2873e8e350a"
+                        "02b1401c8265e16")
 
 # Stage fingerprints over the fixture bundle's real content, with
 # PINNED_CALL_IDENTITY in place of the provider-call identity block.
 GOLDEN_CONFIG_FP = ("config_fp:"
-                    "0be3bf013967bed824b31e35ab7202451e487b3ecc8be9f13"
-                    "f7dac308c732bd6")
+                    "56ade317167cd5031fc91a479565aee7144bcdd77de8b35cf"
+                    "849828787b9a79e")
 GOLDEN_CHECKER_FP = ("checker_fp:"
                      "47b32127bf0baaf2ee167bffc81ce64f83f113bf5e1a8b010"
                      "7ebcb58b7888967")
@@ -178,11 +178,11 @@ PINNED_ENGINE_FP = ("engine_fp:"
 # The whole-run identity, composed from the stage goldens and the engine
 # placeholder above.
 GOLDEN_RUN_FP = ("run_fp:"
-                 "7e491e854abab3cdf7ad4bbbdf9a306e55ef9db9bdfa49513cfb82e"
-                 "8038f07c4")
+                 "bdc5573895e802a9d19b224d5bd5678b765d9556e2882f83572665"
+                 "377e6f0d4d")
 GOLDEN_RUN_FP_EXTRACTOR_ONLY = ("run_fp:"
-                                "c4980cf601086e5955f3cc228d10023a05e62af9e"
-                                "6319de15de981ac0f2149f8")
+                                "3a265743b81fc97cab5901b73ec20701e6967f18a"
+                                "a6c5da9d04ae8278787c713")
 
 # End to end for the extractor role: direktoro's real call-identity block for
 # the fixture pipeline's extractor model, and the config_fp it produces. This
@@ -191,8 +191,8 @@ GOLDEN_EXTRACTOR_CALL_IDENTITY = (
     '{"base_url":null,"decoding_params":{"max_tokens":32768},'
     '"model":"claude-opus-4-8","provider":"anthropic"}')
 GOLDEN_RUN_CONFIG_FP = ("config_fp:"
-                        "956725d811ee751cc363cae03f357a9674ba66b1d939e3079"
-                        "e6fe318f450786c")
+                        "37fae41675fdce144f685e7978f108785458bfb79441af4bf"
+                        "bd10c5cbc9d78b0")
 
 
 # ---------------------------------------------------------------------------

@@ -742,6 +742,14 @@ class Orchestrator:
             if self.final_review else None
         rendered_checker_system = self._render_checker_system_text() \
             if self.checker_enabled else None
+        # The per-field scaffold beside the system prompt it is asked under, so
+        # a finished session holds every piece of text its checks were built
+        # from. The specimen round a dry run prints is NOT captured: it is an
+        # aid to reading the scaffold, and nothing in this run was asked
+        # through it.
+        rendered_checker_scaffold = \
+            self.instrument.render_checker_user_scaffold() \
+            if self.checker_enabled else None
         self.session = Session.create(
             self.study_id,
             config_fp=config_fp, checker_fp=checker_fp, review_fp=review_fp,
@@ -767,6 +775,7 @@ class Orchestrator:
             user_prompt=rendered_user_prompt,
             review_system_prompt=rendered_review_system,
             checker_system_prompt=rendered_checker_system,
+            checker_user_scaffold=rendered_checker_scaffold,
             image_labels=sorted(ext_image_labels),
             runs_dir=self.out_dir,
             caps={
@@ -1018,6 +1027,12 @@ class Orchestrator:
 
         The fingerprints come from the same `_build_fingerprints` recipe a
         real run uses, so the preview matches what the run would record.
+
+        With the checker on, the report also carries its per-field half: the
+        scaffold every check is rendered from, and one specimen check filled in
+        from it for a real field of this template. A checker round is otherwise
+        the one thing an operator cannot read without paying for it.
+
         Returns the rendered artefacts for inspection by callers and tests.
         """
         # Pre-flight config check, the same guard a real run runs before spend.
@@ -1032,6 +1047,15 @@ class Orchestrator:
         # dry run shows them too. Each is omitted when its stage is off.
         checker_system = (self._render_checker_system_text()
                           if self.checker_enabled else None)
+        # The checker's per-field half, which no other artefact shows: the
+        # scaffold every check is rendered from, and one specimen check filled
+        # in from it. A checker round is otherwise the one part of a run an
+        # operator cannot read without paying for it.
+        checker_scaffold = (self.instrument.render_checker_user_scaffold()
+                            if self.checker_enabled else None)
+        checker_round = (
+            self.instrument.render_checker_round_sample(self.checker_config)
+            if self.checker_enabled else None)
         # Rendered with the reviewer's effective image labels (a text-only
         # review model sees none), through the same helper a real run captures
         # and sends, so the preview matches what the reviewer would be shown.
@@ -1064,7 +1088,8 @@ class Orchestrator:
         }
 
         self._print_dry_run(fingerprints, tool_catalogue, figure_labels,
-                            checker_system, review_system)
+                            checker_system, checker_scaffold, checker_round,
+                            review_system)
         # Loud run-start signals a real run start also emits. The inert-param
         # warning matters most here: the report above prints the RESOLVED
         # params, and only this says which value the operator wrote was
@@ -1075,12 +1100,15 @@ class Orchestrator:
         if report_dir is not None:
             self._write_dry_run_report(
                 Path(report_dir), tool_catalogue, figure_labels,
-                checker_system, review_system, fingerprints)
+                checker_system, checker_scaffold, checker_round,
+                review_system, fingerprints)
         return {
             "system_text": self.system_text,
             "tool_catalogue": tool_catalogue,
             "figure_labels": figure_labels,
             "checker_system": checker_system,
+            "checker_user_scaffold": checker_scaffold,
+            "checker_round_sample": checker_round,
             "review_system": review_system,
             "fingerprints": fingerprints,
         }
@@ -1239,7 +1267,8 @@ class Orchestrator:
                     self.session.add_warning(message)
 
     def _print_dry_run(self, fingerprints, tool_catalogue, figure_labels,
-                       checker_system, review_system):
+                       checker_system, checker_scaffold, checker_round,
+                       review_system):
         """Print the full, untruncated dry-run report to stdout."""
         print("=== DRY RUN (no session created) ===\n")
         print(f"Study: {self.study_id}\n")
@@ -1255,6 +1284,11 @@ class Orchestrator:
             # where an operator reads the shape their checker must answer in.
             print("\n=== CHECKER TOOL CATALOGUE (canonical JSON) ===\n")
             print(canonical_checker_tool_json())
+            print("\n=== CHECKER USER SCAFFOLD ===\n")
+            print(checker_scaffold)
+            if checker_round is not None:
+                print("\n=== CHECKER ROUND, ONE SPECIMEN FIELD ===\n")
+                print(checker_round)
         if review_system is not None:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
@@ -1265,7 +1299,8 @@ class Orchestrator:
         print(json.dumps(fingerprints, indent=2, sort_keys=False))
 
     def _write_dry_run_report(self, report_dir, tool_catalogue, figure_labels,
-                              checker_system, review_system, fingerprints):
+                              checker_system, checker_scaffold, checker_round,
+                              review_system, fingerprints):
         """Write the dry-run report as plain files under `report_dir`.
 
         Deliberately NOT a session: no run.json, no status, no
@@ -1300,6 +1335,11 @@ class Orchestrator:
                     checker_system, encoding="utf-8")
                 (tmp_dir / "checker_tool_catalogue.json").write_text(
                     canonical_checker_tool_json(), encoding="utf-8")
+                (tmp_dir / "checker_user_scaffold.md").write_text(
+                    checker_scaffold, encoding="utf-8")
+                if checker_round is not None:
+                    (tmp_dir / "checker_round_sample.md").write_text(
+                        checker_round, encoding="utf-8")
             if review_system is not None:
                 (tmp_dir / "review_system.md").write_text(
                     review_system, encoding="utf-8")
