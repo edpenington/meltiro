@@ -43,6 +43,14 @@ one fails there instead of shipping the literal token to the model. Slot
 wording is FRAMING — engine text, not config — so it rides in no
 fingerprint; the run's recorded `engine_fp` identifies it.
 
+`{reference:NAME}` resolves in the scaffold on the same terms as in the three
+system spines: the composed text is substituted once, before any per-field
+slot is filled, so an override that cites a list gets the same rendered block
+the extractor and the reviewer read. What the scaffold contributes to
+`checker_fp` is the override as the author wrote it
+(`checker_user_config_text`), placeholder and all; the list's own content
+rides in `reference_hash` beside it, as it does for every other override.
+
 The system prompt has an allowlist of its own
 (`config_bundle._CHECKER_SYSTEM_PLACEHOLDERS`), holding the one slot this
 function substitutes: `{max_checks_per_field}`. The checker is sent no image
@@ -85,6 +93,17 @@ def _load(path):
 
 def _partials_dir(system_prompt_path):
     return Path(system_prompt_path).parent / "partials"
+
+
+def _bundle_root_for_partials(partials_dir):
+    """The config bundle directory holding `prompts/partials/`.
+
+    The mirror of `prompt_builder.bundle_root_for_prompt` for the one render
+    path that is handed the partials directory rather than a prompt file. Used
+    only to locate a `ConfigBundleError`, so a caller rendering from elsewhere
+    still gets a message naming what went wrong.
+    """
+    return Path(partials_dir).parent.parent
 
 
 def _fill_slots(text, system_prompt_path, reference_lists,
@@ -169,16 +188,25 @@ def build_checker_config_text(*, system_prompt_path, max_checks_per_field,
     )
 
 
-def render_checker_user_template(partials_dir, *, predicates):
+def render_checker_user_template(partials_dir, *, predicates,
+                                 reference_lists=None):
     """The scaffold one per-field checker message is rendered from.
 
     The engine section `checker_user`, or the bundle's override of it. A spine
     of one: there is no bundle file to append, because a message whose whole
     content is engine-supplied slots has nothing for a review to add around
     them, and a review that wants different wording overrides the section.
+
+    Every `{reference:NAME}` placeholder in the composed text is substituted
+    with the named list's rendered block, once, before the caller fills the
+    per-field slots — the same pass the three system spines get, so a name a
+    scaffold cites resolves rather than reaching the checker as a token.
     """
-    return compose_engine_spine(
-        CHECKER_USER, partials_dir, predicates=predicates)
+    return substitute_reference_placeholders(
+        compose_engine_spine(CHECKER_USER, partials_dir,
+                             predicates=predicates),
+        reference_lists,
+        path=_bundle_root_for_partials(partials_dir))
 
 
 def checker_user_config_text(partials_dir, *, predicates):
@@ -568,6 +596,7 @@ def build_checker_user_message(
         paper_text=None,
         context_chars=0,
         predicates=None,
+        reference_lists=None,
 ):
     """Build the per-field user message.
 
@@ -594,6 +623,8 @@ def build_checker_user_message(
         context_chars: characters of surrounding paper text shown on each
             side of a matched quote (`checker_context_chars` in
             pipeline.yaml). 0, the default here, renders no context at all.
+        reference_lists: the config bundle's loaded reference lists, rendered
+            into any `{reference:NAME}` the scaffold cites.
 
     Returns a list of content blocks suitable for the user message of the
     checker call: the rendered text as one block, preceded for an
@@ -608,7 +639,8 @@ def build_checker_user_message(
     evidence = envelope.get("evidence")
     notes = envelope.get("notes")
 
-    tmpl = render_checker_user_template(partials_dir, predicates=predicates)
+    tmpl = render_checker_user_template(
+        partials_dir, predicates=predicates, reference_lists=reference_lists)
 
     extraction_instr_block = _render_extraction_instruction_block(field_spec)
     allowed_block = _render_allowed_values_block(field_spec, value)

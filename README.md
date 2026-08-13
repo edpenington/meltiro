@@ -269,8 +269,9 @@ paper-bundle/
 ```
 
 - `schema_version` (must be `1`), `id`, `title` and `exhibits` are required.
-  `id` is an opaque identifier you choose — letters, digits, `.`, `_`, `-` — and
-  it names the output directory.
+  `id` is an opaque identifier you choose — letters, digits, `.`, `_`, `-`, with
+  at least one alphanumeric, so `.` and `..` are rejected — and it names the
+  output directory.
 - `exhibits` declares every table and figure supplied as a cropped image:
   exactly a `label` (the `figures/<label>.png` stem) and the caption the paper
   prints. It may be `[]` for a paper that genuinely has neither. It is required
@@ -286,8 +287,8 @@ paper-bundle/
 - `summary` is optional and overrides what the Checker is shown as the paper's
   short identity. Without it the Checker uses the extracted field the template
   marks `role: summary`, and failing that, title plus DOI.
-- Extra *files* in the bundle directory are ignored, so a bundle may carry its
-  own paperwork alongside the contract files.
+- Unknown manifest keys are rejected. Extra *files* in the bundle directory are
+  ignored, so a bundle may carry its own paperwork alongside the contract files.
 
 Evidence is checked verbatim against `text.md`, markdown syntax included, so a
 converter should keep inline emphasis out of running text where it can. A

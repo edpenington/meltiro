@@ -229,19 +229,6 @@ def load_config_bundle(path):
         if not p.is_file():
             problems.append(f"missing required file: {p.relative_to(root)}")
 
-    # The per-field checker message is rendered from the engine's own
-    # `checker_user` section, so a file of that name in the bundle would be
-    # read by nothing. Refused rather than ignored, because a bundle whose
-    # author believes the checker reads it would run with wording nobody sent.
-    stray_checker_user = prompts_dir / "checker_user_template.md"
-    if stray_checker_user.is_file():
-        problems.append(
-            f"{stray_checker_user.relative_to(root)} is not part of a config "
-            f"bundle: the engine renders the per-field checker message from "
-            f"its own `{CHECKER_USER}` section. Delete the file, or move its "
-            f"wording to prompts/partials/{ENGINE_NAMESPACE}/{CHECKER_USER}.md "
-            f"to override that section.")
-
     if problems:
         raise ConfigBundleError(problems, path=root)
 
@@ -311,9 +298,16 @@ def load_config_bundle(path):
     # whose author believes it does.
     _validate_engine_overrides(partials_dir, root)
 
-    # Partials next: the later checks expand includes, so every include must
-    # already resolve without nesting.
-    _validate_prompt_partials(prompt_paths, partials_dir, root)
+    # Then what the prompts directory holds and what its prompts say, reported
+    # together. A bundle that ships the per-field scaffold as a file of its own
+    # and cites engine sections from its prompts has one piece of work to do,
+    # and one load states the whole of it. The later checks expand includes, so
+    # every include must already resolve without nesting by the time they run.
+    prompt_problems = (
+        _stray_prompt_file_problems(prompts_dir, root)
+        + _prompt_partial_problems(prompt_paths, partials_dir, root))
+    if prompt_problems:
+        raise ConfigBundleError(prompt_problems, path=root)
 
     _validate_no_cap_placeholders(prompt_paths, partials_dir, root)
 
@@ -518,15 +512,38 @@ def _override_paths(partials_dir):
             if engine_override_path(name, partials_dir).is_file()]
 
 
-def _validate_prompt_partials(prompt_paths, partials_dir, root):
-    """Fail loudly if a prompt cites an `{include:NAME}` with no
-    `prompts/partials/NAME.md`, cites an engine section, or a partial or an
+def _stray_prompt_file_problems(prompts_dir, root):
+    """Every file in `prompts/` that nothing reads.
+
+    The per-field checker message is rendered from the engine's own
+    `checker_user` section, so a `checker_user_template.md` in the bundle is
+    read by nothing. Reported rather than ignored, because a bundle whose
+    author believes the checker reads it would run with wording nobody sent.
+
+    Returns the problems rather than raising, so they reach an author in the
+    same error as the prompt-content defects that travel with them.
+    """
+    stray = prompts_dir / "checker_user_template.md"
+    if not stray.is_file():
+        return []
+    return [
+        f"{stray.relative_to(root)} is not part of a config bundle: the "
+        f"engine renders the per-field checker message from its own "
+        f"`{CHECKER_USER}` section. Delete the file, or move its wording to "
+        f"prompts/partials/{ENGINE_NAMESPACE}/{CHECKER_USER}.md to override "
+        f"that section."
+    ]
+
+
+def _prompt_partial_problems(prompt_paths, partials_dir, root):
+    """Every prompt that cites an `{include:NAME}` with no
+    `prompts/partials/NAME.md`, cites an engine section, or whose partial or
     override nests another include.
 
     The render-time expansion in prompt_partials.py raises on all of these
     too, but only mid-run; this hoists them to config-load time, before any
-    API spend, and collects every offender into one error. `partials/` itself
-    is optional and touched only for includes actually cited.
+    API spend, and collects every offender. `partials/` itself is optional and
+    touched only for includes actually cited.
     """
     problems = []
     checked = set()
@@ -565,8 +582,7 @@ def _validate_prompt_partials(prompt_paths, partials_dir, root):
                 f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md nests further "
                 f"include(s) {nested}; nesting is not supported. Inline the "
                 f"nested content or flatten the partials.")
-    if problems:
-        raise ConfigBundleError(problems, path=root)
+    return problems
 
 
 def _nested_names(content):
@@ -713,7 +729,7 @@ def _validate_prompt_references(prompt_paths, partials_dir, reference_lists,
     placeholder that the config bundle does not provide as a reference list.
 
     Includes are expanded first so a placeholder inside a partial is checked
-    too (`_validate_prompt_partials` has already guaranteed they resolve). An
+    too (`_prompt_partial_problems` has already guaranteed they resolve). An
     override is checked on the same terms: reference substitution runs over
     the whole composed prompt, so an override may cite a list, and a name that
     resolves to nothing has to be found here. The render-time substitution in

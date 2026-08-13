@@ -3457,6 +3457,10 @@ class Orchestrator:
                 # conditional sections the same way, and checker_fp covers the
                 # text that was actually sent.
                 predicates=self.instrument.predicates(),
+                # The same lists rendered into the three system prompts, so a
+                # scaffold citing one shows the checker the names the
+                # validator will hold its verdict's field to.
+                reference_lists=self.reference_lists,
                 figures=checker_figures,
                 # The paper text the quotes are windowed into, and how wide
                 # the window is. The paper is the run's INPUT and rides in no

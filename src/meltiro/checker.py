@@ -244,9 +244,6 @@ class CheckerConfig:
             concurrency=concurrency,
         )
 
-    def system_prompt_text(self):
-        return Path(self.system_prompt_path).read_text(encoding="utf-8")
-
     @property
     def partials_dir(self):
         """The bundle's `prompts/partials/`, where its overrides of the
@@ -255,21 +252,24 @@ class CheckerConfig:
         bundles."""
         return Path(self.system_prompt_path).parent / "partials"
 
-    def user_prompt_template_text(self, *, predicates):
+    def user_prompt_template_text(self, *, predicates, reference_lists=None):
         """Return the scaffold one per-field checker message is rendered from:
-        the engine section `checker_user`, or this bundle's override of it.
-        The same call the render path
-        (`checker_prompts.build_checker_user_message`) makes, so the text
-        hashed into `checker_fp` is the text a check is sent.
+        the engine section `checker_user`, or this bundle's override of it,
+        with any `{reference:NAME}` it cites rendered in. The same call the
+        render path (`checker_prompts.build_checker_user_message`) makes, so
+        this is the text a check is sent, before its per-field slots are
+        filled.
 
         `predicates` is the run's structure map, from
-        `Instrument.predicates()`. Required, and taken from the caller rather
-        than reconstructed here, so every prompt in the run resolves against
-        one pipeline.
+        `Instrument.predicates()`. The scaffold composes under the same
+        structure toggles as every other prompt in the run, and the map is
+        taken from the caller rather than reconstructed here, so one pipeline
+        settles them all.
         """
         from meltiro.checker_prompts import render_checker_user_template
         return render_checker_user_template(
-            self.partials_dir, predicates=predicates)
+            self.partials_dir, predicates=predicates,
+            reference_lists=reference_lists)
 
     def fingerprint(self, template, reference_lists=None, *, predicates,
                     max_checks_per_field):

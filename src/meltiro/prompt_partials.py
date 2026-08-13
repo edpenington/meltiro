@@ -82,7 +82,7 @@ prompts cite no include placeholder and overrides no section needs no
 `partials/` directory at all.
 
 The config bundle validates every placeholder at load time
-(`config_bundle._validate_prompt_partials`) so a missing partial or a nested
+(`config_bundle._prompt_partial_problems`) so a missing partial or a nested
 include fails before any API spend. The render-time function here raises the
 same loud error, so a broken include never ships silently in a prompt.
 """
@@ -259,16 +259,11 @@ def engine_citation_message(name, where=None):
     is told the same thing wherever the citation is found.
     """
     prefix = f"prompt {where} cites" if where else "prompt cites"
-    known = engine_section_names()
-    known_note = (f" The engine's sections are {list(known)}."
-                  if name in known else
-                  f" The engine's sections are {list(known)}, and '{name}' is "
-                  f"not one of them.")
     return (
         f"{prefix} {{include:{ENGINE_NAMESPACE}:{name}}}. The engine composes "
         f"its own sections into each role's prompt, and this file supplies the "
-        f"text appended after them, so remove the placeholder."
-        f"{known_note} To supply your own wording for a section, ship "
+        f"text appended after them, so delete the placeholder. To supply your "
+        f"own wording for that section instead, ship "
         f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md; an empty file leaves "
         f"the section out altogether."
     )

@@ -30,8 +30,13 @@ from meltiro.checker import CheckerConfig
 from meltiro.checker_prompts import (
     build_checker_system_text,
     build_checker_user_message,
+    render_checker_user_template,
 )
-from meltiro.config_bundle import load_config_bundle
+from meltiro.config_bundle import (
+    _CHECKER_USER_PLACEHOLDERS,
+    _PLACEHOLDER_TOKEN,
+    load_config_bundle,
+)
 from meltiro.errors import ConfigBundleError
 from meltiro.fingerprint import (
     config_fingerprint,
@@ -163,6 +168,23 @@ class TestTheSectionsShip:
         # nobody to refuse it, so it is pinned here.
         for name, _ in ENGINE_SPINES[prompt_partials.CHECKER_SYSTEM]:
             assert "{image_labels_list}" not in _engine_text(name)
+
+    def test_the_scaffold_cites_only_slots_the_engine_fills(self, config_dir):
+        # Substitution into the per-field scaffold is a plain `str.replace`
+        # per known slot, so a misspelt one is not a render-time error: it
+        # survives into the message and the checker reads `{field_pat}` where
+        # the field path should be. A bundle's OVERRIDE of the section is
+        # refused at load for exactly this
+        # (`config_bundle._validate_checker_placeholders`); the engine's own
+        # copy has nobody to refuse it, so it is pinned here — over the shipped
+        # file, and over the scaffold as it composes.
+        composed = render_checker_user_template(
+            load_config_bundle(config_dir).partials_dir,
+            predicates=PREDICATES)
+        for text in (_engine_text(prompt_partials.CHECKER_USER), composed):
+            unknown = sorted({n for n in _PLACEHOLDER_TOKEN.findall(text)
+                              if n not in _CHECKER_USER_PLACEHOLDERS})
+            assert not unknown, unknown
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +321,28 @@ class TestAStageThatDoesNotRunIsNotDescribed:
         three_prompts, zero_fp = hashes(0)
         assert two_prompts == three_prompts
         assert two_fp != zero_fp
+
+    def test_an_override_of_a_silenced_section_is_not_this_runs_question(
+            self, tmp_path, config_dir):
+        # A section its stage switched off reaches no model, so the bundle's
+        # own words for it are not part of what this run asks, and the preimage
+        # says so: the overriding bundle and the plain one are the same
+        # instrument with the checker off. Turn the checker on and the same
+        # file counts, because now a model reads it.
+        plain_dir = _copy_bundle(tmp_path, config_dir)
+        overridden_dir = _copy_bundle(tmp_path / "second", config_dir)
+        _write_override(overridden_dir, "extractor_checker_feedback",
+                        "A challenge is advisory: revise, or let it stand.")
+
+        def prompt_hash(bundle_dir, max_checks):
+            bundle = load_config_bundle(bundle_dir)
+            return compute_prompt_config_hash(
+                system_prompt_path=bundle.extractor_system_path,
+                max_checks_per_field=max_checks,
+                reference_lists=bundle.reference_lists)
+
+        assert prompt_hash(plain_dir, 0) == prompt_hash(overridden_dir, 0)
+        assert prompt_hash(plain_dir, 2) != prompt_hash(overridden_dir, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +631,30 @@ class TestTheCheckerUserScaffold:
         assert text.startswith("FIELD study.primary_aim")
         assert "## Field under review" not in text
 
+    def test_a_reference_list_the_override_cites_is_rendered_in(
+            self, tmp_path, config_dir):
+        # The scaffold gets the reference pass the three system spines get, so
+        # a review that wants the canonical names beside the value under review
+        # writes the citation and reads the list.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        _write_override(bundle_dir, "checker_user",
+                        "FIELD {field_path}\nVALUE {value}\n"
+                        "{reference:gauge_list}")
+        bundle = load_config_bundle(bundle_dir)
+        blocks = build_checker_user_message(
+            "study.primary_aim",
+            {"description": "The stated aim."},
+            {"value": "An aim", "evidence": "<q>quoted</q>", "notes": None},
+            "Summary: a synthetic paper",
+            set(),
+            partials_dir=bundle.partials_dir,
+            predicates=PREDICATES,
+            reference_lists=bundle.reference_lists,
+        )
+        text = "".join(b.get("text", "") for b in blocks)
+        assert "{reference:gauge_list}" not in text
+        assert "Widget Durability Scale 9 (WDS-9)" in text
+
     def test_an_override_that_misspells_a_slot_is_refused(self, tmp_path,
                                                           config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
@@ -631,6 +699,9 @@ class TestTheBundleComposesNoEngineSection:
         assert "extractor_system.md" in message
         assert "recording_notes" in message
         assert "partials/meltiro/recording_notes.md" in message
+        # The file, the directive, and the two ways out. Not the section
+        # list: the author is deleting a name here rather than choosing one.
+        assert "reviewer_workflow" not in message
 
     def test_a_conditional_engine_citation_is_refused(self, tmp_path,
                                                       config_dir):
@@ -667,6 +738,24 @@ class TestTheBundleComposesNoEngineSection:
         message = str(excinfo.value)
         assert "checker_user_template.md" in message
         assert "partials/meltiro/checker_user.md" in message
+
+    def test_a_bundle_carrying_both_defects_is_told_both_at_once(
+            self, tmp_path, config_dir):
+        # A bundle can hold both at once: the scaffold as a file of its own,
+        # and a prompt citing an engine section. One load names both, so the
+        # work is one editing pass rather than one per load.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        (bundle_dir / "prompts" / "checker_user_template.md").write_text(
+            "## Field\n{field_path}\n", encoding="utf-8")
+        prompt = bundle_dir / "prompts" / "extractor_system.md"
+        prompt.write_text(
+            prompt.read_text(encoding="utf-8")
+            + "\n{include:meltiro:recording_notes}\n", encoding="utf-8")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(bundle_dir)
+        message = str(excinfo.value)
+        assert "checker_user_template.md" in message
+        assert "{include:meltiro:recording_notes}" in message
 
 
 # ---------------------------------------------------------------------------

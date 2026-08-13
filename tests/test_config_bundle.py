@@ -39,8 +39,10 @@ import shutil
 
 import pytest
 
+from meltiro.checker_prompts import render_checker_user_template
 from meltiro.config_bundle import ConfigBundle, load_config_bundle
 from meltiro.errors import ConfigBundleError
+from meltiro.prompt_partials import stage_predicates
 
 
 @pytest.fixture
@@ -509,11 +511,18 @@ class TestCheckerUserPlaceholderAllowlist:
         self._rewrite(good_config, "{value}\n{notes_block}\n")
         load_config_bundle(good_config)  # must not raise
 
-    def test_the_reference_form_is_allowed(self, good_config):
-        # A colon-carrying placeholder is a different grammar with its own
-        # pass, so it is not read as a slot.
+    def test_a_reference_citation_is_rendered_in(self, good_config):
+        # A colon-carrying placeholder is not a slot: it names a reference
+        # list, and the scaffold is substituted from it before any per-field
+        # slot is filled, so the checker reads the canonical names rather than
+        # the token.
         self._rewrite(good_config, "{value}\n{reference:gauge_list}\n")
-        load_config_bundle(good_config)  # must not raise
+        bundle = load_config_bundle(good_config)
+        rendered = render_checker_user_template(
+            bundle.partials_dir, predicates=stage_predicates(2, True),
+            reference_lists=bundle.reference_lists)
+        assert "{reference:gauge_list}" not in rendered
+        assert "Widget Durability Scale 9 (WDS-9)" in rendered
 
     def test_prose_braces_and_json_examples_are_not_caught(self, good_config):
         # The pattern matches a brace-wrapped lowercase identifier and nothing
