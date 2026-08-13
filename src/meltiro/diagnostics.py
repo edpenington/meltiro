@@ -61,7 +61,8 @@ def validate_diagnostics(level):
 
 def captures_instrument(level):
     """Whether this level captures the instrument (the rendered prompts, the
-    tool definitions, and the image labels) into `diagnostics/instrument/`."""
+    tool definitions, and the exhibits the message attached) into
+    `diagnostics/instrument/`."""
     return validate_diagnostics(level) in ("standard", "full")
 
 

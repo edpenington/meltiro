@@ -548,6 +548,24 @@ class TestItReadsStartToFinish:
         assert "[section 7](#sec-tool-definitions)" in index
         assert "only moved out of the way of the run" in index
 
+    def test_2_6_names_each_exhibit_and_the_caption_beside_it(self, session):
+        # The exhibits record is the only durable copy of the manifest's
+        # captions: a label says which crop an `<img>` citation named, and
+        # nothing but the caption says which table that was once the paper
+        # bundle has been re-cropped or moved. Both come off
+        # `instrument/image_labels.json`, so the section and the file agree.
+        document = (session.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        figures = _between(document, "### 2.6 The figures",
+                           "### 2.7 The checker's per-field scaffold")
+        exhibits = json.loads((session.session.instrument_dir /
+                               "image_labels.json").read_text())
+        assert exhibits, "the fixture bundle attached no exhibit to record"
+        assert "| Label | Caption |" in figures
+        for exhibit in exhibits:
+            assert f"`{exhibit['label']}`" in figures
+            assert exhibit["caption"] in figures
+
     def test_the_appendix_prints_every_definition_in_full(self, session):
         """Moved, not summarised: every description and every schema is still
         in the document, byte for byte."""

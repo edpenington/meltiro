@@ -27,9 +27,10 @@ from direktoro.registry import OPENROUTER_BASE_URL
 
 # The run's structure predicates, which a checker fingerprint takes as an
 # argument because it keeps none of its own. A checker-on, reviewer-on
-# pipeline is the ordinary shape, and these tests vary the prompts and the
-# template rather than the structure, so they hold it fixed.
-PREDICATES = stage_predicates(2, True)
+# pipeline with the reviewer's own writes unchecked is the ordinary shape, and
+# these tests vary the prompts and the template rather than the structure, so
+# they hold it fixed.
+PREDICATES = stage_predicates(2, True, False)
 
 
 # Content blocks, as plain classes rather than MagicMocks. Two reasons: a

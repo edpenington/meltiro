@@ -989,9 +989,7 @@ _CHECKER_VERDICT_TOOL = {
                 "description": (
                     "Required. One short sentence working through whether the "
                     "evidence supports the value. Write it before choosing "
-                    "the verdict and let the verdict follow from it. It is "
-                    "read by the extractor, so it has to carry its point "
-                    "succinctly."
+                    "the verdict and let the verdict follow from it."
                 ),
             },
             "verdict": {

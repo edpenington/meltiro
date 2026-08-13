@@ -155,11 +155,12 @@ def _parse_args(argv=None):
                          "given.")
     ex.add_argument("--dry-run", action="store_true",
                     help="Render the full system prompt, tool catalogue, "
-                         "figure labels, stage fingerprints and — with the "
-                         "checker on — the per-field scaffold every check is "
-                         "asked through plus a specimen check for the first "
-                         "field a check could reach, print them untruncated, "
-                         "and exit (no API calls, no session created).")
+                         "attached exhibits, stage fingerprints and — with "
+                         "the checker on — the per-field scaffold every check "
+                         "is asked through plus a specimen check for the "
+                         "first field a check could reach, print them "
+                         "untruncated, and exit (no API calls, no session "
+                         "created).")
     ex.add_argument("--extractor-model", help="Override extractor model.")
     ex.add_argument("--checker-model", help="Override checker model.")
     ex.add_argument("--review-model", help="Override final-review model.")

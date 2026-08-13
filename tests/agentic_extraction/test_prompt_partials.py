@@ -169,7 +169,7 @@ class TestTheCheckerSystemPromptPartials:
         # The run's structure predicates, which the checker takes as an
         # argument because it keeps no copy of the toggles behind them. Held
         # fixed here: what varies is the partial's content.
-        predicates = stage_predicates(2, True)
+        predicates = stage_predicates(2, True, False)
         fp_a = cfg.fingerprint(template, reference_lists,
                                predicates=predicates,
                                max_checks_per_field=2)

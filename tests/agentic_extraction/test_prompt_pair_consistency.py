@@ -192,6 +192,29 @@ class TestWhatTheCheckerIsActuallyShown:
             context_chars=0)
         assert rendered == f'"{CELL}"'
 
+    def test_prose_beside_a_tag_is_stripped_from_the_evidence(self):
+        # checker_prompts._render_evidence_block, tagged branch: the string is
+        # parsed into quotes and images and the prose between them is
+        # discarded, so an argument written around a quote reaches the checker
+        # nowhere. This is what a claim about stripping may be made about.
+        rendered, _ = _render_evidence_block(
+            f"<q>{CELL}</q> the denominator is the whole sample",
+            set(), paper_text=CAPTION_ABOVE, context_chars=1000)
+        assert CELL in rendered
+        assert "denominator" not in rendered
+
+    def test_untagged_prose_only_evidence_is_shown_whole(self):
+        # The same function's other branch, and the one an absolute claim gets
+        # wrong: an evidence string carrying no tag at all is treated as a
+        # single quote, so the checker IS shown it — under a statement that it
+        # could not be located in the paper, which is what the window machinery
+        # can say about it and all it can say.
+        prose = "The denominator is the whole sample rather than the subgroup."
+        rendered, _ = _render_evidence_block(
+            prose, set(), paper_text=CAPTION_ABOVE, context_chars=1000)
+        assert prose in rendered
+        assert "could not be located in the paper text" in rendered
+
 
 # ---------------------------------------------------------------------------
 # 2. The pair: every claim checked against both prompts of every example
@@ -275,6 +298,18 @@ REFUTED_CLAIMS = [
         [
             r"(?:does not|doesn't|never) see (?:any )?other extracted fields",
             r"(?:does not|doesn't|never) see the other fields",
+        ],
+    ),
+    (
+        "prose is stripped only where the evidence carries a tag beside it; "
+        "untagged prose-only evidence is shown to the checker whole, as a "
+        "quote the paper does not locate "
+        "(checker_prompts._render_evidence_block)",
+        [
+            r"prose[^.]*\b(?:is |are )?not shown\b",
+            r"prose[^.]*\bnever (?:shown|reaches|reads)\b",
+            r"prose[^.]*\bnot shown (?:to the checker )?at all\b",
+            r"(?:does not|doesn't|never) (?:see|read)s? [^.]*\bprose\b",
         ],
     ),
 ]

@@ -1034,7 +1034,7 @@ class _Renderer:
         if not captures_instrument(level):
             notes.append(
                 "`minimal` keeps no `instrument/`, so section 2 has no "
-                "captured prompts, tool definitions, or figure labels to "
+                "captured prompts, tool definitions, or exhibits record to "
                 "render. They were never written down. The fingerprints above "
                 "still identify the instrument, they just cannot reproduce "
                 "it, and re-rendering it from the config bundle now would be "
@@ -1332,17 +1332,21 @@ class _Renderer:
             self._block(_json_fence(tool.get("input_schema")))
 
     def _render_figures(self):
-        labels = self.s.instrument["image_labels"]
+        exhibits = self.s.instrument["image_labels"]
         hashes = self.s.meta.get("image_hashes") or {}
         self._p(_anchor("instrument-figures"))
         self._p("### 2.6 The figures")
         self._p()
-        if labels is None:
+        if exhibits is None:
             self._p("*`instrument/image_labels.json` is absent from this "
                     "session.*")
             self._p()
             return
-        if not labels:
+        # Each entry is `{"label", "caption"}`: the label an `<img>` citation
+        # names, and the paper's own caption for the crop, which is the half a
+        # label cannot carry and the bundle directory need no longer hold.
+        labels = [e["label"] for e in exhibits]
+        if not exhibits:
             self._p(
                 "No figures were attached to the extractor's prompt, either "
                 "because the paper bundle has none or because the extractor's "
@@ -1352,18 +1356,23 @@ class _Renderer:
         else:
             self._p(
                 "The cropped figures attached to the extractor's prompt as "
-                "image parts. A field whose evidence cites one of these "
-                "labels had the image itself sent to the checker as its "
-                "evidence."
+                "image parts, each under the caption the paper prints beside "
+                "it. A field whose evidence cites one of these labels had the "
+                "image itself sent to the checker as its evidence."
             )
             self._p()
-            rows = [[f"`{label}`",
-                     _code_cell((hashes.get(label) or {}).get("sha256")),
-                     _present((hashes.get(label) or {}).get("byte_length"))]
-                    for label in labels]
+            rows = [[f"`{e['label']}`",
+                     # The paper's own prose, so it is escaped as a cell:
+                     # a caption may carry a pipe.
+                     _cell(_present(e.get("caption"))),
+                     _code_cell((hashes.get(e["label"]) or {}).get("sha256")),
+                     _present((hashes.get(e["label"]) or {}).get(
+                         "byte_length"))]
+                    for e in exhibits]
             self._block(_table(
-                ["Label", "SHA-256 of the cropped PNG", "Bytes"], rows))
-        extra = sorted(set(hashes) - set(labels or []))
+                ["Label", "Caption", "SHA-256 of the cropped PNG", "Bytes"],
+                rows))
+        extra = sorted(set(hashes) - set(labels))
         if extra:
             self._p(
                 "The paper bundle also carries these figures, hashed at "

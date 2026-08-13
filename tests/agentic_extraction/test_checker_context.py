@@ -683,7 +683,7 @@ class TestFingerprint:
         )
         # Structure held fixed: the width is the only thing that varies here,
         # and it is the checker's own knob rather than a pipeline toggle.
-        predicates = stage_predicates(2, True)
+        predicates = stage_predicates(2, True, False)
         wide = cfg.fingerprint(synthetic_template, {"gauge_list": []},
                                predicates=predicates,
                                max_checks_per_field=2)

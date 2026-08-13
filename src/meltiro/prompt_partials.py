@@ -29,15 +29,20 @@ Citation is one level deep and engine-only: a cited partial may cite nothing
 further, and a role prompt may cite no bundle partial, which would invert the
 ownership boundary the two halves are built on.
 
-Two stage predicates gate a conditional citation, matching the two structure
+Three stage predicates gate a conditional citation, built from the structure
 toggles the engine resolves before any prompt is rendered:
 
-  - `checker` -- true when `max_checks_per_field > 0`
-  - `review`  -- true when `final_review` is on
+  - `checker`          -- true when `max_checks_per_field > 0`
+  - `review`           -- true when `final_review` is on
+  - `reviewer_checker` -- true when the checker is on AND
+                          `check_reviewer_edits` is on
 
 A partial whose stage is off is left out entirely, and the text around it
 closes up: a run with no checker must not brief its extractor on challenges
-that cannot arrive.
+that cannot arrive. `reviewer_checker` is the pair of toggles a review-stage
+check needs, because the checker running is not on its own enough to send one:
+a reviewer's own writes are checked only where the config asks for it, and the
+reviewer's briefing follows what it will actually be sent.
 
 OVERRIDING. A bundle ships `prompts/partials/meltiro/NAME.md` to supply its
 own words for engine prompt `NAME`. Non-empty text REPLACES that file's text,
@@ -129,7 +134,7 @@ CHECKER_USER = "checker_user"
 # closed: an unknown predicate is a typo or a stage that does not exist, and
 # silently treating it as false would hide a block rather than report the
 # mistake.
-PREDICATE_NAMES = ("checker", "review")
+PREDICATE_NAMES = ("checker", "review", "reviewer_checker")
 
 # The one file each role's engine half is rendered from. Its own text decides
 # what else composes and in what order, so a passage moves by moving it in
@@ -178,15 +183,24 @@ EXPAND_ALL_BRANCHES = "expand-all-branches"
 BLOCK_SEPARATOR = "\n\n"
 
 
-def stage_predicates(max_checks_per_field, final_review):
+def stage_predicates(max_checks_per_field, final_review,
+                     check_reviewer_edits):
     """The predicate map for a run's structure toggles.
 
-    One place decides what `checker` and `review` mean, so a render path
-    cannot disagree with the hash path about whether a stage counts as on.
+    One place decides what `checker`, `review` and `reviewer_checker` mean, so
+    a render path cannot disagree with the hash path about whether a stage
+    counts as on. Every argument is required, because a toggle defaulted here
+    would be a toggle some caller never states and every reader has to guess.
+
+    `reviewer_checker` is a conjunction rather than a toggle of its own: a
+    review-stage check needs the checker running AND the config asking for the
+    reviewer's writes to be checked, and either one alone sends none.
     """
+    checker = int(max_checks_per_field or 0) > 0
     return {
-        "checker": int(max_checks_per_field or 0) > 0,
+        "checker": checker,
         "review": bool(final_review),
+        "reviewer_checker": checker and bool(check_reviewer_edits),
     }
 
 

@@ -66,11 +66,13 @@ def bundle(tmp_path, config_dir):
     return root
 
 
-def _render(root, *, max_checks_per_field, final_review=True):
+def _render(root, *, max_checks_per_field, final_review=True,
+            check_reviewer_edits=False):
     return build_system_message(
         system_prompt_path=root / "prompts" / "extractor_system.md",
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
+        check_reviewer_edits=check_reviewer_edits,
         reference_lists=load_reference_lists(root / "reference"))
 
 
@@ -99,6 +101,25 @@ class TestTheBlockFollowsItsStage:
         # left behind by an omitted block is a fingerprint difference, not a
         # cosmetic one.
         assert "\n\n\n" not in _render(bundle, max_checks_per_field=0)
+
+    def test_a_bundles_own_block_may_follow_the_reviewer_checker_predicate(
+            self, bundle):
+        # Every predicate the engine's own prompts gate on is available to a
+        # bundle's, on the same terms: a review that wants to say something of
+        # its own about a challenge on the reviewer's edits writes the
+        # placeholder and the block follows the same pair of toggles the
+        # engine's partial does.
+        prompt = bundle / "prompts" / "extractor_system.md"
+        prompt.write_text(
+            prompt.read_text(encoding="utf-8").replace(
+                "{include_if:checker:", "{include_if:reviewer_checker:"),
+            encoding="utf-8")
+        assert BLOCK in _render(bundle, max_checks_per_field=2,
+                                check_reviewer_edits=True)
+        assert BLOCK not in _render(bundle, max_checks_per_field=2,
+                                    check_reviewer_edits=False)
+        assert BLOCK not in _render(bundle, max_checks_per_field=0,
+                                    check_reviewer_edits=True)
 
     def test_the_review_predicate_is_independent_of_the_checker(self, bundle):
         prompt = bundle / "prompts" / "extractor_system.md"
@@ -167,8 +188,24 @@ class TestTheRendererRefusesToGuess:
         assert BLOCK in expanded
 
     def test_stage_predicates_reads_the_toggles_one_way(self):
-        assert stage_predicates(0, True) == {"checker": False, "review": True}
-        assert stage_predicates(2, False) == {"checker": True, "review": False}
+        assert stage_predicates(0, True, False) == {
+            "checker": False, "review": True, "reviewer_checker": False}
+        assert stage_predicates(2, False, False) == {
+            "checker": True, "review": False, "reviewer_checker": False}
+
+    def test_the_reviewer_checker_predicate_needs_both_toggles(self):
+        # A conjunction, not a third toggle: a run that checks the reviewer's
+        # edits with no checker running checks nothing, and a checker running
+        # over the extractor alone sends the reviewer no challenge either. The
+        # partial that describes the protocol follows the pair.
+        def reviewer_checker(max_checks, check_reviewer_edits):
+            return stage_predicates(
+                max_checks, True, check_reviewer_edits)["reviewer_checker"]
+
+        assert reviewer_checker(2, True) is True
+        assert reviewer_checker(2, False) is False
+        assert reviewer_checker(0, True) is False
+        assert reviewer_checker(0, False) is False
 
 
 class TestTheToggleReachesTheFingerprint:

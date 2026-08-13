@@ -15,6 +15,7 @@ fixture, hermetic and shaped like a text-only GLM chat endpoint
 """
 
 import dataclasses
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,7 @@ from meltiro.config_bundle import load_config_bundle
 from meltiro.extraction_record import ExtractionRecord
 from meltiro.fingerprint import structure_hash
 from meltiro.orchestrator import Orchestrator
+from meltiro.prompt_builder import NO_EXHIBITS_NOTICE
 from direktoro.registry import (
     MODEL_REGISTRY, Model, PROVIDER_OPENAI, WIRE_CHAT_COMPLETIONS,
     known_models, model_info, model_supports_images)
@@ -238,6 +240,42 @@ class TestTextOnlyExtractor:
         assert "table_01" in _message_text(capable.messages)
         assert "table_01" not in capable.system_text
 
+    def test_the_message_says_that_none_accompany_the_study(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # The other half of withholding the images. The system prompt is one
+        # string per config and cannot know this role's capability, so the
+        # statement belongs to the message — and a text-only role reads the
+        # same one a no-crops bundle produces, rather than a message that
+        # simply stops after the paper text. It is in the capture too, because
+        # the capture is the record of the message.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     extractor_model=TEXT_ONLY_MODEL)
+        orch.prepare_new_session()
+        assert NO_EXHIBITS_NOTICE in _message_text(orch.messages)
+        assert NO_EXHIBITS_NOTICE in (
+            orch.session.instrument_dir / "user_prompt.txt").read_text(
+                encoding="utf-8")
+
+        # Positive control: the same bundle under an image-capable extractor
+        # carries the crop instead, and says nothing of the kind.
+        capable = _orch(config_dir, bundle_minimal_dir, tmp_path / "opus",
+                        extractor_model="claude-opus-4-7")
+        capable.prepare_new_session()
+        assert NO_EXHIBITS_NOTICE not in _message_text(capable.messages)
+
+    def test_the_exhibits_record_is_empty_for_a_text_only_extractor(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        # `instrument/image_labels.json` records what the message carried, so
+        # a role sent no crop records none. `meta.images_omitted` beside it is
+        # what separates this from a bundle that ships no crops at all.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     extractor_model=TEXT_ONLY_MODEL)
+        orch.prepare_new_session()
+        assert json.loads(
+            (orch.session.instrument_dir / "image_labels.json").read_text(
+                encoding="utf-8")) == []
+        assert orch.session.meta["images_omitted"] == {"extractor": True}
+
     def test_meta_flag_and_warning(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
         orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
@@ -309,6 +347,11 @@ class TestNoFiguresBundle:
                      extractor_model="claude-opus-4-7")
         orch.prepare_new_session()
         assert _canonical_image_blocks(orch.messages) == []
+        # The bundle's `exhibits: []` is an assertion that the paper has no
+        # tables and no figures, and the message passes it on: an
+        # image-capable model is told there are none rather than left to infer
+        # it from a message that stops after the paper text.
+        assert NO_EXHIBITS_NOTICE in _message_text(orch.messages)
         assert orch.session.meta["images_omitted"] == {}
         assert "images-omitted" not in capsys.readouterr().err
 

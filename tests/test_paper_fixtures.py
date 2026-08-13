@@ -454,9 +454,10 @@ class TestCliDryRunOverRealBundle:
         fps = json.loads(
             (report / "fingerprints.json").read_text(encoding="utf-8"))
         assert fps["config_fp"]
-        # The real figure label reaches the rendered figure-label file.
-        labels = (report / "figure_labels.txt").read_text(encoding="utf-8")
-        assert "figure_01" in labels
+        # The real figure label reaches the rendered exhibit file.
+        exhibits = (report / "attached_exhibits.txt").read_text(
+            encoding="utf-8")
+        assert "figure_01" in exhibits
         # A dry run creates NO session.
         assert not (out_dir / "syn-flexural" / "sessions").exists()
 
@@ -478,7 +479,7 @@ class TestCliDryRunOverRealBundle:
         assert "=== SYSTEM MESSAGE ===" in out
         report = out_dir / "syn-degradation" / "dry_run"
         assert (report / "extractor_system.md").exists()
-        # A figure-less bundle still renders a (empty) figure-label file, and
+        # A figure-less bundle still renders an (empty) exhibit file, and
         # no session is created.
-        assert (report / "figure_labels.txt").exists()
+        assert (report / "attached_exhibits.txt").exists()
         assert not (out_dir / "syn-degradation" / "sessions").exists()

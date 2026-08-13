@@ -59,7 +59,7 @@ def _create(tmp_path, **over):
         system_prompt="SYSTEM", user_prompt="USER",
         review_system_prompt="REVIEW", checker_system_prompt="CHECKER",
         checker_user_scaffold="SCAFFOLD",
-        image_labels=["fig_01"],
+        image_labels=[{"label": "fig_01", "caption": "Figure 1. Study flow"}],
         runs_dir=tmp_path,
     )
     kwargs.update(over)
@@ -94,8 +94,12 @@ class TestLayout:
                 "checker_system_prompt.txt").read_text() == "CHECKER"
         assert (s.instrument_dir /
                 "checker_user_scaffold.txt").read_text() == "SCAFFOLD"
+        # The exhibits record carries the caption beside the label: the label
+        # says what an `<img>` citation named, and only the caption says which
+        # exhibit that was, once the paper bundle is out of reach.
         assert json.loads(
-            (s.instrument_dir / "image_labels.json").read_text()) == ["fig_01"]
+            (s.instrument_dir / "image_labels.json").read_text()) == [
+                {"label": "fig_01", "caption": "Figure 1. Study flow"}]
 
     def test_meta_path_for_names_one_place_only(self, tmp_path):
         # Forward-only: the helper resume and auto-resume use looks in exactly

@@ -29,6 +29,7 @@ the review's own briefing. It is composed rather than shipped as a file, and it
 falls on the engine's side of both hashing boundaries above.
 """
 
+import re
 import shutil
 
 import pytest
@@ -82,7 +83,7 @@ from meltiro.template import load_template
 # hold fixed: what varies here is prompt text.
 PINNED_CALL_IDENTITY = "call-identity-engine-prompts"
 
-PREDICATES = stage_predicates(2, True)
+PREDICATES = stage_predicates(2, True, False)
 
 # The token the engine substitutes, and the citations a role prompt carries.
 # A paragraph holding either does not reach a model as written, so the
@@ -106,11 +107,17 @@ def _write_override(bundle_dir, name, text):
     return override_dir / f"{name}.md"
 
 
-def _set_max_checks(bundle_dir, value):
-    """Rewrite the bundle's own check budget: the toggle `checker` reads."""
+def _set_pipeline(bundle_dir, **toggles):
+    """Rewrite the bundle's own structure toggles.
+
+    These are what a LOAD reads: `prompts_hash` and `instrument_fp` are
+    computed against `pipeline.yaml`'s own values, so a test asking which
+    partials a bundle's identity covers sets them here rather than passing
+    them to a render.
+    """
     path = bundle_dir / "pipeline.yaml"
     pipeline = yaml.safe_load(path.read_text(encoding="utf-8"))
-    pipeline["max_checks_per_field"] = value
+    pipeline.update(toggles)
     path.write_text(yaml.safe_dump(pipeline), encoding="utf-8")
 
 
@@ -158,7 +165,8 @@ def _checker(bundle, predicates=PREDICATES, **kwargs):
         max_checks_per_field=2, **kwargs)
 
 
-def _engine_half(bundle, *, max_checks_per_field=2, final_review=True):
+def _engine_half(bundle, *, max_checks_per_field=2, final_review=True,
+                 check_reviewer_edits=False):
     """The extractor's system message with the bundle's own text cut out.
 
     What is left is the engine's half: its prompt for the extractor and the
@@ -166,33 +174,41 @@ def _engine_half(bundle, *, max_checks_per_field=2, final_review=True):
     own prompt file, so a claim about what the ENGINE tells a model has to be
     made against this rather than against the whole message.
     """
-    predicates = stage_predicates(max_checks_per_field, final_review)
+    predicates = stage_predicates(max_checks_per_field, final_review,
+                                  check_reviewer_edits)
     appended = render_bundle_prompt_text(
         bundle.extractor_system_path, predicates=predicates,
         reference_lists=bundle.reference_lists,
         max_checks_per_field=max_checks_per_field)
     whole = _extractor(bundle, max_checks_per_field=max_checks_per_field,
-                       final_review=final_review)
+                       final_review=final_review,
+                       check_reviewer_edits=check_reviewer_edits)
     assert appended and appended in whole, (
         "the bundle's appended text is not in the message verbatim, so "
         "subtracting it leaves something other than the engine's half")
     return whole.replace(appended, "")
 
 
-def _review_engine_half(bundle, *, max_checks_per_field=2, final_review=True):
+def _review_engine_half(bundle, *, max_checks_per_field=2, final_review=True,
+                        check_reviewer_edits=True):
     """The reviewer's system message with the bundle's own text cut out.
 
     The twin of `_engine_half` for the second role that composes a conditional
-    partial: the reviewer's writes are checked too, so what the engine tells it
-    about a checker follows the same stage toggle the extractor's does.
+    partial. Its stage is the PAIR of toggles a review-stage check needs, so
+    `check_reviewer_edits` defaults on here where the extractor's helper has no
+    such argument to set: a caller asking what the engine tells the reviewer
+    about a checker is asking about the configuration that can send it one, and
+    the callers testing the silence set the toggle themselves.
     """
-    predicates = stage_predicates(max_checks_per_field, final_review)
+    predicates = stage_predicates(max_checks_per_field, final_review,
+                                  check_reviewer_edits)
     appended = render_bundle_prompt_text(
         bundle.review_system_path, predicates=predicates,
         reference_lists=bundle.reference_lists,
         max_checks_per_field=max_checks_per_field)
     whole = _reviewer(bundle, max_checks_per_field=max_checks_per_field,
-                      final_review=final_review)
+                      final_review=final_review,
+                      check_reviewer_edits=check_reviewer_edits)
     assert appended and appended in whole, (
         "the bundle's appended text is not in the message verbatim, so "
         "subtracting it leaves something other than the engine's half")
@@ -365,7 +381,12 @@ class TestEveryRoleIsBriefed:
             assert block in rendered, block[:60]
 
     def test_the_reviewer_reads_the_partial_its_prompt_cites(self, config_dir):
-        rendered = _reviewer(load_config_bundle(config_dir))
+        # Under the pair of toggles that can send it a challenge: the checker
+        # running, and the config asking for the reviewer's own writes to be
+        # checked. With either off the partial composes nowhere, which is what
+        # the silence tests below assert.
+        rendered = _reviewer(load_config_bundle(config_dir),
+                             check_reviewer_edits=True)
         for block in _paragraphs("reviewer_checker_feedback"):
             assert block in rendered, block[:60]
 
@@ -491,23 +512,40 @@ class TestAStageThatDoesNotRunIsNotDescribed:
         assert "checker_challenges" in engine_half
 
     @pytest.mark.parametrize("final_review", [False, True])
-    def test_a_checker_off_reviewer_is_never_told_a_checker_exists(
-            self, config_dir, final_review):
+    @pytest.mark.parametrize("max_checks_per_field", [0, 2])
+    def test_a_reviewer_whose_edits_are_unchecked_is_told_of_no_checker(
+            self, config_dir, max_checks_per_field, final_review):
         # The reviewer's own writes are checkable, so it composes a conditional
-        # partial exactly as the extractor does — and it is held to the same
-        # rule: with the checker off, the stage is not named at all. Both
-        # review toggles are covered, because the reviewer's engine text is one
-        # text whether or not the run reaches it.
+        # partial as the extractor does — but its stage is the PAIR of toggles
+        # a review-stage check needs, and `check_reviewer_edits` is off by
+        # default. So the checker RUNNING is not enough to name it here: with
+        # the reviewer's edits unchecked, no challenge can ever reach the
+        # reviewer, and briefing it on one would break its isolation for
+        # nothing. Both review toggles and both checker settings are covered,
+        # the default configuration among them.
+        assert "checker" not in _review_engine_half(
+            load_config_bundle(config_dir),
+            max_checks_per_field=max_checks_per_field,
+            final_review=final_review,
+            check_reviewer_edits=False).lower()
+
+    @pytest.mark.parametrize("final_review", [False, True])
+    def test_a_checker_off_reviewer_is_told_of_none_either(
+            self, config_dir, final_review):
+        # The other toggle of the pair, on its own: the config asks for the
+        # reviewer's edits to be checked and no checker runs, so nothing checks
+        # them and the reviewer is told of no checker.
         assert "checker" not in _review_engine_half(
             load_config_bundle(config_dir), max_checks_per_field=0,
-            final_review=final_review).lower()
+            final_review=final_review, check_reviewer_edits=True).lower()
 
-    def test_with_the_checker_on_the_reviewer_is_told_too(self, config_dir):
-        # The other half of the pair: the passage exists, so the absence above
-        # is the toggle working rather than the word having left the reviewer's
-        # vocabulary altogether.
+    def test_with_both_toggles_on_the_reviewer_is_told_too(self, config_dir):
+        # The other half of the grid: the passage exists, so the absences above
+        # are the toggles working rather than the word having left the
+        # reviewer's vocabulary altogether.
         engine_half = _review_engine_half(load_config_bundle(config_dir),
-                                          max_checks_per_field=2)
+                                          max_checks_per_field=2,
+                                          check_reviewer_edits=True)
         assert "checker" in engine_half.lower()
         assert "checker_challenges" in engine_half
 
@@ -571,6 +609,65 @@ class TestTheExtractorIsNeverToldOfTheReviewer:
     def test_the_reviewer_is_still_described_to_itself(self, config_dir):
         # The stage exists; it is the extractor that is not told about it.
         assert "reviewer" in _reviewer(load_config_bundle(config_dir)).lower()
+
+
+# ---------------------------------------------------------------------------
+# What a system prompt may not promise
+# ---------------------------------------------------------------------------
+
+# The shapes an assertion that this study's cropped exhibits ARE attached
+# takes. A system prompt is one string per config and cannot make one: a paper
+# bundle may declare `exhibits: []`, and a text-only role is sent no image part
+# whatever the bundle carries, so under either the promise is false for every
+# study the config runs. Presence is a fact of the MESSAGE, which states it
+# both ways — the labelled attachments themselves, or
+# `prompt_builder.NO_EXHIBITS_NOTICE` where there are none.
+#
+# Patterns rather than a style check, on the same terms as the refuted claims
+# in test_prompt_pair_consistency.py: describing the convention costs nothing,
+# and only promising an attachment fails.
+ASSERTED_ATTACHMENT = (
+    # What the role is handed, with an exhibit named among it.
+    r"\b(?:is given|is handed|is sent|is shown|receives)\b"
+    r"[^.]*\b(?:cropped|exhibits?|figures|tables)\b",
+    # Or the exhibits themselves as the subject of an attachment claim.
+    r"\b(?:the|its|this study's)\s+(?:cropped\s+)?"
+    r"(?:exhibits|figures|tables)\b[^.]*\b(?:are|is)\s+attached\b",
+)
+
+
+@pytest.mark.parametrize("engine_half", [_engine_half, _review_engine_half],
+                         ids=["extractor", "reviewer"])
+class TestNoSystemPromptPromisesAnAttachment:
+    """Exhibit presence is read off the message, never asserted by the prompt.
+
+    Both roles are covered because both are handed the paper the same way, and
+    both would be wrong the same way: a bundle whose manifest declares no
+    exhibits, or a role whose model cannot accept an image, gets a system
+    prompt describing an attachment that its message does not carry. The
+    message says which it is, so the prompt describes the convention and stops.
+    """
+
+    def test_no_sentence_asserts_the_exhibits_are_attached(
+            self, config_dir, engine_half):
+        text = engine_half(load_config_bundle(config_dir))
+        for pattern in ASSERTED_ATTACHMENT:
+            hit = re.search(pattern, text, re.IGNORECASE)
+            assert hit is None, (
+                f"the engine's half says {hit.group(0)!r}, which promises an "
+                f"attachment the engine cannot know is there. A bundle "
+                f"declaring `exhibits: []` and a text-only role both read "
+                f"this and receive no image; the message states what "
+                f"accompanies the study, and the prompt describes the "
+                f"convention.")
+
+    def test_it_still_says_what_an_attachment_looks_like(
+            self, config_dir, engine_half):
+        # The other half of the pair: the convention is described, so the
+        # absence above is the promise going rather than the whole subject.
+        text = engine_half(load_config_bundle(config_dir)).lower()
+        assert "attached images" in text
+        assert "labelled" in text
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +760,7 @@ class TestTheOverrideDirectoryIsEnumerated:
         # override is read and checked whatever the toggles say — at load, and
         # again on the branch composition does not take.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _set_max_checks(bundle_dir, 0)
+        _set_pipeline(bundle_dir, max_checks_per_field=0)
         _write_override(bundle_dir, "extractor_checker_feedback",
                         "ours, plus {include:review_context}")
 
@@ -676,7 +773,7 @@ class TestTheOverrideDirectoryIsEnumerated:
         with pytest.raises(ConfigBundleError) as excinfo:
             compose_engine_prompt(
                 EXTRACTOR_SYSTEM, bundle_dir / "prompts" / "partials",
-                predicates=stage_predicates(0, True))
+                predicates=stage_predicates(0, True, False))
         assert "nest" in str(excinfo.value).lower()
 
     def test_a_role_override_may_not_cite_the_engines_own_partial(
@@ -734,14 +831,17 @@ class TestANonEmptyOverrideReplacesTheText:
     def test_a_slot_the_checker_cannot_fill_is_refused(self, tmp_path,
                                                        config_dir):
         # The override is the bundle's own text, and it is held to the rule
-        # the prompt it lands in imposes: the checker is sent no image labels,
-        # so the token would reach the model verbatim.
+        # the prompt it lands in imposes. The checker's system prompt has one
+        # slot, `{max_checks_per_field}`, and substitution is a plain
+        # `str.replace` per known slot — so any other brace-wrapped lowercase
+        # token is not a render-time error but a literal `{paper_section}` in
+        # front of the checker. The load refuses it instead, naming the token.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         _write_override(bundle_dir, "checker",
-                        "You judge one field.\n{image_labels_list}\n")
+                        "You judge one field.\n{paper_section}\n")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
-        assert "image_labels_list" in str(excinfo.value)
+        assert "paper_section" in str(excinfo.value)
 
 
 class TestAnEmptyOverrideRemovesIt:
@@ -901,17 +1001,27 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
 # The two roles that compose a conditional partial, each as
 # (role, role prompt, cited partial, the helper that isolates its engine half,
-# the bundle attribute naming its own prompt file).
+# the bundle attribute naming its own prompt file, the pipeline toggles that
+# put that partial's stage ON). The toggles differ per role and are carried
+# here rather than assumed: the extractor's partial follows the checker alone,
+# and the reviewer's follows the checker AND `check_reviewer_edits`, so a
+# single hard-coded configuration would test the rule for one role and a
+# silenced partial for the other.
 CONDITIONAL_ROLES = [
     pytest.param(EXTRACTOR_SYSTEM, "extractor", "extractor_checker_feedback",
-                 _engine_half, "extractor_system_path", id="extractor"),
+                 _engine_half, "extractor_system_path",
+                 {"max_checks_per_field": 2, "check_reviewer_edits": False},
+                 id="extractor"),
     pytest.param(REVIEW_SYSTEM, "reviewer", "reviewer_checker_feedback",
-                 _review_engine_half, "review_system_path", id="reviewer"),
+                 _review_engine_half, "review_system_path",
+                 {"max_checks_per_field": 2, "check_reviewer_edits": True},
+                 id="reviewer"),
 ]
 
 
 @pytest.mark.parametrize(
-    "role,role_prompt,partial,engine_half,prompt_attr", CONDITIONAL_ROLES)
+    "role,role_prompt,partial,engine_half,prompt_attr,toggles",
+    CONDITIONAL_ROLES)
 class TestAnOverrideCountsWhenItsTextReachedAModel:
     """The rule the config preimage is built on, in both directions.
 
@@ -920,78 +1030,113 @@ class TestAnOverrideCountsWhenItsTextReachedAModel:
     nowhere was no part of the question it asked, and a fingerprint that moved
     for one would report two runs putting a single question as two.
 
-    A partial goes silent two ways, and the pair below is the second of them:
-    its stage is off (pinned above, under conditional composition), or the
-    bundle overrode the ROLE prompt that cites it, which replaces that role's
-    whole engine half and takes the citation with it.
+    A partial goes silent two ways, and both are below: its stage is off, or
+    the bundle overrode the ROLE prompt that cites it, which replaces that
+    role's whole engine half and takes the citation with it.
 
     Both roles that cite a partial are covered, because the rule is stated by
     name rather than for one file: an override counts iff it composed, and a
-    role added tomorrow inherits that or the boundary has a hole in it.
+    role added tomorrow inherits that or the boundary has a hole in it. Each
+    role brings its own stage toggles with it, so the reviewer is measured
+    under the pair that can actually send it a challenge rather than under the
+    extractor's single one.
     """
 
     PARTIAL_OVERRIDE = "A challenge is advisory: revise, or let it stand."
 
-    def _pair(self, tmp_path, config_dir, role_prompt, partial, *,
+    def _pair(self, tmp_path, config_dir, role_prompt, partial, toggles, *,
               role_override):
         """Two bundles differing only in an override of the cited partial.
 
-        `role_override` is written to BOTH when it is given, so the partial's
-        override is the whole of the difference between them either way.
+        Both carry `toggles` in their `pipeline.yaml`, so the partial's stage
+        is on for the load that computes each bundle's identity and the only
+        thing left to silence it is the role override below. `role_override`
+        is written to BOTH when it is given, so the partial's override is the
+        whole of the difference between them either way.
         """
         plain = _copy_bundle(tmp_path / "plain", config_dir)
         overriding = _copy_bundle(tmp_path / "overriding", config_dir)
-        if role_override is not None:
-            for bundle_dir in (plain, overriding):
+        for bundle_dir in (plain, overriding):
+            _set_pipeline(bundle_dir, **toggles)
+            if role_override is not None:
                 _write_override(bundle_dir, role_prompt, role_override)
         _write_override(overriding, partial, self.PARTIAL_OVERRIDE)
         return plain, overriding
 
-    def _measure(self, bundle_dir, role, engine_half, prompt_attr):
+    def _measure(self, bundle_dir, role, engine_half, prompt_attr, toggles):
         """What the role read, and every value that claims to identify it.
 
-        The checker is on throughout (`pipeline.yaml` says
-        `max_checks_per_field: 2`), so no toggle is silencing anything here.
+        Measured under this role's own stage toggles, which `_pair` has already
+        written into both bundles: nothing here is silencing the partial, so a
+        value that does not move says the override did not count rather than
+        that the stage was off.
         """
         bundle = load_config_bundle(bundle_dir)
+        rendered = dict(
+            max_checks_per_field=toggles["max_checks_per_field"],
+            check_reviewer_edits=toggles["check_reviewer_edits"])
         return {
-            "engine half": engine_half(bundle),
+            "engine half": engine_half(bundle, **rendered),
             "prompts_hash": bundle.prompts_hash,
             "instrument_fp": bundle.instrument_fp,
             "config preimage": build_config_prompt_text(
                 role,
                 system_prompt_path=getattr(bundle, prompt_attr),
-                max_checks_per_field=2,
-                reference_lists=bundle.reference_lists),
+                reference_lists=bundle.reference_lists,
+                **rendered),
         }
 
     def test_a_partial_a_role_override_silenced_is_not_this_runs_question(
             self, tmp_path, config_dir, role, role_prompt, partial,
-            engine_half, prompt_attr):
+            engine_half, prompt_attr, toggles):
         # The role override is the whole engine half, so the role prompt's
         # citation is never read and the partial's own override is a file
         # nothing composes. The two bundles send one model one message, and
         # every number that names that message agrees.
         plain, overriding = self._pair(
-            tmp_path, config_dir, role_prompt, partial,
+            tmp_path, config_dir, role_prompt, partial, toggles,
             role_override="<brief>this review's own brief</brief>")
-        measured = self._measure(overriding, role, engine_half, prompt_attr)
+        measured = self._measure(overriding, role, engine_half, prompt_attr,
+                                 toggles)
         assert self.PARTIAL_OVERRIDE not in measured["engine half"]
-        assert measured == self._measure(plain, role, engine_half, prompt_attr)
+        assert measured == self._measure(plain, role, engine_half, prompt_attr,
+                                         toggles)
 
     def test_the_same_override_counts_where_the_role_is_the_engines(
             self, tmp_path, config_dir, role, role_prompt, partial,
-            engine_half, prompt_attr):
+            engine_half, prompt_attr, toggles):
         # The other half of the pair, and what makes the first a rule rather
         # than a hole: leave the role prompt to the engine and the citation is
         # read, so the same file reaches the model and moves everything.
         plain, overriding = self._pair(tmp_path, config_dir, role_prompt,
-                                       partial, role_override=None)
-        before = self._measure(plain, role, engine_half, prompt_attr)
-        after = self._measure(overriding, role, engine_half, prompt_attr)
+                                       partial, toggles, role_override=None)
+        before = self._measure(plain, role, engine_half, prompt_attr, toggles)
+        after = self._measure(overriding, role, engine_half, prompt_attr,
+                              toggles)
         assert self.PARTIAL_OVERRIDE in after["engine half"]
         for name in before:
             assert before[name] != after[name], name
+
+    def test_the_stage_toggles_alone_silence_it(
+            self, tmp_path, config_dir, role, role_prompt, partial,
+            engine_half, prompt_attr, toggles):
+        # The first of the two ways a partial goes silent, stated per role
+        # rather than for the checker alone: turn this role's own stage off in
+        # `pipeline.yaml` and its override stops counting, while the plain
+        # bundle beside it is unchanged. The reviewer's stage is a pair of
+        # toggles, so `check_reviewer_edits: false` silences its partial with
+        # the checker still running — the default configuration.
+        off = dict(toggles)
+        off["check_reviewer_edits"] = False
+        if role == EXTRACTOR_SYSTEM:
+            off["max_checks_per_field"] = 0
+        plain, overriding = self._pair(tmp_path, config_dir, role_prompt,
+                                       partial, off, role_override=None)
+        measured = self._measure(overriding, role, engine_half, prompt_attr,
+                                 off)
+        assert self.PARTIAL_OVERRIDE not in measured["engine half"]
+        assert measured == self._measure(plain, role, engine_half, prompt_attr,
+                                         off)
 
 
 # ---------------------------------------------------------------------------

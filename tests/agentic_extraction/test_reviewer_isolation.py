@@ -1,4 +1,5 @@
-"""The reviewer is never told a checker exists, nor what the extractor thought.
+"""Nothing assembled for the reviewer names a checker, nor what the
+extractor thought.
 
 The final review is the fresh-context second opinion: it reads the paper and
 the assembled extraction output and forms its own view. Telling it which cells
@@ -21,12 +22,17 @@ is a note on its own proposed value, not a briefing about the run, and it is
 off by default. Both halves are pinned here.
 
 What these test is everything the engine ASSEMBLES for the reviewer: the
-message, the tool catalogue, and the two view tools. The reviewer's system
-prompt describes that narrow exception in general terms and is pinned in
-tests/agentic_extraction/test_engine_prompts.py, where the checker-off silence
-of both halves is asserted; what must never happen is a run's own challenges,
-rationales or contested-cell counts reaching the reviewer, and no assembled
-surface carries them.
+message, the tool catalogue, and the two view tools. None of them names a
+checker under any configuration, `check_reviewer_edits` on included.
+
+The reviewer's SYSTEM PROMPT is the one surface that varies, and it varies on
+that toggle: with the reviewer's edits checked it describes the exception in
+general terms, and with them unchecked — the default — it names no checker at
+all, because none can reach it. That is pinned in
+tests/agentic_extraction/test_engine_prompts.py, over the whole toggle grid.
+What must never happen either way is a run's own challenges, rationales or
+contested-cell counts reaching the reviewer, and no assembled surface carries
+them.
 """
 
 import inspect

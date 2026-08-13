@@ -519,7 +519,7 @@ class TestCheckerUserPlaceholderAllowlist:
         self._rewrite(good_config, "{value}\n{reference:gauge_list}\n")
         bundle = load_config_bundle(good_config)
         rendered = render_checker_user_template(
-            bundle.partials_dir, predicates=stage_predicates(2, True),
+            bundle.partials_dir, predicates=stage_predicates(2, True, False),
             reference_lists=bundle.reference_lists)
         assert "{reference:gauge_list}" not in rendered
         assert "Widget Durability Scale 9 (WDS-9)" in rendered

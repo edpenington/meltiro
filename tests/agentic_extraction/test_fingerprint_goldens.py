@@ -141,8 +141,8 @@ GOLDEN_CONFIG_FP = ("config_fp:"
                     "56ade317167cd5031fc91a479565aee7144bcdd77de8b35cf"
                     "849828787b9a79e")
 GOLDEN_CHECKER_FP = ("checker_fp:"
-                     "cee4b1e57e3a2a194facb2f11ce77b87365053369e20a2646"
-                     "1849ebfa2505bc9")
+                     "0de7a1958888fb17e7bdc390bd7798a2c138e9ec467bee2ac"
+                     "d2e643a1fee87d8")
 GOLDEN_REVIEW_FP = ("review_fp:"
                     "84a4e92c8d6716f092ecc86ee11abdd5f545e2c4dbeb5838b"
                     "bb63bcc98d464d0")
@@ -178,8 +178,8 @@ PINNED_ENGINE_FP = ("engine_fp:"
 # The whole-run identity, composed from the stage goldens and the engine
 # placeholder above.
 GOLDEN_RUN_FP = ("run_fp:"
-                 "beac3a317e51d2906daa4284364ce3a80dd18111ccbdbd1b22ec3f"
-                 "15d87f1e31")
+                 "26de939c8e44b12f3d2307abeae2ae6006ec76791e3f85fbae370d"
+                 "ed72df05d3")
 GOLDEN_RUN_FP_EXTRACTOR_ONLY = ("run_fp:"
                                 "3a265743b81fc97cab5901b73ec20701e6967f18a"
                                 "a6c5da9d04ae8278787c713")
@@ -226,6 +226,7 @@ def _extractor_prompt_hash(bundle, template):
         system_prompt_path=bundle.extractor_system_path,
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop["final_review"]),
+        check_reviewer_edits=bool(loop["check_reviewer_edits"]),
         reference_lists=bundle.reference_lists,
     )
 
@@ -250,7 +251,8 @@ def _pipeline_predicates(bundle):
     """The fixture pipeline's `{include_if:...}` predicate map."""
     loop = bundle.pipeline
     return stage_predicates(
-        int(loop["max_checks_per_field"]), bool(loop["final_review"]))
+        int(loop["max_checks_per_field"]), bool(loop["final_review"]),
+        bool(loop["check_reviewer_edits"]))
 
 
 def _review_config_text(bundle, template):
@@ -263,6 +265,7 @@ def _review_config_text(bundle, template):
         system_prompt_path=bundle.review_system_path,
         max_checks_per_field=int(loop["max_checks_per_field"]),
         final_review=bool(loop["final_review"]),
+        check_reviewer_edits=bool(loop["check_reviewer_edits"]),
         reference_lists=bundle.reference_lists,
     )
 

@@ -117,7 +117,8 @@ class Instrument:
         only place a call hold no copy to fall out of step with
         (`CheckerConfig` takes the map as an argument and stores nothing).
         """
-        return stage_predicates(self.max_checks_per_field, self.final_review)
+        return stage_predicates(self.max_checks_per_field, self.final_review,
+                                self.check_reviewer_edits)
 
     def checker_context_chars(self, checker_config):
         """Characters of surrounding paper text the checker is shown on each
@@ -186,6 +187,7 @@ class Instrument:
             system_prompt_path=self.config.extractor_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
+            check_reviewer_edits=self.check_reviewer_edits,
             reference_lists=self.reference_lists,
         )
 
@@ -199,6 +201,7 @@ class Instrument:
             system_prompt_path=self.config.extractor_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
+            check_reviewer_edits=self.check_reviewer_edits,
             reference_lists=self.reference_lists,
         )
 
@@ -241,6 +244,7 @@ class Instrument:
             system_prompt_path=self.config.review_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
+            check_reviewer_edits=self.check_reviewer_edits,
             reference_lists=self.reference_lists,
         )
 
@@ -257,6 +261,7 @@ class Instrument:
             system_prompt_path=self.config.review_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
+            check_reviewer_edits=self.check_reviewer_edits,
             reference_lists=self.reference_lists,
         )
 

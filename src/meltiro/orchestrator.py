@@ -37,6 +37,8 @@ The final reviewer is told nothing of what the checker did to the extraction it
 is reading. Its message carries the paper, the figures, and the extraction
 output, and nothing else; with `check_reviewer_edits` on it sees a challenge on
 a field it just wrote, in that write's own tool result, and still nothing more.
+That toggle is also what decides whether its engine prompt names a checker: a
+reviewer whose writes are not checked is briefed on no such stage.
 
 This module owns the high-level state machine and the two things only a running
 study has: which model each role calls, and which paper is in front of it.
@@ -347,10 +349,10 @@ class Orchestrator:
         self._refuse_unworkable_decoding()
 
         # Declared per-role image capability, from the registry. A text-only
-        # extractor gets no image parts and no label blocks, and its
-        # dispatcher validates against an empty label set, so citing an image
-        # it never saw fails as an unknown label. Checker and reviewer guard
-        # on their own role models.
+        # extractor gets no image parts and no label blocks: its message states
+        # that none accompany the study, and its dispatcher validates against
+        # an empty label set, so citing an image it never saw fails as an
+        # unknown label. Checker and reviewer guard on their own role models.
         self.extractor_supports_images = model_supports_images(
             self.extractor_model)
 
@@ -545,11 +547,13 @@ class Orchestrator:
         """`(figures, image_labels)` to feed the extractor's message builders,
         honouring the extractor model's declared image capability.
 
-        A text-only extractor gets no figures and an empty label set: no image
-        content block and no label block is built for it, and the dispatcher it
-        drives validates `<img>` citations against an empty set (so a citation
-        of an unseen image fails as an unknown label). An image-capable
-        extractor gets the real figures/labels, untouched by this method.
+        A text-only extractor gets no figures and an empty label set, and the
+        two halves of that are mitigated together: its message carries no image
+        block and states instead that none accompany the study
+        (`prompt_builder.NO_EXHIBITS_NOTICE`), and the dispatcher it drives
+        validates `<img>` citations against an empty set, so a citation of an
+        unseen image fails as an unknown label. An image-capable extractor gets
+        the real figures/labels, untouched by this method.
         """
         if self.extractor_supports_images:
             return self.figures, self.image_labels
@@ -775,7 +779,7 @@ class Orchestrator:
             review_system_prompt=rendered_review_system,
             checker_system_prompt=rendered_checker_system,
             checker_user_scaffold=rendered_checker_scaffold,
-            image_labels=sorted(ext_image_labels),
+            image_labels=self._attached_exhibits_record(ext_figures),
             runs_dir=self.out_dir,
             caps={
                 "max_tool_calls": self.max_tool_calls,
@@ -1043,8 +1047,8 @@ class Orchestrator:
         # label it must cite, and the paper's caption beside it. Rendered
         # through the message builders' own helper, so the preview cannot say
         # one thing and the message another.
-        figure_labels = [image_label_text(label, self.image_captions)
-                         for label in sorted(self.image_labels)]
+        attached_exhibits = [image_label_text(label, self.image_captions)
+                             for label in sorted(self.image_labels)]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -1058,9 +1062,10 @@ class Orchestrator:
         checker_round = (
             self.instrument.render_checker_round_sample(self.checker_config)
             if self.checker_enabled else None)
-        # Rendered with the reviewer's effective image labels (a text-only
-        # review model sees none), through the same helper a real run captures
-        # and sends, so the preview matches what the reviewer would be shown.
+        # Rendered through the same helper a real run captures and sends, so
+        # the preview matches what the reviewer would be shown. It is
+        # paper-independent: which crops the reviewer actually receives is
+        # settled where they are attached, in its user message.
         review_system = (self._render_review_system_text()
                          if self.final_review else None)
 
@@ -1089,7 +1094,7 @@ class Orchestrator:
             "decoding_params": self._decoding_params_meta(),
         }
 
-        self._print_dry_run(fingerprints, tool_catalogue, figure_labels,
+        self._print_dry_run(fingerprints, tool_catalogue, attached_exhibits,
                             checker_system, checker_scaffold, checker_round,
                             review_system)
         # Loud run-start signals a real run start also emits. The inert-param
@@ -1101,13 +1106,13 @@ class Orchestrator:
 
         if report_dir is not None:
             self._write_dry_run_report(
-                Path(report_dir), tool_catalogue, figure_labels,
+                Path(report_dir), tool_catalogue, attached_exhibits,
                 checker_system, checker_scaffold, checker_round,
                 review_system, fingerprints)
         return {
             "system_text": self.system_text,
             "tool_catalogue": tool_catalogue,
-            "figure_labels": figure_labels,
+            "attached_exhibits": attached_exhibits,
             "checker_system": checker_system,
             "checker_user_scaffold": checker_scaffold,
             "checker_round_sample": checker_round,
@@ -1268,7 +1273,7 @@ class Orchestrator:
                 if self.session is not None and not self.dry_run:
                     self.session.add_warning(message)
 
-    def _print_dry_run(self, fingerprints, tool_catalogue, figure_labels,
+    def _print_dry_run(self, fingerprints, tool_catalogue, attached_exhibits,
                        checker_system, checker_scaffold, checker_round,
                        review_system):
         """Print the full, untruncated dry-run report to stdout."""
@@ -1294,14 +1299,15 @@ class Orchestrator:
         if review_system is not None:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
-        print(f"\n=== ATTACHED EXHIBITS ({len(figure_labels)}) ===\n")
-        for lbl in figure_labels:
-            print(f"  {lbl}")
+        print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
+        for line in attached_exhibits:
+            print(f"  {line}")
         print("\n=== FINGERPRINTS ===\n")
         print(json.dumps(fingerprints, indent=2, sort_keys=False))
 
-    def _write_dry_run_report(self, report_dir, tool_catalogue, figure_labels,
-                              checker_system, checker_scaffold, checker_round,
+    def _write_dry_run_report(self, report_dir, tool_catalogue,
+                              attached_exhibits, checker_system,
+                              checker_scaffold, checker_round,
                               review_system, fingerprints):
         """Write the dry-run report as plain files under `report_dir`.
 
@@ -1327,8 +1333,9 @@ class Orchestrator:
                 self.system_text, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
-            (tmp_dir / "figure_labels.txt").write_text(
-                "".join(f"{lbl}\n" for lbl in figure_labels), encoding="utf-8")
+            (tmp_dir / "attached_exhibits.txt").write_text(
+                "".join(f"{line}\n" for line in attached_exhibits),
+                encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",
                 encoding="utf-8")
@@ -1858,11 +1865,12 @@ class Orchestrator:
         (see `_review_loop`) and is expected to call `mark_complete` when
         satisfied.
 
-        The reviewer is never told a checker exists (see the module
+        Nothing assembled for the reviewer names a checker (see the module
         docstring). With `check_reviewer_edits` on, the fields it WRITES are
-        checked on the same per-field terms as the extractor's, and the
-        challenge in that tool result is the one thing about a checker it can
-        ever learn.
+        checked on the same per-field terms as the extractor's; its engine
+        prompt then describes that protocol, and the challenge in its own
+        tool result is the only thing about a checker it is ever shown. With
+        the toggle off it is told of no checker at all.
 
         Returns "review_clean" | "final_review_no_response" |
         "review_abandoned" | "review_cap_hit" | "review_text_only_stall" |
@@ -2356,23 +2364,52 @@ class Orchestrator:
                 self.checker_config)
         return self._cached_checker_adapter
 
+    def _attached_exhibits_record(self, figures):
+        """The session's record of the exhibits the extractor's message carried.
+
+        One entry per attachment, in the order the message attaches them,
+        carrying the label an `<img>` citation must name and the caption the
+        paper prints beside it. The caption is the half a label alone cannot
+        supply: `table_02` says which crop was cited and nothing about which
+        table it is, and no other capture holds the manifest's wording once the
+        bundle directory has moved on. A crop the manifest gave no caption for
+        records a null, which is a different fact from an empty caption.
+
+        Empty for a bundle carrying no crops and for a text-only extractor
+        alike; `meta.images_omitted` is what tells those two apart.
+        """
+        return [{"label": label,
+                 "caption": self.image_captions.get(
+                     str(label).strip().lower())}
+                for label, _ in figures]
+
     def _render_user_prompt_text(self):
         """Text-only render of the initial user message, captured into
         the session at creation time so the transcript view never has
-        to re-read the paper text from disk. Uses the extractor's effective
-        label set, so a text-only extractor's captured prompt lists no images,
-        matching the blocks actually sent."""
-        _, ext_image_labels = self._extractor_image_inputs()
+        to re-read the paper text from disk.
+
+        Built from the extractor's effective FIGURE SEQUENCE, which is what
+        `build_initial_user_blocks` iterates: the same labels, in the same
+        order, spelt the same way. The normalised label set beside it is the
+        dispatcher's, lower-cased and unordered, so a capture derived from that
+        would record the labels a message carries in a case and an order the
+        message never used. A text-only extractor's sequence is empty, and its
+        captured prompt states that none accompany the study, matching the
+        blocks actually sent."""
+        ext_figures, _ = self._extractor_image_inputs()
         return render_user_prompt_text(
             self.study_id, self.paper_text,
-            sorted(ext_image_labels), self.image_captions,
+            [label for label, _ in ext_figures], self.image_captions,
         )
 
     def _review_image_inputs(self):
         """The reviewer's effective (figures, labels).
 
         The reviewer guards on its OWN model: a text-only reviewer is sent no
-        image parts and no label blocks, whatever the extractor could see.
+        image parts and no label blocks, whatever the extractor could see. Its
+        message states that none accompany the study in their place, and its
+        share of the dispatcher validates against the empty label set, exactly
+        as the extractor's does.
         """
         if model_supports_images(self.review_model):
             return self.figures, self.image_labels

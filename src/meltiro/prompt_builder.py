@@ -9,7 +9,9 @@ catalogue is NOT in it either; it lives in the tool `input_schema`s, which are
 built from the extraction template (see `meltiro.tools`).
 The initial user message is also cached: paper text + every cropped image,
 each image under its label and the paper's caption for it, which is where a
-role learns what an `<img>` citation may name. Both get
+role learns what an `<img>` citation may name — and, where the role is sent
+none, the statement that none accompany the study, so exhibit presence is a
+fact of the message on both sides of it. Both get
 `cache_control: ephemeral` markers so turns 2..N pay the 0.1x cache-read rate
 on the bulk of the prompt.
 
@@ -30,8 +32,9 @@ figures, and the assembled extraction output, and nothing else: a challenge is
 a per-field note delivered in the tool result of a write the reviewer itself
 made, never a preamble to the review and never a report on the extractor's
 run. What the reviewer's engine prompt says about that protocol is the
-engine's own text (`meltiro.engine_prompts`), and it follows the checker stage
-like the extractor's does.
+engine's own text (`meltiro.engine_prompts`), and it follows the toggle that
+decides whether such a note can arrive at all: the checker running AND
+`check_reviewer_edits` on.
 
 Framing is engine text, so it rides in no fingerprint; the run's recorded
 `engine_fp` identifies it (see `fingerprint`'s module docstring).
@@ -139,6 +142,15 @@ REVIEW_BUNDLE_TRANSITION = (
 EMPTY_ASSISTANT_PLACEHOLDER = "(the model returned no text or tool call.)"
 
 
+# The text block a role reads in place of the attachments when its figure
+# sequence is empty. Presence of an exhibit is a fact about the MESSAGE, not
+# about the machinery, so the message is where it is stated: a bundle whose
+# manifest declares `exhibits: []` and a text-only role that is sent no image
+# parts both arrive here, and each reads the same statement rather than a
+# system prompt promising an attachment that never follows.
+NO_EXHIBITS_NOTICE = "(no cropped figures or tables accompany this study)"
+
+
 def image_label_text(label, captions=None):
     """The text block that introduces one attached exhibit.
 
@@ -211,6 +223,7 @@ def build_system_message(*,
                          system_prompt_path,
                          max_checks_per_field=2,
                          final_review=True,
+                         check_reviewer_edits=False,
                          reference_lists=None):
     """Build the extractor's system message text.
 
@@ -235,7 +248,8 @@ def build_system_message(*,
     Returns the rendered string. The orchestrator wraps it in a
     cache_control text block before sending.
     """
-    predicates = stage_predicates(max_checks_per_field, final_review)
+    predicates = stage_predicates(max_checks_per_field, final_review,
+                                  check_reviewer_edits)
     slots = dict(reference_lists=reference_lists,
                  max_checks_per_field=max_checks_per_field)
     return join_role_message(
@@ -249,7 +263,8 @@ def build_system_message(*,
 
 def build_config_prompt_text(role, *, system_prompt_path,
                              max_checks_per_field, reference_lists,
-                             final_review=True):
+                             final_review=True,
+                             check_reviewer_edits=False):
     """The config-owned identity of one role's prompt, as a canonical string.
 
     Two components (see `prompt_partials.config_prompt_preimage`): the
@@ -273,7 +288,8 @@ def build_config_prompt_text(role, *, system_prompt_path,
     differing only in the budget carry different fingerprints while the prompt
     component they share correctly reports the same authored text.
     """
-    predicates = stage_predicates(max_checks_per_field, final_review)
+    predicates = stage_predicates(max_checks_per_field, final_review,
+                                  check_reviewer_edits)
     return config_prompt_preimage(
         render_bundle_prompt_text(
             system_prompt_path, predicates=predicates,
@@ -286,7 +302,8 @@ def build_config_prompt_text(role, *, system_prompt_path,
 
 def compute_prompt_config_hash(*, system_prompt_path,
                                 max_checks_per_field, reference_lists,
-                                final_review=True):
+                                final_review=True,
+                                check_reviewer_edits=False):
     """Paper-independent hash of the extractor prompt's CONFIG.
 
     SHA-256 of `build_config_prompt_text` for the extractor role: what the
@@ -303,6 +320,7 @@ def compute_prompt_config_hash(*, system_prompt_path,
         system_prompt_path=system_prompt_path,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
+        check_reviewer_edits=check_reviewer_edits,
         reference_lists=reference_lists,
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -327,7 +345,12 @@ def render_user_prompt_text(study_id, paper_text, image_labels,
     suitable for capturing inline into the session as the canonical
     "what was the user prompt" record. The exact text strings match
     those `build_initial_user_blocks` emits as text content blocks, captions
-    included.
+    and the no-exhibits notice included.
+
+    `image_labels` is the labels of the figure sequence that message carries,
+    in the order it carries them. A caller passing a re-sorted or re-cased set
+    would record a prompt naming the same exhibits in a different form from the
+    one that was sent, which is the one thing this function exists to rule out.
     """
     header = _extractor_header(study_id)
     parts = [
@@ -335,7 +358,10 @@ def render_user_prompt_text(study_id, paper_text, image_labels,
         "--- PAPER TEXT ---\n" + (paper_text or "")
         + "\n--- END PAPER TEXT ---",
     ]
-    for label in image_labels:
+    labels = list(image_labels)
+    if not labels:
+        parts.append(NO_EXHIBITS_NOTICE)
+    for label in labels:
         parts.append(image_label_text(label, image_captions))
         parts.append(f"(image: {label}.png)")
     return "\n\n".join(parts)
@@ -354,6 +380,10 @@ def build_initial_user_blocks(study_id, paper_text, figures,
 
     Returns a list of content blocks. The LAST block carries
     cache_control: ephemeral so the whole user message caches.
+
+    An empty `figures` gets `NO_EXHIBITS_NOTICE` in their place, so a role
+    reads what accompanies this study either way rather than inferring the
+    absence from a message that simply stops.
     """
     blocks = []
     blocks.append({"type": "text", "text": _extractor_header(study_id)})
@@ -362,6 +392,9 @@ def build_initial_user_blocks(study_id, paper_text, figures,
         "type": "text",
         "text": "--- PAPER TEXT ---\n" + paper_text + "\n--- END PAPER TEXT ---",
     })
+
+    if not figures:
+        blocks.append({"type": "text", "text": NO_EXHIBITS_NOTICE})
 
     for label, png_bytes in figures:
         # Label first so the model can refer to it by name in `source`, and
@@ -387,6 +420,7 @@ def build_review_system_message(*,
                                  system_prompt_path,
                                  max_checks_per_field=2,
                                  final_review=True,
+                                 check_reviewer_edits=False,
                                  reference_lists=None):
     """Build the FINAL REVIEW system message text.
 
@@ -403,7 +437,8 @@ def build_review_system_message(*,
     cap placeholders are rejected at config-load time (see
     `build_system_message`).
     """
-    predicates = stage_predicates(max_checks_per_field, final_review)
+    predicates = stage_predicates(max_checks_per_field, final_review,
+                                  check_reviewer_edits)
     slots = dict(reference_lists=reference_lists,
                  max_checks_per_field=max_checks_per_field)
     return join_role_message(
@@ -421,8 +456,9 @@ def build_review_user_blocks(study_id, paper_text, figures,
 
     The reviewer sees the paper text + all cropped images, each under its
     label and the paper's caption for it, + the assembled extraction output as
-    a JSON block, framed as "review and confirm or revise". Last block carries
-    cache_control.
+    a JSON block, framed as "review and confirm or revise". With no images to
+    attach it reads `NO_EXHIBITS_NOTICE` where they would have been, on the
+    same terms as the extractor. Last block carries cache_control.
 
     Nothing here reveals that a checker exists: no challenge, no rationale,
     no count of contested cells. The reviewer forms its own view — the
@@ -452,6 +488,9 @@ def build_review_user_blocks(study_id, paper_text, figures,
         "text": ("--- PAPER TEXT ---\n" + paper_text
                  + "\n--- END PAPER TEXT ---"),
     })
+
+    if not figures:
+        blocks.append({"type": "text", "text": NO_EXHIBITS_NOTICE})
 
     for label, png_bytes in figures:
         blocks.append({"type": "text",

@@ -324,7 +324,8 @@ def load_config_bundle(path):
     # partials compose, and which stages run at all.
     predicates = stage_predicates(
         pipeline.get("max_checks_per_field", DEFAULT_MAX_CHECKS_PER_FIELD),
-        pipeline.get("final_review", True))
+        pipeline.get("final_review", True),
+        pipeline.get("check_reviewer_edits", False))
 
     # Content fingerprint, computed here so the identity rides with the
     # loaded bundle.

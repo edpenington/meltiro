@@ -176,7 +176,7 @@ without spending anything:
 
 A dry run makes no API call, needs no key, and creates no session. It loads and
 validates both bundles and prints the rendered prompts, the tool catalogue, the
-figure labels and the fingerprints. With the Checker on it also prints the
+attached exhibits and the fingerprints. With the Checker on it also prints the
 scaffold every per-field check is asked through, and fills it in as a specimen
 check for the first field of your template a check could reach, so the question
 a check puts can be read before one is paid for. Add `--out DIR` to write them
@@ -317,10 +317,17 @@ config-bundle/
 ```
 
 Prompts may cite a shared block of their own with `{include:NAME}`, or one that
-follows a stage with `{include_if:checker:NAME}` / `{include_if:review:NAME}` —
-the block is rendered only when that stage is enabled for the run, so a prompt
-never briefs a model on a stage that will not run. Prompts may also cite a
-reference list with `{reference:NAME}`.
+follows a stage with `{include_if:PREDICATE:NAME}` — the block is rendered only
+when that stage is enabled for the run, so a prompt never briefs a model on a
+stage that will not run. Three predicates are available:
+
+| Predicate | True when |
+|---|---|
+| `checker` | `max_checks_per_field` is above `0` |
+| `review` | `final_review` is on |
+| `reviewer_checker` | the Checker is on and `check_reviewer_edits` is on — the pair a check of the Reviewer's own writes needs |
+
+Prompts may also cite a reference list with `{reference:NAME}`.
 
 ### Engine prompts
 
@@ -344,7 +351,7 @@ message is rendered from, and the Checker's own system message is `checker.md`.
 | `checker.md` | Checker | what the checker is, what one field arrives with, and what a verdict says |
 | `checker_user.md` | Checker | the scaffold of the per-field message: field, context, evidence, value |
 | `reviewer.md` | Reviewer | what the reviewer is, how to read the record it is given, and how the review ends |
-| `reviewer_checker_feedback.md` | Reviewer | *conditional, composed into `reviewer.md` only when the Checker runs*: the same protocol for a challenge on a field the Reviewer itself wrote |
+| `reviewer_checker_feedback.md` | Reviewer | *conditional, composed into `reviewer.md` only when the Checker runs and `check_reviewer_edits` is on*: the same protocol for a challenge on a field the Reviewer itself wrote |
 
 A review **overrides** a file by shipping `prompts/partials/meltiro/NAME.md`.
 Non-empty text replaces that file's text; text that is empty removes it, which

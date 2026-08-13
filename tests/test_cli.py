@@ -187,8 +187,9 @@ class TestExtractDryRun:
         assert fps["config_fp"] and fps["checker_fp"] and fps["review_fp"]
         assert fps["run_fp"]
         assert "status" not in fps
-        # Figure labels and the rendered checker + review prompts are written.
-        assert (report / "figure_labels.txt").exists()
+        # The attached exhibits and the rendered checker + review prompts
+        # are written.
+        assert (report / "attached_exhibits.txt").exists()
         assert (report / "checker_system.md").exists()
         assert (report / "review_system.md").exists()
 
@@ -211,7 +212,7 @@ class TestExtractDryRun:
         expected = ("[table_01] Table 1. Primary and secondary "
                     "associations between baseline CRT-HD total score and "
                     "each outcome")
-        assert expected in (report / "figure_labels.txt").read_text(
+        assert expected in (report / "attached_exhibits.txt").read_text(
             encoding="utf-8")
         # ... and neither system prompt names the paper's exhibits at all.
         for name in ("extractor_system.md", "review_system.md"):
@@ -253,7 +254,7 @@ class TestExtractDryRun:
         # The always-written files remain.
         assert (report / "extractor_system.md").exists()
         assert (report / "tool_catalogue.json").exists()
-        assert (report / "figure_labels.txt").exists()
+        assert (report / "attached_exhibits.txt").exists()
         # fingerprints.json now describes the toggled-off config, and matches
         # the surviving directory contents (no checker/review prompts).
         fps = json.loads(
