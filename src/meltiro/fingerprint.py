@@ -20,8 +20,9 @@ the block — `structure_hash` must never carry them too.
 
 Orthogonal axes recorded beside the stage fingerprints, for comparing runs:
 
-  - `instrument_fingerprint(...)` -> `instrument_fp`: everything the config
-    author wrote. Model-free and engine-free.
+  - `instrument_fingerprint(...)` -> `instrument_fp`: MODEL-FREE, covering the
+    config author's instrument plus the engine's tool contract (`tool_set_hash`
+    folds in the tool definitions, whose descriptions are engine prose).
   - `call_fingerprint(...)` -> `extractor_call_fp` / `checker_call_fp` /
     `review_call_fp`: per role, the model and how it is reached.
   - `engine_fingerprint(...)` -> `engine_fp`: meltiro's and direktoro's
@@ -52,6 +53,26 @@ def canonical_json(payload):
     formatter's whitespace reach no digest and two callers hashing the same
     content land on the same bytes. List order is left alone: everywhere this
     is used a list's order is content, and reordering one is a real edit.
+
+    IT DIVERGES FROM `direktoro.canonical_json` IN ONE BYTE-VISIBLE WAY, and
+    the two must not be substituted for each other. direktoro's passes
+    `ensure_ascii=False`, so a non-ASCII character is serialised as itself;
+    this one leaves the `json` default in place, so the same character is
+    serialised as a `\\uXXXX` escape. The preimages therefore differ for any
+    payload carrying non-ASCII text — which the reference lists, the template
+    and the prompts routinely do.
+
+    The divergence is recorded rather than removed. Every fingerprint this
+    module produces is a PUBLISHED number: a run record carries `config_fp`,
+    `instrument_fp` and the rest so a reader can recompute them and check that
+    a reported extraction came from a stated bundle. Aligning the escaping
+    would move `prompts_hash`, `tool_set_hash`, `instrument_fp` and all three
+    stage fingerprints for every bundle with a non-ASCII byte in it, and every
+    already-published value would stop verifying — a real cost, paid for a
+    cosmetic agreement between two functions that never hash the same payload.
+    direktoro's serialises ITS call-identity block, which arrives here already
+    a string and is folded in verbatim; nothing crosses the boundary as a
+    structure both would serialise.
     """
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -347,9 +368,11 @@ def run_fingerprint(config_fp, checker_fp, review_fp, engine_fp):
         extractor + reviewer           -> config_fp:X|none|review_fp:Z|engine_fp:E
         extractor only                 -> config_fp:X|none|none|engine_fp:E
 
-    The result is self-prefixed `run_fp:<sha256hex>` (full digest, no
-    truncation; the six-char shortening lives only in the session directory
-    name).
+    The result is self-prefixed `run_fp:<sha256hex>`, a full digest with no
+    truncation anywhere. The six-char shortening in a session directory name
+    is not of this value: it is the first six characters of `config_fp`
+    (`Session.create`), which is a different fingerprint answering a different
+    question, so a directory name is no abbreviation of the run's identity.
     """
     checker = checker_fp if checker_fp is not None else ABSENT_STAGE
     review = review_fp if review_fp is not None else ABSENT_STAGE
@@ -381,12 +404,23 @@ def instrument_fingerprint(prompts_hash, template_hash,
                            reference_hash="none",
                            checker_context_chars=None,
                            checker_context_fields=None):
-    """Fingerprint the INSTRUMENT: everything the config author wrote, and
-    nothing else.
+    """Fingerprint the INSTRUMENT: everything the config author wrote, plus the
+    engine's tool contract.
 
-    One of the three orthogonal axes. Deliberately absent: every model, provider, endpoint, route and decoding
-    parameter (`call_fingerprint`), and the engine's own version and prose
-    (`engine_fingerprint`). `prompts_hash` covers all four prompt files with
+    One of the three orthogonal axes, and it is MODEL-FREE: every model,
+    provider, endpoint, route and decoding parameter is deliberately absent
+    (`call_fingerprint`). It is NOT engine-free, and the exception is
+    `tool_set_hash`: the tool definitions carry the engine's own descriptions
+    of what each tool does, so rewording one moves this axis. That is the
+    right behaviour — an instrument is the question put to a model, and a tool
+    description is part of the question — but it means `instrument_fp` is not
+    a pure config identity, and two runs of one bundle under engine versions
+    whose tool prose differs record different values. The engine's OTHER prose
+    — the framing around the bundle's prompts, an un-overridden
+    `{include:meltiro:NAME}` section — is not here and rides in
+    `engine_fingerprint`.
+
+    `prompts_hash` covers all four prompt files with
     `{include:NAME}` partials expanded — the SOURCE text; an engine section
     composed with `{include:meltiro:NAME}` and not overridden by the bundle
     contributes its directive rather than its text, being the engine's prose

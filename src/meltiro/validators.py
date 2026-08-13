@@ -534,8 +534,12 @@ class ValidationResult:
     - `warnings`: list of {path, code, message} dicts; informational
       (category-gate hints), only populated when `sibling_values` is given.
     - `canonicalisations`: list of {path, entered, stored} dicts, one per
-      value that matched a reference list via an ALIAS rather than an exact
-      canonical name (an exact match canonicalises spelling silently).
+      value that matched a reference list via an ALIAS. A value that matched a
+      canonical NAME records nothing here, even when the spelling it was
+      entered with differs: the match is made on a normalised form (case,
+      spacing and punctuation folded, see `reference_lists._normalise_ref`),
+      so re-spelling a name to its canonical form is a silent correction and
+      only standing in for a DIFFERENT name is reported.
     """
 
     ok: bool
@@ -551,9 +555,11 @@ def _reference_index_for_field(field_spec, reference_lists):
 
     `reference_lists` may be a plain `{name: entries}` mapping or a loaded
     `ConfigBundle` (its `.reference_lists` is used). None is returned for a
-    non-reference field, or when the named list is absent; in the latter
-    case `_validate_reference_value` raises the loud `reference_unavailable`
-    config-error, matching the LLM path.
+    non-reference field, or when the named list is absent; in the latter case
+    `_validate_reference_value` REPORTS a `reference_unavailable` error — it
+    raises nothing, like every other check in this module, so the field fails
+    with a message naming the wiring fault instead of the call failing with an
+    exception (see `validate_value`: nothing here raises on data).
     """
     name = field_spec.get("canonical_reference")
     if not name:
@@ -684,10 +690,18 @@ def validate_gate_rules(record_field_values, gates, path_prefix=""):
 
     Returns a list of {path, code, message} WARNINGS (not errors).
 
-    `path_prefix` (e.g. "record.<new>") is prepended to the gated field so
-    the warning path matches the field's canonical path; otherwise downstream
-    consumers (the transcript validator column) can't attach the warning to
-    its field and it's silently dropped.
+    `path_prefix` (e.g. "record.<new>") is prepended to the gated field so the
+    warning path matches the field's canonical path. The dispatcher passes the
+    record's prefix, which is what puts a gate warning in front of the model
+    beside the field it is about.
+
+    It defaults to "" — a BARE variable name, not a canonical field path — and
+    `validate_value` passes "" deliberately: that caller filters the warnings
+    down to the one field it is validating by comparing the warning path
+    against `field_spec["variable"]`, so a prefixed path would match nothing
+    and every gate warning would be dropped. The two callers therefore want
+    different paths out of this function, and each asks for the one it can
+    use.
     """
     warnings = []
     prefix = f"{path_prefix}." if path_prefix else ""

@@ -512,6 +512,134 @@ class TestExtractDryRun:
         assert "no study-identity context" in err
 
 
+class TestABrokenBundleRefusesCleanly:
+    """A defect in the config bundle reaches the operator as a refusal, never
+    as a traceback.
+
+    `load_config_bundle` raises `ConfigBundleError` and nothing else, and the
+    CLI's one handler prints it and exits 1. These are the three cases that
+    used to escape around that handler: a template-model violation, a missing
+    required template key, and malformed YAML.
+    """
+
+    def _broken(self, tmp_path, config_dir, edit):
+        dst = tmp_path / "config"
+        shutil.copytree(config_dir, dst)
+        edit(dst)
+        return dst
+
+    def _extract(self, config, bundle_minimal_dir, tmp_path):
+        return _run([
+            "extract",
+            "--config", str(config),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(tmp_path / "runs"),
+            "--dry-run",
+        ])
+
+    def test_an_unknown_template_field_key(
+            self, tmp_path, config_dir, bundle_minimal_dir, capsys):
+        def _edit(dst):
+            tmpl = dst / "extraction_template.yaml"
+            tmpl.write_text(
+                tmpl.read_text(encoding="utf-8").replace(
+                    "      required: true", "      requred: true", 1),
+                encoding="utf-8")
+        config = self._broken(tmp_path, config_dir, _edit)
+        code = self._extract(config, bundle_minimal_dir, tmp_path)
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "Traceback" not in err
+        assert "requred" in err
+
+    def test_a_misspelt_variable_key(
+            self, tmp_path, config_dir, bundle_minimal_dir, capsys):
+        def _edit(dst):
+            tmpl = dst / "extraction_template.yaml"
+            tmpl.write_text(
+                tmpl.read_text(encoding="utf-8").replace(
+                    "    - variable:", "    - varible:", 1),
+                encoding="utf-8")
+        config = self._broken(tmp_path, config_dir, _edit)
+        code = self._extract(config, bundle_minimal_dir, tmp_path)
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "Traceback" not in err
+        assert "`variable:`" in err
+
+    def test_a_broken_pipeline_yaml(
+            self, tmp_path, config_dir, bundle_minimal_dir, capsys):
+        def _edit(dst):
+            (dst / "pipeline.yaml").write_text(
+                "extractor_model: [unclosed\n", encoding="utf-8")
+        config = self._broken(tmp_path, config_dir, _edit)
+        code = self._extract(config, bundle_minimal_dir, tmp_path)
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "Traceback" not in err
+        assert "pipeline.yaml" in err
+        # pyyaml's own file/line/column diagnostic, which is the half that
+        # points at the edit.
+        assert "line" in err and "column" in err
+
+
+class TestAFailedRunSaysWhatFailed:
+    """`error` names a category. The run also composed a sentence, and that
+    sentence has to reach the operator and the run record.
+
+    A missing API key is the sharpest case: the pre-spend preflight names the
+    environment variable and the stage, and that is the whole fix. Buried in
+    the event log it costs a search; on stderr and in run.json it costs
+    nothing.
+    """
+
+    def _key_env(self, model="claude-opus-4-8"):
+        from direktoro import model_info
+        return model_info(model).api_key_env
+
+    def test_a_missing_key_prints_the_variable_and_records_it(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch,
+            capsys):
+        env = self._key_env()
+        monkeypatch.delenv(env, raising=False)
+
+        def _boom(self, role):
+            raise AssertionError("must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
+
+        out_dir = tmp_path / "runs"
+        code = _run([
+            "extract",
+            "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(out_dir),
+        ])
+        captured = capsys.readouterr()
+        assert code == 1
+        # (a) on stderr, ahead of the run summary on stdout.
+        assert env in captured.err
+        assert "missing API key(s) before run start" in captured.err
+
+        session, = (out_dir / "demo-001" / "sessions").iterdir()
+        meta = json.loads((session / "diagnostics" / "run.json").read_text())
+        # (b) in run.json beside the status.
+        assert meta["status"] == "error"
+        assert env in meta["error_message"]
+
+        # (c) in the run log, in place of the bare status word.
+        log = json.loads((out_dir / "run_log.json").read_text())
+        entry, = [e for e in log if e["session_dir"] == str(session)]
+        assert entry["validation_errors"] != ["error"]
+        assert any(env in e for e in entry["validation_errors"])
+
+        # (d) in the transcript's outcome table.
+        document = (session / "diagnostics" / "transcript.md").read_text()
+        assert env in document
+
+        # And the run summary says it too, rather than printing a bare status.
+        assert "what failed:" in captured.out
+
+
 class TestRetiredModelRejection:
     """A config naming a `retired` model fails loudly at config load, which is
     the new-run acceptance gate, NOT mid-run with a provider 404. The

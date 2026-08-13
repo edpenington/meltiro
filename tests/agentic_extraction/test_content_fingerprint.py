@@ -6,8 +6,9 @@ matter for the consumer:
   - the component hashes it pins, `template_hash` and `reference_lists_hash`,
     are byte-identical to what the orchestrator folds into its run-time
     fingerprints (no second, drifting recipe), and
-  - the instrument fingerprint is model-free, engine-free, and reproducible
-    from the directory.
+  - the instrument fingerprint is model-free and reproducible from the
+    directory. (It is not engine-free: `tool_set_hash` folds in the engine's
+    own tool descriptions. See `fingerprint.instrument_fingerprint`.)
 
 The unification test builds a real orchestrator (dry-run, no network) and
 reconstructs its `config_fp` from the bundle's `reference_lists_hash`, proving
@@ -204,3 +205,75 @@ class TestComponentSensitivity:
         # A prompt edit does not touch what makes a value legal.
         assert after.template_hash == before.template_hash
         assert after.reference_lists_hash == before.reference_lists_hash
+
+
+class TestTheTwoPathsShareTheirDEFAULTS:
+    """`_content_instrument_fingerprint` reads the structure toggles with "the
+    same defaults the CLI applies when a key is absent" — its own words. This
+    is what makes that sentence true.
+
+    The claim is about two INDEPENDENT readers of one bundle: the loader,
+    which fingerprints a config directory with no run behind it, and the CLI,
+    which resolves what a run will actually honour. Each keeps its own
+    fallback for a key `pipeline.yaml` omits, and a drift between them
+    fingerprints a run that never happens — the printed `instrument_fp` would
+    describe one pipeline and every run of that bundle another.
+
+    Re-deriving the loader's expression from the same constants (which is what
+    the composite test above does) cannot catch that: it would move with the
+    loader and stay green. So the values are read off the two SIDES.
+    """
+
+    def _stripped(self, tmp_path, config_dir):
+        """The shipped config with every defaulted structure key removed."""
+        import shutil
+
+        import yaml
+
+        dst = tmp_path / "config"
+        shutil.copytree(config_dir, dst)
+        path = dst / "pipeline.yaml"
+        pipeline = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for key in ("max_checks_per_field", "final_review",
+                    "check_reviewer_edits", "checker_context_chars"):
+            pipeline.pop(key, None)
+        path.write_text(yaml.safe_dump(pipeline), encoding="utf-8")
+        return dst
+
+    def _cli_orchestrator(self, config, bundle_dir, out_dir):
+        from types import SimpleNamespace
+
+        from meltiro import cli
+
+        args = SimpleNamespace(
+            max_tool_calls=None, max_checks_per_field=None, final_review=None,
+            extractor_model=None, review_model=None, checker_model=None,
+            diagnostics="standard", dry_run=True, out=None)
+        return cli._build_orchestrator(
+            config, load_bundle(bundle_dir), out_dir, config.pipeline, args)
+
+    def test_the_cli_resolves_what_the_bundle_fingerprinted(
+            self, tmp_path, config_dir, bundle_minimal_dir):
+        config = load_config_bundle(self._stripped(tmp_path, config_dir))
+        orch = self._cli_orchestrator(config, bundle_minimal_dir,
+                                      tmp_path / "runs")
+
+        # The CLI's resolved values, against the loader's own defaults for the
+        # same absent keys.
+        assert orch.max_checks_per_field == DEFAULT_MAX_CHECKS_PER_FIELD
+        assert orch.final_review is True
+        assert orch.check_reviewer_edits is False
+        assert orch.checker_config.context_chars == DEFAULT_CONTEXT_CHARS
+
+    def test_the_run_records_the_instrument_the_bundle_printed(
+            self, tmp_path, config_dir, bundle_minimal_dir):
+        # The end of the same argument, stated as the equality that matters:
+        # `meltiro fingerprint` over this directory prints the value a run of
+        # it records. A drifted default on either side breaks this.
+        config = load_config_bundle(self._stripped(tmp_path, config_dir))
+        orch = self._cli_orchestrator(config, bundle_minimal_dir,
+                                      tmp_path / "runs")
+        assert orch.instrument.fingerprint(
+            tool_hash=tool_set_hash(all_tool_definitions(orch.template)),
+            checker_context_chars=orch.checker_config.context_chars,
+        ) == config.instrument_fp

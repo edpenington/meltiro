@@ -59,7 +59,8 @@ from direktoro import supports_forced_tool_choice
 from meltiro.template import iter_fields
 
 from meltiro.checker import (
-    CheckerConfig, reported_cost_or_raise, run_checker_batch)
+    CheckerConfig, _build_checker_adapter, reported_cost_or_raise,
+    run_checker_batch)
 from meltiro.checker_prompts import (
     build_checker_user_message,
     build_record_context, render_degraded_identity_context,
@@ -75,6 +76,7 @@ from meltiro.fingerprint import (
 from meltiro.instrument import Instrument
 from direktoro import (
     create_message_with_retry, is_known_model, resolved_decoding_params)
+from meltiro.rates import cache_write_split
 from meltiro.prompt_builder import (
     EMPTY_ASSISTANT_PLACEHOLDER, EXTRACTOR_TOOL_REPROMPT,
     REVIEW_TOOL_REPROMPT,
@@ -113,6 +115,30 @@ DEFAULT_MAX_CONSECUTIVE_IDENTICAL_FAILURES = 5
 from meltiro.config_bundle import DEFAULT_MAX_CHECKS_PER_FIELD  # noqa: E402
 
 
+# How a decoding block spells a thinking field, and the `Thinking` attribute
+# behind each. direktoro's `split_decoding_config` reads the same four names
+# out of a role's block; this is the way back, for reporting what the operator
+# wrote in the words they wrote it in.
+THINKING_KEY_PREFIX = "thinking_"
+THINKING_FIELDS = ("mode", "effort", "budget_tokens", "display")
+
+
+def _configured_thinking(thinking):
+    """A `Thinking` spec as the `{key: value}` a decoding block would have
+    written, over the fields it actually sets.
+
+    Empty for None (a role that said nothing about thinking) and for a spec
+    whose every field is None. An unset field is omitted rather than nulled,
+    on the same terms as an unspecified sampling control: no opinion is not a
+    value.
+    """
+    if thinking is None:
+        return {}
+    return {f"{THINKING_KEY_PREFIX}{field}": getattr(thinking, field)
+            for field in THINKING_FIELDS
+            if getattr(thinking, field, None) is not None}
+
+
 def _required_cap(param, value):
     """`value` as a role's output-token cap, or refuse before it can spend.
 
@@ -145,6 +171,18 @@ class Orchestrator:
     max_checks_per_field = DEFAULT_MAX_CHECKS_PER_FIELD
     # No cards by default: unpriced roles state no cost (see rates.py).
     rates = {}
+    # The run's cached checker adapter (see `_checker_adapter`). A class
+    # default for the same reason as the three above — a test-built
+    # Orchestrator has run no `__init__` — and safe to share because every
+    # write is an assignment onto the INSTANCE.
+    _cached_checker_adapter = None
+    # The stopping state `_finalise` reads (see `__init__` for what each
+    # means). Class defaults for the same reason and with the same safety: an
+    # `__init__`-less Orchestrator that reaches finalisation finds "not yet
+    # finalised, no error recorded" rather than an AttributeError, and both are
+    # only ever assigned onto the instance.
+    _terminal_status = None
+    _error_message = None
 
     def __init__(self, config, bundle, out_dir, *,
                  extractor_model,
@@ -373,10 +411,55 @@ class Orchestrator:
         # a resume resetting these does not affect it.
         self._identity_degradation_warned = False
         self._summary_mismatch_advised = False
+        # Stopping is two phases (see `run`). This latches the status the
+        # session was persisted with, so a second `_finalise` — which a fault
+        # raised anywhere after the first one lands in run()'s catch-all
+        # produces — answers with what is already on disk instead of writing a
+        # second terminal status and a second run-log entry. One session, one
+        # ledger entry per terminal transition.
+        self._terminal_status = None
+        # The checker's adapter, built on first use and kept for the run (see
+        # `_checker_adapter`). None until then; None is also what an unset key
+        # resolves to, so the attribute is not a presence test.
+        self._cached_checker_adapter = None
+        # The composed message of the failure that ended the run, when one did.
+        # Carried from wherever the error was caught to `_finalise`, which puts
+        # it in run.json (`error_message`) and in the run-log entry's
+        # `validation_errors`, so the sentence an operator needs is in the run
+        # record rather than only in the event log.
+        self._error_message = None
 
     # ----------------------------------------------------------------------
     # Pre-spend feasibility
     # ----------------------------------------------------------------------
+
+    def _role_decoding_inputs(self):
+        """`{role: (model, max_tokens, sampling, thinking)}` for every ENABLED
+        role, in call order.
+
+        The four arguments `direktoro.resolved_decoding_params` takes, gathered
+        in one place because three separate readers ask for them — the
+        pre-spend feasibility refusal, the resolved-params record run.json
+        carries, and the inert-parameter warning — and each role keeps its
+        pieces somewhere different (the checker's on `CheckerConfig`, the
+        reviewer's under `review_*`). Three copies of that gathering would let
+        one reader ask about a call the others never make.
+
+        A disabled stage is absent rather than nulled: it makes no calls, so
+        there is nothing to resolve and nothing to say about what it would
+        send.
+        """
+        roles = {"extractor": (self.extractor_model, self.extractor_max_tokens,
+                               self.sampling, self.thinking)}
+        if self.checker_enabled:
+            roles["checker"] = (self.checker_config.checker_model,
+                                self.checker_config.max_tokens,
+                                self.checker_config.sampling,
+                                self.checker_config.thinking)
+        if self.final_review:
+            roles["review"] = (self.review_model, self.review_max_tokens,
+                               self.review_sampling, self.review_thinking)
+        return roles
 
     def _refuse_unworkable_decoding(self):
         """Refuse, before any spend, a role whose call cannot be made.
@@ -400,16 +483,8 @@ class Orchestrator:
         must keep resolving, and refusing retired ids for NEW runs is the
         caller's gate (the CLI applies it before building an Orchestrator).
         """
-        roles = [("extractor", self.extractor_model,
-                  self.extractor_max_tokens, self.sampling, self.thinking)]
-        if self.checker_enabled:
-            roles.append(("checker", self.checker_config.checker_model,
-                          self.checker_config.max_tokens,
-                          self.checker_config.sampling,
-                          self.checker_config.thinking))
-        if self.final_review:
-            roles.append(("review", self.review_model, self.review_max_tokens,
-                          self.review_sampling, self.review_thinking))
+        roles = [(role, *inputs)
+                 for role, inputs in self._role_decoding_inputs().items()]
         for role, model, max_tokens, sampling, thinking in roles:
             if not model or not is_known_model(model):
                 raise AgenticExtractionError(
@@ -711,6 +786,7 @@ class Orchestrator:
         # configured that this run's models never send.
         self._warn_images_withheld()
         self._warn_inert_decoding_params()
+        self._persist_config_warnings()
 
         # Extraction record + dispatcher. The dispatcher validates `<img>`
         # citations against the extractor's effective label set, so a
@@ -745,10 +821,12 @@ class Orchestrator:
         """Reattach to an in-progress session and rebuild the conversation."""
         # Pre-flight config check, before any API spend.
         self._startup_identity_guard()
-        # Inputs already derived from the bundle in __init__ (must match the
-        # original; the config_fp check enforces this). A text-only extractor
-        # is resumed with the same empty figures/labels it started with, so
-        # the rebuilt prompt and fingerprint match the original session.
+        # Inputs derived from the bundle in __init__. That they are the
+        # ORIGINAL bundle's is enforced below, by the paper axes passed to
+        # `Session.resume` — not by config_fp, which folds in no part of the
+        # paper. A text-only extractor is resumed with the same empty
+        # figures/labels it started with, so the rebuilt prompt and fingerprint
+        # match the original session.
         instrument = self.instrument
         ext_figures, ext_image_labels = self._extractor_image_inputs()
         self.system_text = instrument.render_extractor_system_text(
@@ -779,7 +857,11 @@ class Orchestrator:
         self.session = Session.resume(
             session_dir, expected_config_fp=expected_fp,
             expected_checker_fp=expected_checker_fp,
-            expected_review_fp=expected_review_fp)
+            expected_review_fp=expected_review_fp,
+            # The PAPER, checked on the same terms and in the same place as the
+            # three config axes. It rides in none of them, so nothing above can
+            # notice an edited text.md or a re-cropped figure.
+            expected_bundle=self.bundle)
         # A resumed session is live again: clear any pause_reason left by a
         # tool-call-cap pause so it never lingers past the resume that acted
         # on it (only the pause writes it; the resume clears it).
@@ -827,6 +909,21 @@ class Orchestrator:
         specified_moved = (previous_specified is not None
                            and self.decoding_specified != previous_specified)
         self.session.meta["decoding_specified"] = self.decoding_specified
+        # The RATE CARDS, on the same terms as the caps and the decoding block
+        # above. They are commercial rather than methodological, so they reach
+        # no fingerprint and the drift gate admits a resume that changed them —
+        # which means the numbers a segment's spend was costed at can move
+        # mid-run with nothing in the record to say so. `meta.cost_rates` is
+        # rewritten at every flush and holds only the CURRENT segment's cards,
+        # so the segment where they moved is only readable if the previous
+        # values are written down when they do. Absent is not empty, exactly as
+        # for `decoding_specified`: a session that recorded no cards says
+        # nothing about what priced it, and reading that silence as "no cards"
+        # would announce a change on the first resume of every such session.
+        previous_rates = self.session.meta.get("cost_rates")
+        current_rates = self._cost_rates_record()
+        rates_moved = (previous_rates is not None
+                       and current_rates != previous_rates)
         # A FRESH reading of the whole engine identity for this segment, from
         # the same helper `Session.create` used: both package versions and
         # source digests, plus the git anchor. The creation-time readings —
@@ -863,6 +960,11 @@ class Orchestrator:
             **({"decoding_specified": self.decoding_specified,
                 "previous_decoding_specified": previous_specified}
                if specified_moved else {}),
+            # Likewise: carried only when the cards actually moved, so the
+            # event says something when it carries them at all.
+            **({"cost_rates": current_rates,
+                "previous_cost_rates": previous_rates}
+               if rates_moved else {}),
         })
         self.session.write_meta()
         self._warn_engine_drift(segment_engine_fp)
@@ -886,6 +988,7 @@ class Orchestrator:
         # persisted meta.images_omitted carries over from session creation).
         self._warn_images_withheld()
         self._warn_inert_decoding_params()
+        self._persist_config_warnings()
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures,
         )
@@ -1021,8 +1124,17 @@ class Orchestrator:
     def _configured_decoding_values(self):
         """What the operator wrote, per enabled role, as `{role: {key: value}}`.
 
-        The config-time scalars, before the registry has had its say. Only
-        values actually configured appear, and a disabled stage is omitted
+        The config-time scalars, before the registry has had its say, keyed as
+        `pipeline.yaml` spells them: the sampling controls under their own
+        names, and the thinking fields under `thinking_mode`,
+        `thinking_effort`, `thinking_budget_tokens`, `thinking_display` —
+        `direktoro.split_decoding_config`'s vocabulary, which is what the
+        operator typed. Both halves of a decoding block go inert the same way
+        (a model that has no reasoning surface is sent no thinking parameters
+        at all), so both belong in the one place that answers "what was asked
+        for".
+
+        Only values actually configured appear, and a disabled stage is omitted
         rather than nulled: its model is never resolved, so nothing can be
         said about what it would send.
         """
@@ -1030,12 +1142,52 @@ class Orchestrator:
             # A None value is "no opinion", so it never counts as configured.
             return {k: v for k, v in (mapping or {}).items() if v is not None}
 
-        configured = {"extractor": specified(self.sampling)}
-        if self.checker_enabled:
-            configured["checker"] = specified(self.checker_config.sampling)
-        if self.final_review:
-            configured["review"] = specified(self.review_sampling)
+        configured = {}
+        for role, (_model, _cap, sampling, thinking) in \
+                self._role_decoding_inputs().items():
+            values = specified(sampling)
+            values.update(_configured_thinking(thinking))
+            configured[role] = values
         return configured
+
+    def _sends_thinking_field(self, role, field):
+        """Whether this role's call carries the effect of one thinking field.
+
+        Answered DIFFERENTIALLY — resolve the role's call with the spec, then
+        again with this one field cleared, and compare — rather than by looking
+        for a key in the resolved dict. A thinking field has no key of its own
+        on any wire: an effort is `output_config.effort` on Anthropic's and
+        `reasoning_effort` on OpenRouter's, a mode is `thinking.type` on one
+        and folded into `reasoning_effort` on the other, and a display setting
+        is a key inside a dict that only exists when a mode is also set. A
+        table of wire keys would be a fourth copy of direktoro's own mapping,
+        wrong the day it grows a wire; asking what the field CHANGES is the
+        same question in a form the registry answers for itself.
+
+        True when the cleared spec cannot be built or resolved at all: a field
+        the call cannot be made without is not one the call ignores.
+        """
+        model, max_tokens, sampling, thinking = \
+            self._role_decoding_inputs()[role]
+        remaining = {f: getattr(thinking, f) for f in THINKING_FIELDS
+                     if f != field}
+        try:
+            # A spec with nothing left in it is not an empty spec — direktoro
+            # refuses that shape — it is the state of having said nothing about
+            # thinking, which is None. The comparison has to be against the
+            # call this role would make with the field simply absent.
+            cleared = (type(thinking)(**remaining)
+                       if any(v is not None for v in remaining.values())
+                       else None)
+            with_field = resolved_decoding_params(
+                model, max_tokens=max_tokens, sampling=sampling,
+                thinking=thinking)
+            without = resolved_decoding_params(
+                model, max_tokens=max_tokens, sampling=sampling,
+                thinking=cleared)
+        except ValueError:
+            return True
+        return with_field != without
 
     def _warn_inert_decoding_params(self):
         """Warn for every decoding value the bundle sets that this run's models
@@ -1046,11 +1198,19 @@ class Orchestrator:
         because the stage fingerprints fold in the RESOLVED params — two
         bundles differing only in that key collide on every fingerprint.
 
+        Both halves of a decoding block are checked. A sampling control is on
+        the wire or it is not, so membership in the resolved dict settles it. A
+        thinking field has no wire key of its own, so it is settled
+        differentially by `_sends_thinking_field` — which matters because the
+        inert case is real and common: a model with no reasoning surface, or a
+        gateway wire that carries only an effort, is sent nothing for a
+        configured `thinking_mode` and the run records no trace of the
+        omission.
+
         A warning, never fatal: a key live for one role may be inert for
         another, and stripping it from the roles it still governs is not owed.
-        Compared against `resolved_decoding_params`, the exact dict the
-        adapter sends. Stderr on every path including a dry run; PERSISTED
-        only on a paid run, since a dry run has no artefact to caveat.
+        Stderr on every path including a dry run; PERSISTED only on a paid run,
+        since a dry run has no artefact to caveat.
         """
         resolved = self._decoding_params_meta()
         models = {
@@ -1063,7 +1223,11 @@ class Orchestrator:
                 self._configured_decoding_values().items()):
             sent = resolved.get(role) or {}
             for key in sorted(configured):
-                if key in sent:
+                if key.startswith(THINKING_KEY_PREFIX):
+                    if self._sends_thinking_field(
+                            role, key[len(THINKING_KEY_PREFIX):]):
+                        continue
+                elif key in sent:
                     continue
                 message = (
                     f"inert-decoding-param: the {role} model "
@@ -1162,7 +1326,27 @@ class Orchestrator:
     # ----------------------------------------------------------------------
 
     def run(self):
-        """Run the loop. Returns the terminal status string."""
+        """Run the loop. Returns the status the session was persisted with.
+
+        Stopping a run is two phases, and they are separated here because they
+        fail differently:
+
+          (a) `_finalise` / `_pause` persist the outcome — the terminal status
+              in run.json and, for a terminal stop, the run-log entry beside
+              it. This runs inside the try, so a fault on the way to it is
+              caught and finalises `error`.
+
+          (b) `_render_artefacts` writes the derived documents (field history,
+              transcript). This runs OUTSIDE the try, because both are views
+              over files already persisted in (a): a rendering fault must cost
+              the run its documents and nothing else. Inside the try it would
+              re-enter finalisation on an already-finalised session — a second
+              run-log entry double-counting the spend, or a resumable cap-hit
+              pause overwritten as a terminal error.
+
+        The returned status is therefore always the one on disk, rendering
+        fault or not.
+        """
         if self.dry_run:
             # A dry run never enters the live loop: the CLI routes it through
             # dry_run_report(), which creates no session. Reaching run() with
@@ -1173,83 +1357,144 @@ class Orchestrator:
                 "run goes through dry_run_report(), which creates no session.")
 
         try:
-            # Pre-spend key preflight: every enabled stage must have its
-            # provider key before any API call. Raised inside the try so a
-            # missing key finalises as a clean "error" naming the variable and
-            # the stage, rather than surfacing mid-run, where a missing checker
-            # key degrades every field to a challenge only after the extractor
-            # has fully spent.
-            self._preflight_keys()
-            extractor_status = self._extractor_loop()
-            stop = self._finalise_loop_stop(extractor_status)
-            if stop is not None:
-                return stop
-            if extractor_status != "mark_complete_validated":
-                # `_finalise_loop_stop` answers None both for the one outcome
-                # the run continues past and for any it does not recognise, so
-                # None alone does not mean "the extractor finished". An
-                # outcome added or renamed later raises here and finalises
-                # `error` rather than drifting through to `complete`.
-                raise AgenticExtractionError(
-                    f"unrecognised extractor loop outcome "
-                    f"{extractor_status!r}: it is neither a mapped stop nor "
-                    f"the completion signal, so the run cannot continue. Map "
-                    f"it in _finalise_loop_stop.")
-
-            # Extractor signalled mark_complete. Challenges are advisory (see
-            # module docstring); anything still challenged is recorded in
-            # meta.checker_diagnostics at finalisation.
-
-            # Final review (optional per run: off when final_review is False).
-            # When off the run finalises directly after the extractor.
-            if self.final_review:
-                review_status = self._final_review()
-                if review_status == "final_review_no_response":
-                    # The reviewer returned neither text nor a tool call. That
-                    # is an infrastructure failure (empty completion), not a
-                    # judgement about the extraction: record it and finalise as
-                    # error so the operator re-runs.
-                    self.session.append_event({
-                        "event": "final_review_no_response",
-                        "message": (
-                            "the final reviewer returned neither text nor a "
-                            "tool call (empty completion); treating as an "
-                            "infrastructure error."),
-                    })
-                    return self._finalise("error")
-                stop = self._finalise_review_stop(review_status)
-                if stop is not None:
-                    return stop
-                if review_status == "error":
-                    return self._finalise("error")
-                if review_status != "review_clean":
-                    # With the reviewer ON, only its confirmation may finalise
-                    # `complete`. An outcome not mapped above (added later,
-                    # renamed, mistyped) stops here and finalises `error`
-                    # rather than shipping an extraction no reviewer signed
-                    # off on.
-                    raise AgenticExtractionError(
-                        f"unrecognised final review status {review_status!r}: "
-                        f"only a confirmed review ('review_clean') may "
-                        f"finalise a run as complete. Map it in "
-                        f"_final_review / _finalise_review_stop.")
-
-            return self._finalise("complete")
+            status = self._run_to_stop()
         except AgenticExtractionError as e:
-            self.session.append_event({"event": "error",
-                                       "message": str(e)})
-            return self._finalise("error")
+            self._report_run_error(str(e))
+            status = self._finalise("error")
         except Exception as e:
             # Catch-all so an unexpected crash doesn't leave the session
             # stranded as `in_progress` forever. The traceback is captured
             # in the jsonl for postmortem.
             import traceback
-            self.session.append_event({
-                "event": "error",
-                "message": f"{type(e).__name__}: {e}",
-                "traceback": traceback.format_exc(),
-            })
-            return self._finalise("error")
+            self._report_run_error(f"{type(e).__name__}: {e}",
+                                   traceback=traceback.format_exc())
+            status = self._finalise("error")
+        self._render_artefacts()
+        return status
+
+    def _report_run_error(self, message, *, traceback=None):
+        """Record the failure that ended the run: an `error` event carrying the
+        composed message, the message stashed for `_finalise` to persist, and
+        one stderr line.
+
+        The stderr line is what an operator reads first. It is printed here,
+        at the point of the catch, so it lands ahead of the run summary the
+        CLI prints from the returned status — a status word with no sentence
+        behind it sends the reader into the transcript for what the exception
+        already said.
+        """
+        event = {"event": "error", "message": message}
+        if traceback is not None:
+            event["traceback"] = traceback
+        self.session.append_event(event)
+        self._error_message = message
+        print(f"  ERROR: {message}", file=sys.stderr)
+
+    def _render_artefacts(self):
+        """Write the derived documents of a stopped run: the per-field history
+        and the readable transcript. Phase (b) of stopping (see `run`).
+
+        Both are rebuilt wholesale from files already on disk — the event log,
+        run.json, the extraction output — so neither is a source of truth and
+        neither can change the outcome. A failure here is therefore reported
+        rather than raised: one stderr line naming the document and the session
+        it belongs to, and the same sentence appended to `meta.warnings` when
+        meta is still writable, so a session missing a transcript says why.
+        Both are attempted, because the fault that stopped one need not stop
+        the other.
+        """
+        for name, render in (
+                ("field_history.json", self.session.write_field_history),
+                ("transcript.md", self.session.write_transcript)):
+            try:
+                render()
+            except Exception as e:
+                message = (
+                    f"artefact-not-written: could not write {name} for "
+                    f"session {self.session.session_dir}: "
+                    f"{type(e).__name__}: {e}. The run's status and its "
+                    f"run-log entry are unaffected; re-render with "
+                    f"`meltiro transcript`.")
+                print(f"WARNING: {message}", file=sys.stderr)
+                try:
+                    self.session.add_warning(message)
+                except Exception:
+                    # meta is unwritable too, which the same disk fault
+                    # explains. The stderr line above is then the whole
+                    # record: raising here would undo the guard.
+                    pass
+
+    def _run_to_stop(self):
+        """Drive the run to its stop and persist the outcome, returning the
+        status. run()'s body, split out so run() can render the derived
+        documents outside the try this raises into."""
+        # Pre-spend key preflight: every enabled stage must have its
+        # provider key before any API call. Raised from inside run()'s try, so
+        # a missing key finalises as a clean "error" naming the variable and
+        # the stage, rather than surfacing mid-run, where a missing checker
+        # key degrades every field to a challenge only after the extractor
+        # has fully spent.
+        self._preflight_keys()
+        extractor_status = self._extractor_loop()
+        stop = self._finalise_loop_stop(extractor_status)
+        if stop is not None:
+            return stop
+        if extractor_status != "mark_complete_validated":
+            # `_finalise_loop_stop` answers None both for the one outcome
+            # the run continues past and for any it does not recognise, so
+            # None alone does not mean "the extractor finished". An
+            # outcome added or renamed later raises here and finalises
+            # `error` rather than drifting through to `complete`.
+            raise AgenticExtractionError(
+                f"unrecognised extractor loop outcome "
+                f"{extractor_status!r}: it is neither a mapped stop nor "
+                f"the completion signal, so the run cannot continue. Map "
+                f"it in _finalise_loop_stop.")
+
+        # Extractor signalled mark_complete. Challenges are advisory (see
+        # module docstring); anything still challenged is recorded in
+        # meta.checker_diagnostics at finalisation.
+
+        # Final review (optional per run: off when final_review is False).
+        # When off the run finalises directly after the extractor.
+        if self.final_review:
+            review_status = self._final_review()
+            if review_status == "final_review_no_response":
+                # The reviewer returned neither text nor a tool call. That
+                # is an infrastructure failure (empty completion), not a
+                # judgement about the extraction: record it and finalise as
+                # error so the operator re-runs.
+                message = ("the final reviewer returned neither text nor a "
+                           "tool call (empty completion); treating as an "
+                           "infrastructure error.")
+                self.session.append_event({
+                    "event": "final_review_no_response",
+                    "message": message,
+                })
+                # Through the same channel an exception takes, so a run that
+                # ended this way carries its sentence on stderr and in the run
+                # record exactly as one that raised does.
+                self._error_message = message
+                print(f"  ERROR: {message}", file=sys.stderr)
+                return self._finalise("error")
+            stop = self._finalise_review_stop(review_status)
+            if stop is not None:
+                return stop
+            if review_status == "error":
+                return self._finalise("error")
+            if review_status != "review_clean":
+                # With the reviewer ON, only its confirmation may finalise
+                # `complete`. An outcome not mapped above (added later,
+                # renamed, mistyped) stops here and finalises `error`
+                # rather than shipping an extraction no reviewer signed
+                # off on.
+                raise AgenticExtractionError(
+                    f"unrecognised final review status {review_status!r}: "
+                    f"only a confirmed review ('review_clean') may "
+                    f"finalise a run as complete. Map it in "
+                    f"_final_review / _finalise_review_stop.")
+
+        return self._finalise("complete")
 
     # ----------------------------------------------------------------------
     # Phases
@@ -1278,8 +1523,13 @@ class Orchestrator:
           - "extractor_stalled": the repeated-failure guard fired (a model
             wedged re-submitting the SAME rejected call). Terminal
             (failed_validation) for the same reason.
+          - "extractor_refused": a turn came back with stop_reason "refusal"
+            (a host content filter, or the model declining). Terminal
+            (`error`): the request was refused rather than the extraction
+            judged, so there is nothing to re-prompt and nothing to call
+            invalid.
 
-        Those five are the whole vocabulary. An unrecoverable per-turn failure
+        Those six are the whole vocabulary. An unrecoverable per-turn failure
         is not among them: it propagates as an exception, which run()'s
         catch-all records as an `error` event and finalises `error`, so the
         mapping this feeds (`_finalise_loop_stop`) covers exactly what it can
@@ -1319,6 +1569,24 @@ class Orchestrator:
             response = self._call_extractor(adapter, tool_defs)
             self._record_extractor_response(response, turn_id)
 
+            if getattr(response, "stop_reason", None) == "refusal":
+                # The model declined this call: a host content filter stopped
+                # the response, or the model refused it outright. That is an
+                # ANSWER, and it outranks whatever else the turn carried
+                # (direktoro's canonical vocabulary puts `refusal` ahead of
+                # `tool_use` for exactly this reason). Read as an ordinary
+                # tool-free turn it would be re-prompted, refused again, and
+                # end three paid calls later as `text_only_stall` — a stall
+                # guard naming a cause that was never the cause. It stops here,
+                # on the first one, with the reason recorded.
+                self._append_assistant_event(turn_id, response)
+                self.session.append_event({
+                    "event": "extractor_refused",
+                    "turn_id": turn_id,
+                    "stop_reason": "refusal",
+                })
+                return "extractor_refused"
+
             tool_uses, assistant_text = self._extract_tool_uses(response)
             if not tool_uses:
                 # Model returned no tool call. Record the assistant turn so
@@ -1344,11 +1612,8 @@ class Orchestrator:
                 })
                 # Record the verbatim ordered assistant content so replay
                 # rebuilds this turn's assistant message byte-identically.
-                self.session.append_event({
-                    "event": "assistant_message",
-                    "turn_id": turn_id,
-                    "content": assistant_content,
-                })
+                self._append_assistant_event(turn_id, response,
+                                             content=assistant_content)
                 # Log an assistant_text event as the human-transcript prose
                 # record for this turn. Use the placeholder when the model
                 # returned no text, so a resumed transcript keeps the same
@@ -1358,13 +1623,6 @@ class Orchestrator:
                     "turn_id": turn_id,
                     "text": assistant_text or EMPTY_ASSISTANT_PLACEHOLDER,
                 })
-                # A text-only turn still cost an API call, but drives no tool
-                # call, so the per-tool-call meta write that flushes the
-                # checkpointed spend on a normal turn never fires here. Flush
-                # explicitly so a crash after a text-only turn keeps its spend
-                # (the accumulators were mirrored into meta by _accumulate_usage
-                # inside _call_extractor above).
-                self.session.write_meta()
                 consecutive_text_only += 1
                 if consecutive_text_only >= \
                         self.max_consecutive_text_only_turns:
@@ -1377,24 +1635,39 @@ class Orchestrator:
                     # the cap does not help a model that never calls a tool,
                     # and an unchanged resume re-runs the same inputs into the
                     # same spiral.
+                    self.session.write_meta()
                     return "text_only_stall"
+                reprompt = EXTRACTOR_TOOL_REPROMPT
+                # The re-prompt event, appended IMMEDIATELY after the assistant
+                # events and before any meta write, so the two sides of this
+                # turn go to disk together. Behind a write it left a window in
+                # which a kill produced a log whose last turn had an assistant
+                # side and no user side — and a replay of that ends on an
+                # assistant message, which the next call sends as a prefill of
+                # the model's own narration. A prefill ending in whitespace is
+                # an API 400, so the resume this exists to protect would fail
+                # on its first call. Replay drops such a turn now
+                # (`Session.replay_messages`); this is the other half, keeping
+                # the window as small as one append.
+                self.session.append_event({
+                    "event": "extractor_reprompt",
+                    "turn_id": turn_id,
+                    "text": reprompt,
+                })
+                # A text-only turn still cost an API call, but drives no tool
+                # call, so the per-tool-call meta write that flushes the
+                # checkpointed spend on a normal turn never fires here. Flush
+                # explicitly so a crash after a text-only turn keeps its spend
+                # (the accumulators were mirrored into meta by _accumulate_usage
+                # inside _call_extractor above).
+                self.session.write_meta()
                 # An extractor whose registry entry declares no forced tool
                 # choice (so it runs under "auto") and that declined to call a
                 # tool is re-prompted with a firm nudge; count that
                 # auto-degrade retry in meta. No-op for a forcing model, whose
                 # text-only turn is the general guard.
                 self._maybe_record_auto_degrade_retry("extractor")
-                reprompt = EXTRACTOR_TOOL_REPROMPT
                 self._append_user_text(reprompt)
-                # Log the re-prompt under this turn id so replay pairs it
-                # with the assistant text above; without it a resumed
-                # transcript would show a lone assistant turn (two
-                # consecutive assistant messages once the next turn lands).
-                self.session.append_event({
-                    "event": "extractor_reprompt",
-                    "turn_id": turn_id,
-                    "text": reprompt,
-                })
                 continue
 
             # A tool-calling turn resets the tool-free run.
@@ -1468,12 +1741,7 @@ class Orchestrator:
                     # and refuses. The event records the full batch the model
                     # emitted, including calls never dispatched; this session
                     # finalises terminal and is never resumed.
-                    self.session.append_event({
-                        "event": "assistant_message",
-                        "turn_id": turn_id,
-                        "content":
-                            self._assistant_content_from_response(response),
-                    })
+                    self._append_assistant_event(turn_id, response)
                     return "extractor_stalled"
 
             # Append the assistant message (containing tool_use + any text)
@@ -1491,11 +1759,8 @@ class Orchestrator:
             # original text/tool_use block order) so replay rebuilds this
             # turn's assistant message byte-identically instead of forcing
             # text before tool_use.
-            self.session.append_event({
-                "event": "assistant_message",
-                "turn_id": turn_id,
-                "content": assistant_content,
-            })
+            self._append_assistant_event(turn_id, response,
+                                         content=assistant_content)
 
             # Persist extraction output after every batch of applied tool calls.
             self.session.write_extraction_record(self.extraction_record)
@@ -1727,7 +1992,8 @@ class Orchestrator:
                 # the run of tool-free turns is bounded so this cannot spin.
                 messages.append({"role": "assistant",
                                  "content": assistant_content})
-                self._append_review_assistant_event(turn_id, assistant_content)
+                self._append_review_assistant_event(
+                    turn_id, assistant_content, response)
                 self.session.append_event({
                     "event": "assistant_text",
                     "stage": "review",
@@ -1850,14 +2116,15 @@ class Orchestrator:
                     # assistant_message" invariant stays total, exactly as the
                     # extractor loop does on its stall path.
                     self._append_review_assistant_event(
-                        turn_id, assistant_content)
+                        turn_id, assistant_content, response)
                     return ("review_stalled", mutations_attempted,
                             mutations_applied)
 
             messages.append({"role": "assistant", "content": assistant_content})
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
-            self._append_review_assistant_event(turn_id, assistant_content)
+            self._append_review_assistant_event(
+                turn_id, assistant_content, response)
 
             # Persist after every batch, so a crash cannot lose applied edits.
             self.session.write_extraction_record(self.extraction_record)
@@ -1886,14 +2153,45 @@ class Orchestrator:
                 return ("review_mark_complete", mutations_attempted,
                         mutations_applied)
 
-    def _append_review_assistant_event(self, turn_id, assistant_content):
-        """Record a review turn's verbatim ordered assistant content.
+    def _append_assistant_event(self, turn_id, response, *, content=None):
+        """Record one EXTRACTOR turn's verbatim ordered assistant content, and
+        why the turn stopped.
+
+        Every extractor turn logs exactly one of these, so `stop_reason` here
+        makes the event log the durable record of how each turn ended — a
+        content-filter `refusal`, a `max_tokens` truncation, an ordinary
+        `tool_use` or `end_turn`. Without it the artefact carries the model's
+        words and not the fact that a filter cut them off, and the wire log
+        that does carry it is kept only at `--diagnostics full`.
+
+        `content` is the already-built block list when the caller has one
+        (it is also what went into `self.messages`, so the two cannot drift);
+        omitted, it is derived from `response`.
+        """
+        self.session.append_event({
+            "event": "assistant_message",
+            "turn_id": turn_id,
+            "content": (content if content is not None
+                        else self._assistant_content_from_response(response)),
+            "stop_reason": getattr(response, "stop_reason", None),
+        })
+
+    def _append_review_assistant_event(self, turn_id, assistant_content,
+                                       response):
+        """Record a review turn's verbatim ordered assistant content, and why
+        the turn stopped.
 
         Every model turn that dispatches tools logs an `assistant_message`
         event carrying exactly what the provider returned, in order; a turn
         missing one is a crash artefact. The reviewer's turns are held to the
         same rule, which is also what puts its reasoning in the transcript
         rather than only in the raw API log.
+
+        `stop_reason` rides the event for the reason it rides the extractor's
+        (`_append_assistant_event`): a reviewer turn cut off at `max_tokens`
+        or blocked by a content filter reads as a finished one without it, and
+        every reader of how a turn ended — the transcript's note among them —
+        reads this field whichever stage the turn belongs to.
 
         The `stage` marker is what keeps the review conversation out of the
         EXTRACTOR conversation on replay: `Session.replay_messages` rebuilds
@@ -1906,6 +2204,7 @@ class Orchestrator:
             "stage": "review",
             "turn_id": turn_id,
             "content": assistant_content,
+            "stop_reason": getattr(response, "stop_reason", None),
         })
     # ----------------------------------------------------------------------
     # Helpers
@@ -1992,6 +2291,31 @@ class Orchestrator:
             return build_adapter(self._role_model(role))
         except MissingAPIKey:
             return None
+
+    def _checker_adapter(self):
+        """The one adapter every checker call in this run goes through.
+
+        Cached, unlike the extractor's and the reviewer's, which are built once
+        per loop by the loop that uses them. The checker has no loop of its own:
+        it fans out per tool call, so a fresh adapter per fan-out would build a
+        fresh provider client, and with it a fresh connection pool, for every
+        tool call the run makes — every batch then opening its own TLS
+        connections instead of reusing the ones the last batch left warm.
+
+        Built through the checker module's own `_build_checker_adapter`, which
+        is what `run_checker_batch` would have called for itself, so hoisting
+        the construction here changes when it happens and nothing about what is
+        built. The checker's model lives on `CheckerConfig`, not among the
+        per-role models `_adapter_for_role` reads.
+
+        None when the key variable is unset, which `run_checker_batch` turns
+        into a per-field degradation. The pre-spend preflight has already
+        refused that case for an orchestrated run.
+        """
+        if self._cached_checker_adapter is None:
+            self._cached_checker_adapter = _build_checker_adapter(
+                self.checker_config)
+        return self._cached_checker_adapter
 
     def _render_user_prompt_text(self):
         """Text-only render of the initial user message, captured into
@@ -2325,6 +2649,25 @@ class Orchestrator:
         self.session.add_warning(message)
         print("WARNING: " + message, file=sys.stderr)
 
+    def _persist_config_warnings(self):
+        """Carry the CONFIG BUNDLE's load-time warnings into this session's
+        durable record.
+
+        `load_config_bundle` says its piece on stderr while the bundle is
+        being read, which is before any session exists — so on a real run that
+        line scrolls past and the artefact carries no trace of it. A remark
+        worth making about the instrument is worth making in the record of
+        every run that used it, beside the ones the run makes itself
+        (inert decoding params, identity degradation). Already printed by the
+        loader, so this only stores; `add_warning` dedups, so a resume adds
+        nothing a second time. Never on a dry run, which has no artefact to
+        caveat.
+        """
+        if self.session is None or self.dry_run:
+            return
+        for message in getattr(self.config, "warnings", ()) or ():
+            self.session.add_warning(message)
+
     def _retry_logger(self, stage):
         """Return an on_retry callback that records each retried transient
         provider failure as a `provider_retry` session event. Failed attempts
@@ -2365,27 +2708,130 @@ class Orchestrator:
         retries[stage] = retries.get(stage, 0) + 1
         self.session.write_meta()
 
+    def _ledger_refused_call(self, exc, model, role, *, call_type,
+                             turn_id=None):
+        """Bank the spend of a call that was served, billed, and then refused.
+
+        `direktoro.ProviderError.response` carries the `NormalisedResponse` a
+        post-billing refusal is about — a routed call whose pin did not hold,
+        or that came back with no generation id or no gateway charge. The
+        tokens were spent whatever the routing layer thinks of the receipt, so
+        the wire entry is written and the tokens go into this role's meters and
+        the run's, before the exception carries on aborting the stage. A
+        refusal raised INSTEAD of a response carries none and there is nothing
+        to bank.
+
+        Ledgering the money is all this does. It does not turn a refusal into
+        an answer: the caller re-raises, the stage ends, and the run finalises
+        `error` exactly as before.
+
+        The wire entry goes through `_log_api_call_guarded`, and the spend is
+        accumulated after it and outside that guard: the tokens are the part
+        no other record can be rebuilt from, and `_accumulate_usage` prices
+        the call, so it is a step that can raise on its own account.
+        """
+        response = getattr(exc, "response", None)
+        if response is None:
+            return
+        self._log_api_call_guarded(
+            call_type, response.raw_request, response.raw_response,
+            provider=response.provider, base_url=response.base_url,
+            wire_model=response.resolved_model,
+            wire_request=response.wire_request,
+            turn_id=turn_id)
+        self._accumulate_usage(response, model, role, billed_refusal=True)
+
+    def _log_api_call_guarded(self, call_type, request_kwargs, response,
+                              **extra):
+        """Write one call's verbatim wire entry, swallowing a fault in the
+        WRITE and reporting it. Takes `Session.log_api_call`'s arguments.
+
+        The write is swallowed for the reason `checker._log_ask` swallows it:
+        the log is a record of the call, and a fault writing it must not become
+        the call's outcome. The entry lands under the session's `diagnostics/`,
+        and only at `--diagnostics full`, so a disk that filled or a permission
+        on that directory reaches this write and nothing else — while the call
+        it describes has already happened and already been paid for.
+        Unguarded, that fault would end an ordinary successful turn as `error`,
+        or replace the ProviderError a refused call is in the middle of
+        raising.
+
+        The entry is COMPOSED outside the guard, so the swallow covers the one
+        step whose faults are environmental. An unreadable diagnostics level
+        and a shape `make_entry` cannot compose are defects in the run itself,
+        they hold for every call it makes, and swallowed they would leave a
+        wire log that is empty — which at this level reads as a run that made
+        no calls — with nothing anywhere saying why.
+        """
+        entry = self.session.api_call_entry(
+            call_type, request_kwargs, response, **extra)
+        try:
+            self.session.write_api_call_entry(entry)
+        except Exception as e:
+            self._report_unwritten_wire_entry(call_type, e)
+
+    def _report_unwritten_wire_entry(self, call_type, exc):
+        """Record that one call is missing from the wire log: one stderr line
+        and a `meta.warnings` sentence.
+
+        `api_calls.jsonl` is one line per call and carries no count, so a write
+        that failed leaves a file that reads as whole and a call that reads as
+        never made. The call WAS made and was paid for — the run's totals carry
+        its spend — so the loss is stated where the finished artefact states
+        the rest of what it cannot show.
+
+        Each report is guarded, and guarded separately, for the reason
+        `_report_unwritten_run_log` guards its three: the fault that closed the
+        log can have taken meta or stderr with it, a raise here would become
+        the outcome of the call this path exists to keep intact, and one report
+        being unavailable says nothing about the other. The message names the
+        call type and the fault and nothing per-call, so a run whose every
+        write fails records one sentence per call type rather than one per call
+        (`add_warning` dedups on the exact string).
+        """
+        message = (
+            f"wire-log entry could not be written: {type(exc).__name__}: "
+            f"{exc}. The {call_type} call it describes was made and billed, "
+            f"and this run's totals carry its spend, but "
+            f"{self.session.api_calls_path} holds no verbatim record of it, "
+            f"so the wire log is short of the calls this run made.")
+        try:
+            print(f"WARNING: {message}", file=sys.stderr)
+        except Exception:
+            pass
+        try:
+            self.session.add_warning(message)
+        except Exception:
+            pass
+
     def _call_extractor(self, adapter, tool_defs):
         """Run one extractor turn via the provider adapter and return the
         normalised response. The adapter omits any sampling control this
         model's endpoint declares it refuses."""
-        response = create_message_with_retry(
-            adapter,
-            on_retry=self._retry_logger("extractor"),
-            model=self.extractor_model,
-            max_tokens=self.extractor_max_tokens,
-            system=extractor_sys_blocks(self.system_text),
-            tools=tool_defs,
-            tool_choice={"type": "auto"},
-            messages=self.messages,
-            sampling=self.sampling,
-            thinking=self.thinking,
-        )
+        from direktoro import ProviderError
+        try:
+            response = create_message_with_retry(
+                adapter,
+                on_retry=self._retry_logger("extractor"),
+                model=self.extractor_model,
+                max_tokens=self.extractor_max_tokens,
+                system=extractor_sys_blocks(self.system_text),
+                tools=tool_defs,
+                tool_choice={"type": "auto"},
+                messages=self.messages,
+                sampling=self.sampling,
+                thinking=self.thinking,
+            )
+        except ProviderError as e:
+            self._ledger_refused_call(
+                e, self.extractor_model, "extractor", call_type="extractor",
+                turn_id=getattr(self, "_current_turn_id", None))
+            raise
         self._warn_if_truncated(
             "extractor", self.extractor_max_tokens, response)
         # Verbatim API audit log: canonical request + response, plus the
         # provider/endpoint and the resolved wire model.
-        self.session.log_api_call(
+        self._log_api_call_guarded(
             "extractor", response.raw_request, response.raw_response,
             provider=response.provider, base_url=response.base_url,
             wire_model=response.resolved_model,
@@ -2411,22 +2857,29 @@ class Orchestrator:
         `_compute_review_fp` records is the value each review call actually
         sends.
         """
-        response = create_message_with_retry(
-            adapter,
-            on_retry=self._retry_logger("review"),
-            model=self.review_model,
-            max_tokens=self.review_max_tokens,
-            system=extractor_sys_blocks(system_text),
-            tools=tool_defs,
-            tool_choice={"type": "auto"},
-            messages=messages,
-            sampling=self.review_sampling,
-            thinking=self.review_thinking,
-        )
+        from direktoro import ProviderError
+        try:
+            response = create_message_with_retry(
+                adapter,
+                on_retry=self._retry_logger("review"),
+                model=self.review_model,
+                max_tokens=self.review_max_tokens,
+                system=extractor_sys_blocks(system_text),
+                tools=tool_defs,
+                tool_choice={"type": "auto"},
+                messages=messages,
+                sampling=self.review_sampling,
+                thinking=self.review_thinking,
+            )
+        except ProviderError as e:
+            self._ledger_refused_call(
+                e, self.review_model, "review", call_type="final_review",
+                turn_id=turn_id)
+            raise
         self._warn_if_truncated(
             "review", self.review_max_tokens, response)
         # Verbatim API audit log, with provider/endpoint and resolved model.
-        self.session.log_api_call(
+        self._log_api_call_guarded(
             "final_review", response.raw_request, response.raw_response,
             provider=response.provider, base_url=response.base_url,
             wire_model=response.resolved_model,
@@ -2681,19 +3134,36 @@ class Orchestrator:
             acc["incomplete"] = bool(block.get("cost_incomplete"))
             acc["unreceipted"] = int(block.get("unreceipted_calls") or 0)
 
-    def _accumulate_usage(self, response, model, role):
+    def _accumulate_usage(self, response, model, role, *,
+                          billed_refusal=False):
         """Fold one role's call into the run-wide meters and that role's own.
 
         `role` says whose card prices the call and whose per-role meters it
         lands in. It is required rather than derived from `model`, because two
         roles may legitimately run the same model and their spend still has to
         be told apart.
+
+        `billed_refusal` marks a response that was served and charged and then
+        REFUSED by direktoro's routing layer (see `_ledger_refused_call`). It
+        changes exactly one thing: a routed response with no readable charge is
+        stated as coverage on the run's figure (`cost_incomplete`, and the call
+        counted in `unreceipted_calls`) instead of raising. On the ordinary path
+        that raise is right — a routed answer the run is about to USE must not
+        be ledgered at $0 — but here the refusal has already ended the stage,
+        and raising over the accounting would replace the real failure with a
+        report about it.
         """
         usage = response.usage
         input_tokens = getattr(usage, "input_tokens", 0) or 0
         output_tokens = getattr(usage, "output_tokens", 0) or 0
         cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        # The cache write is TWO counters when it is priced, because the two
+        # TTL tiers bill at different multiples of the base input rate. The
+        # unsplit total above is what the run REPORTS (one number, the one the
+        # provider reports); the split is what it is PRICED from. See
+        # `rates.cache_write_split`.
+        cache_write_5m, cache_write_1h = cache_write_split(usage)
         self._input_tokens += input_tokens
         self._output_tokens += output_tokens
         self._cache_creation_tokens += cache_create
@@ -2713,13 +3183,25 @@ class Orchestrator:
         # and the run states no total.
         card = self.rates.get(role)
         if model_info(model).route is not None:
-            cost = reported_cost_or_raise(model, response)
+            if billed_refusal and getattr(response, "reported_cost",
+                                          None) is None:
+                # A refusal ABOUT the missing charge, or one raised before the
+                # charge was read at all. The tokens above are the record; the
+                # gap is stated rather than raised over (see the docstring).
+                self._cost_incomplete = True
+                self._unreceipted_calls += 1
+                acc["incomplete"] = True
+                acc["unreceipted"] += 1
+                cost = 0.0
+            else:
+                cost = reported_cost_or_raise(model, response)
         elif card is not None:
             cost = card.cost_of_call(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read,
-                cache_write_tokens=cache_create,
+                cache_write_tokens=cache_write_5m,
+                cache_write_1h_tokens=cache_write_1h,
             )
         else:
             cost = None
@@ -3087,11 +3569,12 @@ class Orchestrator:
                 self._cost_counted = True
                 acc["cost_usd"] += cost
                 acc["counted"] = True
-            # A check whose figure covers fewer calls than it made: the
-            # charge on a gateway-served response did not arrive, and the
-            # check reported what it could price (checker._spend). The run's
-            # total inherits the gap, because it is the sum that a reader
-            # would otherwise take for the whole bill.
+            # A check whose figure covers fewer calls than it made: a
+            # gateway-served response was charged and then refused by the
+            # routing layer, so its charge never became readable, and the check
+            # reported what it could price (checker._spend). The run's total
+            # inherits the gap, because it is the sum that a reader would
+            # otherwise take for the whole bill.
             if result.get("cost_incomplete"):
                 unreceipted = int(result.get("unreceipted_responses") or 0)
                 self._cost_incomplete = True
@@ -3144,8 +3627,19 @@ class Orchestrator:
 
         verdicts = run_checker_batch(
             calls=calls, config=self.checker_config,
+            # ONE adapter for the whole run, not one per batch. The adapter
+            # owns the provider client and through it the connection pool, so
+            # building a fresh one each time discards every kept-alive
+            # connection and makes the first call of every fan-out pay a new
+            # TLS handshake — on a batch of two dozen parallel calls, two dozen
+            # of them.
+            adapter=self._checker_adapter(),
             on_complete=_on_complete,
             api_logger=_api_log,
+            # The checker's retries recorded the same way the extractor's and
+            # the reviewer's are: a failed attempt raises before the wire log
+            # runs, so this event is its only trace.
+            on_retry=self._retry_logger("checker"),
         )
         # Fold this batch's routing receipts into meta in field_path order (the
         # same reproducible order run_checker_batch returns its verdicts in), so
@@ -3251,6 +3745,19 @@ class Orchestrator:
         if status == "extractor_abandoned":
             return self._finalise("failed_validation",
                                   failure_reason="surrendered")
+        if status == "extractor_refused":
+            # `error`, not `failed_validation`: the two failed_validation
+            # outcomes are judgements the model made about the extraction (it
+            # surrendered, or it wedged). A refusal is a judgement about the
+            # REQUEST, made by a filter or by the model declining, and nothing
+            # about the paper or the template was assessed at all — so there is
+            # no extraction to call invalid.
+            self._report_run_error(
+                "the extractor model refused the request (stop_reason "
+                "'refusal'). Check the paper text and the rendered prompt for "
+                "material the provider's filter blocks, or run the stage on "
+                "another model.")
+            return self._finalise("error")
         return None
 
     def _finalise_review_stop(self, status):
@@ -3296,6 +3803,12 @@ class Orchestrator:
         raising the cap and resuming continues the same conversation. The
         pause_reason is cleared on resume (see resume_session). Returns
         "in_progress" so the CLI prints the resume hint and exits 0.
+
+        This is phase (a) of stopping and it writes only what makes the pause
+        durable and resumable. The derived documents (field history,
+        transcript) are `run`'s `_render_artefacts`, outside the try: rendering
+        them here once cost a paused run its resumability, because a rendering
+        fault fell into the catch-all and finalised the session `error`.
         """
         self.session.write_extraction_record(self.extraction_record)
         self._checkpoint_usage_to_meta()
@@ -3303,27 +3816,43 @@ class Orchestrator:
         self.session.append_event({"event": "extractor_paused",
                                    "pause_reason": pause_reason})
         self.session.write_meta()
-        # Derived from the event log, after the pause event is in it, so a
-        # paused session on disk carries a field history current to everything
-        # that happened. It is rewritten wholesale at the next stop.
-        self.session.write_field_history()
-        # The readable transcript, last, so it renders from the files above in
-        # their settled state. A paused session gets one too: a pause is where
-        # an operator most needs to read what happened before deciding whether
-        # to raise the cap.
-        self.session.write_transcript()
         return "in_progress"
 
     def _finalise(self, status, *, failure_reason=None):
         """Finalise the session into a terminal status and append the run-log
-        entry.
+        entry. Returns the status the session is persisted with.
 
         `failure_reason` (surrendered / stalled / text_only_stall from the
         extractor; review_surrendered / review_cap_hit / review_text_only_stall
         / review_stalled from the reviewer) is recorded in run.json for
         `failed_validation`, so the status string stays coarse while the
         mechanism, and the stage it fired in, stay auditable.
+
+        Phase (a) of stopping (see `run`), and the whole of it: the terminal
+        status and the run-log entry go out together, with nothing fallible
+        between them. The derived documents come after, outside run()'s try.
+
+        Never raises. The status and the sentence behind it are the outcome of
+        the run, and they land whatever the cross-session ledger does: a ledger
+        that cannot be appended to is reported (`_report_unwritten_run_log`)
+        and the run keeps the status it earned. Raising instead would put a
+        traceback where a status belongs — and, called from run()'s except
+        handler, would carry the ledger's fault out of run() in place of the
+        error that actually ended the run.
+
+        Idempotent by the latch below. A session finalises ONCE: the run log is
+        a cross-run ledger a consumer sums into a bill, so a second entry for
+        one session is not a duplicate line but double-counted money. The
+        invariant is therefore: exactly one entry when the log is writable, and
+        the session says so when it is not.
         """
+        if self._terminal_status is not None:
+            # Already persisted, so there is nothing left to decide. This is
+            # reached when a fault after the first finalisation unwinds into
+            # run()'s catch-all, which finalises `error` — the fault is real
+            # and is in the event log, but the outcome on disk is the one that
+            # actually happened and it stands.
+            return self._terminal_status
         self.session.write_extraction_record(self.extraction_record)
         # Tripwires that make a claim about the finished artefact are
         # evaluated here, against the output just written, so a persisted
@@ -3343,6 +3872,15 @@ class Orchestrator:
         self._checkpoint_usage_to_meta()
         if failure_reason is not None:
             self.session.meta["failure_reason"] = failure_reason
+        else:
+            # A first `_finalise` that faulted part-way through can already
+            # have persisted the reason keys of the stop it was writing, and
+            # the finalisation that lands is then run()'s `error` — which has
+            # no reason. Clearing them here keeps run.json's reason true of the
+            # status beside it, rather than describing a stop this session did
+            # not finish making.
+            self.session.meta.pop("failure_reason", None)
+            self.session.meta.pop("failed_validation_reason", None)
         if self.checker_enabled:
             self.session.meta["checker_diagnostics"] = (
                 self._checker_diagnostics())
@@ -3358,42 +3896,86 @@ class Orchestrator:
             surrender_detail = self.extraction_record.abandon_reason
             if surrender_detail:
                 self.session.meta["failed_validation_reason"] = surrender_detail
+        # The sentence behind an `error` status, put where a reader of the run
+        # record finds it: in run.json beside the status, and in the run-log
+        # entry in place of the bare status word it used to carry. "error" on
+        # its own names a category, not what went wrong, and the run log is
+        # read by consumers that never open the session.
+        if self._error_message:
+            self.session.meta["error_message"] = self._error_message
         validated = status in VALIDATED_STATUSES
         if validated:
             validation_errors = []
         elif surrender_detail:
             validation_errors = [f"{status}: {surrender_detail}"]
+        elif self._error_message:
+            validation_errors = [f"{status}: {self._error_message}"]
         else:
             validation_errors = [status]
         self.session.finalise(status)
-        # The per-field history, derived from the event log once the terminate
-        # event is in it, so the finished session's copy covers the whole run.
-        # It is a convenience shape over tool_calls.jsonl and never a second
-        # source of truth: a regeneration from the log produces these bytes
-        # back. Written at every diagnostics level, because the log it is
-        # derived from is kept at every level.
-        self.session.write_field_history()
-        append_session_entry(
-            self.session,
-            log_dir=self.out_dir,
-            input_tokens=self._input_tokens,
-            output_tokens=self._output_tokens,
-            cache_creation_tokens=self._cache_creation_tokens,
-            cache_read_tokens=self._cache_read_tokens,
-            cost_usd=self.recorded_cost(),
-            cost_rates=self._cost_rates_record(),
-            usage_by_role=self._usage_by_role_record(),
-            validation_passed=validated,
-            validation_errors=validation_errors,
-        )
-        # The readable transcript, rendered from the finished files above and
-        # written LAST so nothing it describes can still move — which is what
-        # makes this copy byte-identical to a later `meltiro transcript` over
-        # the same session. Written at every diagnostics level. Placed after
-        # the run-log append so a rendering fault costs a paid run its
-        # document and nothing else.
-        self.session.write_transcript()
+        # Latched the moment the status is on disk, before the ledger append
+        # below can raise: from here on this session HAS a terminal status, and
+        # a re-entry must answer with it rather than write another.
+        self._terminal_status = status
+        try:
+            append_session_entry(
+                self.session,
+                log_dir=self.out_dir,
+                input_tokens=self._input_tokens,
+                output_tokens=self._output_tokens,
+                cache_creation_tokens=self._cache_creation_tokens,
+                cache_read_tokens=self._cache_read_tokens,
+                cost_usd=self.recorded_cost(),
+                cost_rates=self._cost_rates_record(),
+                usage_by_role=self._usage_by_role_record(),
+                validation_passed=validated,
+                validation_errors=validation_errors,
+            )
+        except Exception as e:
+            self._report_unwritten_run_log(e)
         return status
+
+    def _report_unwritten_run_log(self, exc):
+        """Record that this run finished with no line in the cross-session
+        ledger: one stderr line, a `meta.warnings` sentence, and the flag
+        `run_log_entry_written: false` in run.json.
+
+        The ledger is written under `--out`, which the session is not: a full
+        disk, a lock, a permission on the run root alone are all faults that
+        reach the append and nothing else. The run itself is over and its own
+        record is complete, so the fault is reported rather than raised — but
+        it cannot be swallowed either, because a consumer summing run_log.json
+        into a bill would otherwise be short this run's spend with nothing
+        anywhere saying so. The flag is what makes that legible without reading
+        prose: absent means the entry was written, and the ledger is the whole
+        story; `false` means this session is missing from it.
+
+        Each of the three reports is guarded, and guarded separately, for the
+        reason `_render_artefacts` guards its warning: the fault that closed
+        the ledger can have taken meta or stderr with it, a raise here would
+        carry that fault out of `_finalise` in place of the status, and one
+        report being unavailable says nothing about the other two.
+        """
+        message = (
+            f"run-log entry could not be written: {type(exc).__name__}: "
+            f"{exc}. The run's own record is complete — run.json carries the "
+            f"status and this session's spend — but {self.out_dir}/"
+            f"run_log.json has no line for session "
+            f"{self.session.session_dir}, so any total summed from the run "
+            f"log alone is short by this run.")
+        try:
+            print(f"WARNING: {message}", file=sys.stderr)
+        except Exception:
+            pass
+        try:
+            self.session.meta["run_log_entry_written"] = False
+            self.session.write_meta()
+        except Exception:
+            pass
+        try:
+            self.session.add_warning(message)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

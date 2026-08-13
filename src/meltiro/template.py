@@ -424,6 +424,26 @@ def _parse_field(f, *, envelope, section_name):
     line that leaves the field on its default. Errors loudly on any malformed
     input.
     """
+    # `variable:` is read before anything else and is what every message below
+    # names the field by, so its absence is answered here rather than as a
+    # KeyError out of the first read. The section and the keys the mapping DOES
+    # declare are both in the message, because that is what locates the field
+    # in a template of several hundred lines and what makes a near-miss
+    # spelling (`varible:`) visible as the cause.
+    if not isinstance(f, dict):
+        raise ValueError(
+            f"Section {section_name!r}: every entry under `fields:` must be a "
+            f"mapping declaring at least `variable:` and one of `type:` / "
+            f"`options:`, got {type(f).__name__} ({f!r})."
+        )
+    if "variable" not in f:
+        raise ValueError(
+            f"Section {section_name!r}: a field declares no `variable:`. The "
+            f"mapping declares {sorted(f)}. `variable:` is the field's stable "
+            f"identifier — it names the field in every tool schema, every "
+            f"stored value and every error — so a field without one cannot be "
+            f"loaded. Add it, or fix its spelling."
+        )
     var = f["variable"]
     # `notes` is the reserved scope-note key: it sits inside the study block
     # and inside every record object, alongside `record_id`, holding that
@@ -641,13 +661,39 @@ def _parse_sections(sections, *, envelope):
     about a whole study or record goes in that scope's reserved `notes` key.
 
     Returns list of section dicts, each with keys: section, label, qa,
-    extraction_instruction, fields. Each field dict has: variable, label,
-    description, extraction_instruction, field_type, options, allow_other,
-    evidence, role, required, canonical_reference.
+    extraction_instruction, fields. Each field dict carries all twelve of
+    variable, label, description, extraction_instruction, field_type, options,
+    allow_other, evidence, role, required, canonical_reference,
+    soft_canonicalisation — every key always present, defaulted to None or
+    False where the template declared nothing, so a reader indexes rather than
+    guards. See `load_template` for what each means.
     """
     parsed = []
     seen_variables = set()
+    if not isinstance(sections, list):
+        raise ValueError(
+            f"a field block must be a list of sections, got "
+            f"{type(sections).__name__}. Each section is a mapping with a "
+            f"`section:` title and a `fields:` list."
+        )
     for section in sections:
+        # `section:` is the title every message about this section names it
+        # by, so its absence is answered here rather than as a KeyError out of
+        # the first read. The keys the mapping DOES declare are in the message,
+        # which is what makes a misspelt title key visible as the cause.
+        if not isinstance(section, dict):
+            raise ValueError(
+                f"every entry in a field block must be a section mapping with "
+                f"a `section:` title and a `fields:` list, got "
+                f"{type(section).__name__} ({section!r})."
+            )
+        if "section" not in section:
+            raise ValueError(
+                f"a section declares no `section:` title. The mapping "
+                f"declares {sorted(section)}, and `section:` is required: it "
+                f"is how the section is named in the rendered template and in "
+                f"every load error about the fields inside it."
+            )
         section_name = section["section"]
         unknown = sorted(set(section) - _SECTION_KEYS)
         if unknown:
@@ -1052,7 +1098,13 @@ def load_template(template_path):
     meltiro.render_template and nothing else), extraction_instruction,
     fields (list).
 
-    Each field dict has:
+    Each field dict has all twelve of the keys below, ALWAYS PRESENT: a key
+    the template did not declare is defaulted (to None, or to False for the
+    two flags) rather than left out, so a reader indexes the shape instead of
+    guarding every access. `variable` and `description` are the two the
+    template must supply; a field declaring no `variable` is a load error
+    naming its section (see `_parse_field`).
+
       - variable: stable identifier
       - label: human-facing name for presentation surfaces (workbook-style
         UIs, reports, tables). Defaults to the variable with underscores
@@ -1071,6 +1123,11 @@ def load_template(template_path):
       - required: bool; when True the field must be non-null (envelope
         blocks) or present-and-non-null (bare check blocks) before
         mark_complete is accepted. Enforced generically by the dispatcher.
+      - canonical_reference: the name of a reference list under the config
+        bundle's `reference/`, or None. When set, the value must resolve to an
+        exact entry name in that list (or to one of its aliases, which is
+        stored canonicalised); `load_config_bundle` refuses a template naming
+        a list the bundle does not provide.
       - soft_canonicalisation: bool; a CONSUMER-FACING declaration, inert in
         the engine. When True it tells UI and analysis consumers to
         auto-suggest and collapse this field's values against values entered

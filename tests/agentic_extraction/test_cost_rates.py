@@ -149,7 +149,11 @@ class TestParsingTheBlock:
         assert card.as_of is None
         assert card.table_version is None
         assert card.as_record() == dict(
-            _BLOCK, source="operator", as_of=None, table_version=None)
+            _BLOCK, source="operator", as_of=None, table_version=None,
+            # The optional 1-hour cache-write rate, null because this card
+            # states none — recorded rather than omitted, on the same terms as
+            # the two nulls above.
+            cache_write_1h_per_1m=None)
 
     def test_zero_is_a_rate_and_not_an_absence(self):
         card = parse_rates({"rates": {
@@ -801,6 +805,9 @@ class TestDerivedViews:
         orch._accumulate_usage(_routed_response(0.0123), ROUTED_EXTRACTOR,
                                "extractor")
         orch._finalise("complete")
+        # The transcript is phase (b) of stopping, rendered outside run()'s
+        # try (see Orchestrator.run), so finalising by hand renders by hand.
+        orch._render_artefacts()
         text = (orch.session.session_dir / "diagnostics"
                 / "transcript.md").read_text()
         assert (f"| extractor | `{ROUTED_EXTRACTOR}` | *(per call)* | "
@@ -828,6 +835,7 @@ class TestDerivedViews:
         orch.prepare_new_session()
         orch._accumulate_usage(_usage(), EXTRACTOR, "extractor")
         orch._pause("tool_cap_hit")
+        orch._render_artefacts()
         text = (orch.session.session_dir / "diagnostics"
                 / "transcript.md").read_text()
         assert "| review | *(no calls)* | 0 | 0 | 0 | 0 |" in text

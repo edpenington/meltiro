@@ -53,12 +53,17 @@ def build_entry(session, *, input_tokens=0, output_tokens=0,
             floor as a floor rather than as a total.
         validation_passed: whether the run reached the status whose extraction
             is the canonical, usable answer (`status in VALIDATED_STATUSES`).
-            A record of HOW THE RUN ENDED, not a fresh verdict on the shipped
-            bytes: nothing re-validates the output at finalisation. Read
-            `meta.warnings` for what the run stands behind it despite (in
-            particular `required-fields-null`); for an independent verdict
-            run `validators.validate_extraction_output` plus
-            `validators.missing_required_fields` over the shipped file.
+            A record of HOW THE RUN ENDED rather than a verdict on the shipped
+            bytes: no field VALUE is re-validated at finalisation, so a status
+            of `complete` says the loop reached completion, not that every
+            value would pass `validators.validate_extraction_output` today.
+            One check IS re-run over the shipped output —
+            `validators.missing_required_fields`, which is what raises the
+            `required-fields-null` warning
+            (`Orchestrator._check_shipped_required_fields`) — so read
+            `meta.warnings` for what the run stands behind its answer despite.
+            For an independent verdict on the values, run
+            `validators.validate_extraction_output` over the shipped file.
         validation_errors: list of string error summaries to include in
             the log entry.
     """

@@ -74,11 +74,18 @@ def _extractor_header(study_id):
     )
 
 
+# The nudge a tool-free extractor turn is answered with. It names
+# `record_initial_check` FIRST, because that is the first move the workflow
+# demands and the one the dispatcher gates everything else behind: a model
+# re-prompted toward `update_study` before the initial check has landed is
+# being pointed at a call that will be refused, and the turn after it is
+# another tool-free turn against the same bound.
 EXTRACTOR_TOOL_REPROMPT = (
-    "You must call a tool to make progress. Use "
-    "update_study / add_record to extract, or "
-    "mark_complete when you believe the extraction output "
-    "is done."
+    "You must call a tool to make progress. If you have not yet called "
+    "record_initial_check, call it now: the dispatcher refuses every "
+    "extraction call until it lands. Otherwise use update_study / add_record "
+    "to extract, or mark_complete when you believe the extraction output is "
+    "done."
 )
 
 # The reviewer's own tool re-prompt, sent when a review turn returns text

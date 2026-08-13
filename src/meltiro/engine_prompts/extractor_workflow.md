@@ -12,11 +12,11 @@ The extraction record is built incrementally through tool calls. Field-level gui
 
    Be exact about what the checker lacks, because a challenge overruled on a false premise costs more than one wrongly honoured. A cell quoted out of a table in the paper text pulls in the lines above it back to the top of that table, so the table's header row travels with the quote however far above the cell it sits, and a cell cited as `<img>` arrives as the whole cropped table with its headings. What the checker genuinely lacks is the rest of the paper: the sentence three paragraphs earlier that defined the sample, the other fields that make a reading coherent, and any reasoning never written into this field's `notes`. That is the ground on which the extractor can be right and the checker wrong. Change a value only where the evidence genuinely does not support it: weakening a properly evidenced value to make a challenge go away damages the extraction.
 
-   Each field is checked at most {max_checks_per_field} times in total across the whole run, counting the check it gets when it is first written. Once a field's checks are used up it is never checked again, however many times it is revised.
+   This run allows each field at most {max_checks_per_field} check(s) in total, counting the check it gets when it is first written; a budget of 0 means no field is checked at all and no challenge can arrive. Once a field's checks are used up it is never checked again, however many times it is revised.
 
 6. **Mark complete, with the quality check.** When the record is complete and every non-null field is justified by evidence, call `mark_complete`. It takes a required `quality_check` argument: the extractor's own reflection on how the extraction went, in the same bare-value shape as the initial check. A successful call ends the extractor's work immediately, and a field still carrying a challenge at that moment ships exactly as it stands.
 
-7. **Final review.** A separate reviewer is then given the assembled extraction record with fresh context and asked to confirm or revise it. The extractor's involvement ends at `mark_complete`.
+7. **Final review, where the run has one.** A run may hand the assembled extraction record to a separate reviewer with fresh context, to confirm or revise. Whether it does or not, the extractor's involvement ends at `mark_complete`: nothing comes back.
 
 The extractor works within a finite tool-call budget. It is ample for a thorough extraction but not unlimited, so make each call purposeful rather than exploratory. No part of it is held back for work after `mark_complete`, because there is no work after `mark_complete`.
 

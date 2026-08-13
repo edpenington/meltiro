@@ -73,12 +73,13 @@ REVIEW_OUTCOMES = {
     "error": ("error", None),
 }
 
-# `_extractor_loop`'s outcome set, likewise. Unlike the review loop it reports
-# no infrastructure failure of its own: a per-turn provider failure propagates
-# as an exception and run()'s catch-all finalises `error`, so there is no
-# `return "error"` to map. The mapping and the loop therefore cover the same
-# five strings exactly, which is what the pinning test below asserts against
-# the source.
+# `_extractor_loop`'s outcome set, likewise. A per-turn provider FAILURE is
+# still not among them: it propagates as an exception and run()'s catch-all
+# finalises `error`, so there is no `return "error"` to map. A model REFUSAL is
+# different — the call succeeded and its answer was a refusal — and it is a
+# returned outcome, mapped to `error` because nothing about the extraction was
+# judged. The mapping and the loop cover the same six strings exactly, which is
+# what the pinning test below asserts against the source.
 EXTRACTOR_OUTCOMES = {
     "mark_complete_validated": ("complete", None),
     # The one bound that PAUSES rather than terminates.
@@ -86,6 +87,9 @@ EXTRACTOR_OUTCOMES = {
     "text_only_stall": ("failed_validation", "text_only_stall"),
     "extractor_stalled": ("failed_validation", "stalled"),
     "extractor_abandoned": ("failed_validation", "surrendered"),
+    # A refused request, not an invalid extraction: no failure_reason, because
+    # `failure_reason` says how a failed_validation run failed.
+    "extractor_refused": ("error", None),
 }
 
 # Outcome strings no mapping knows. Each models a real way the vocabulary

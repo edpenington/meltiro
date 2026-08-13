@@ -331,8 +331,10 @@ class Instrument:
     # ----------------------------------------------------------------------
 
     def fingerprint(self, *, tool_hash, checker_context_chars):
-        """`instrument_fp`: this instrument's identity, model-free and
-        engine-free — the axis a model comparison holds fixed.
+        """`instrument_fp`: this instrument's identity, MODEL-FREE — the axis a
+        model comparison holds fixed. Not engine-free: `tool_hash` carries the
+        engine's own tool descriptions (see
+        `fingerprint.instrument_fingerprint`).
 
         Folds the prompt bundle's content hash, the template, the tool
         catalogues, the pipeline structure, the reference lists, and the two

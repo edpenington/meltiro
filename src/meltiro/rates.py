@@ -37,9 +37,27 @@ ROLE_KEYS = ("extractor", "checker", "review")
 
 # One role's rate block. Each key is USD per MILLION tokens of the counter it
 # names, the unit every provider publishes its prices in, so an operator
-# transcribes a price list rather than converting one.
+# transcribes a price list rather than converting one. All four are required
+# together (see `Rates`).
 RATE_KEYS = ("input_per_1m", "output_per_1m",
              "cache_read_per_1m", "cache_write_per_1m")
+
+# The one OPTIONAL rate, and the reason it is optional rather than a fifth
+# required key: a cache entry is written at one of two time-to-live tiers and
+# billed differently for each, and this engine asks for neither of them
+# explicitly — every `cache_control` it writes is the plain `ephemeral` marker,
+# which is the 5-minute tier (`meltiro.prompt_builder`). So a run costed by
+# `cache_write_per_1m` alone is correctly costed, and a card that omits this
+# key is complete for the traffic this engine produces.
+#
+# It exists because a PROVIDER may still report 1-hour writes — a response
+# carrying `cache_creation_1h_input_tokens` — and those tokens bill at a
+# different multiple of the base input rate. Costing them at the 5-minute rate
+# would understate the charge by nearly two fifths, silently. Without a rate
+# for them the costing raises instead (direktoro's `cost_from_rates` refuses a
+# counter it was handed tokens but no rate for), so the gap is loud rather than
+# absorbed.
+OPTIONAL_RATE_KEYS = ("cache_write_1h_per_1m",)
 
 # pipeline.yaml key -> the token counter direktoro's `cost_from_rates` keys its
 # rate mapping by. The translation lives here alone, so the name an operator
@@ -51,6 +69,7 @@ _COUNTER = {
     "output_per_1m": "output",
     "cache_read_per_1m": "cache_read",
     "cache_write_per_1m": "cache_write",
+    "cache_write_1h_per_1m": "cache_write_1h",
 }
 
 # The shape of a valid block, spelled out once so every refusal below describes
@@ -87,6 +106,12 @@ class Rates:
     source: str = "operator"
     as_of: str = None
     table_version: int = None
+    # Appended at the END, after the provenance fields rather than beside the
+    # rate it belongs with, because this record is constructed positionally in
+    # places: a field inserted in the middle would rebind every argument after
+    # it silently, putting a provenance string where a rate goes. None means
+    # the card states no 1-hour write rate, which is every card today.
+    cache_write_1h_per_1m: float = None
 
     @classmethod
     def from_table(cls, entry, table_version):
@@ -96,33 +121,53 @@ class Rates:
         translates them into the key names an operator writes, so a card has one
         shape whichever source produced it and the translation stays in one
         place.
+
+        A table entry carries the 5-minute write rate and no 1-hour one (see
+        `PriceEntry.as_rates`), so `cache_write_1h_per_1m` stays None on a table
+        card: only the counters the entry states are read, and a rate the table
+        does not publish is not invented from one it does.
         """
         rates = entry.as_rates()
         return cls(
             source="table", as_of=entry.as_of, table_version=table_version,
             **{key: float(rates[counter])
-               for key, counter in _COUNTER.items()},
+               for key, counter in _COUNTER.items() if counter in rates},
         )
 
     def as_record(self):
         """The rate card in the shape it is written into a run's artefacts.
 
-        The four rates under the same key names an operator writes in
+        The rates under the same key names an operator writes in
         `pipeline.yaml`, so the block in the record and the block in the bundle
         are read the same way and can be compared by eye, followed by the
         provenance that says where they came from. Every key is always present:
-        `as_of` and `table_version` are written as null on an operator card
-        rather than left out, so a reader never has to tell "no date" apart
-        from "no key". Recorded next to every cost figure derived from it.
+        `as_of`, `table_version` and `cache_write_1h_per_1m` are written as null
+        rather than left out, so a reader never has to tell "no rate" apart from
+        "no key". Recorded next to every cost figure derived from it.
         """
-        record = {key: getattr(self, key) for key in RATE_KEYS}
+        record = {key: getattr(self, key)
+                  for key in (*RATE_KEYS, *OPTIONAL_RATE_KEYS)}
         record["source"] = self.source
         record["as_of"] = self.as_of
         record["table_version"] = self.table_version
         return record
 
+    def _rate_mapping(self):
+        """This card as the counter-keyed mapping `cost_from_rates` takes.
+
+        A rate the card does not state is OMITTED rather than passed as None or
+        as zero. That is what makes the refusal work: `cost_from_rates` raises
+        for a counter it was handed tokens but no rate for, and passing a zero
+        would price those tokens at nothing instead — the under-reporting the
+        whole arrangement exists to prevent.
+        """
+        return {_COUNTER[key]: getattr(self, key)
+                for key in (*RATE_KEYS, *OPTIONAL_RATE_KEYS)
+                if getattr(self, key) is not None}
+
     def cost_of_call(self, *, input_tokens=0, output_tokens=0,
-                     cache_read_tokens=0, cache_write_tokens=0):
+                     cache_read_tokens=0, cache_write_tokens=0,
+                     cache_write_1h_tokens=0):
         """The USD cost of one call's token counters under this rate card.
 
         direktoro owns the arithmetic (and refuses a non-zero counter it has no
@@ -130,15 +175,61 @@ class Rates:
         holds only the translation from the operator's key names to its own.
         Imported lazily, like every other direktoro use below the CLI, so
         `import meltiro` never needs the provider layer.
+
+        CACHE WRITES ARE TWO COUNTERS because they are two prices.
+        `cache_write_tokens` is the 5-minute tier, `cache_write_1h_tokens` the
+        1-hour one, and a caller that folded them together would price whichever
+        tier its rate was not read for at the wrong multiple. A run of this
+        engine writes only 5-minute entries, so the second is normally zero;
+        when a provider reports otherwise, a card with no 1-hour rate raises
+        here rather than costing those tokens at nothing.
         """
         from direktoro import cost_from_rates
         return cost_from_rates(
-            rates={_COUNTER[key]: getattr(self, key) for key in RATE_KEYS},
+            rates=self._rate_mapping(),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
+            cache_write_1h_tokens=cache_write_1h_tokens,
         )
+
+
+def cache_write_split(usage):
+    """One response's cache writes as `(five_minute_tokens, one_hour_tokens)`.
+
+    A `NormalisedUsage` carries three numbers: the two per-TTL counters and
+    their unsplit total. When the provider reports the split they agree, and
+    this returns it. When it reports only the total — an Anthropic response
+    whose `usage.cache_creation` object is absent — the two counters are zero
+    and the total is the only figure there is.
+
+    That remainder is attributed to the 5-MINUTE tier, and it is a reading
+    rather than a guess: this engine writes only the plain `ephemeral`
+    cache_control marker, which IS the 5-minute tier (see
+    `meltiro.prompt_builder`), and asks for a 1-hour entry nowhere. direktoro
+    refuses the same remainder in `cost_from_usage` precisely because IT cannot
+    know which tier was asked for; the caller that asked can, and this is that
+    caller.
+
+    A counter that is absent or is not a whole number reads as zero, so a
+    usage record synthesised by a consumer — or by a test — that carries only
+    the fields it cares about is treated as one reporting no split rather than
+    raising. Nothing is lost by that: an unread split leaves its tokens in the
+    unattributed remainder, and the remainder is priced, so the total is
+    covered either way.
+    """
+    def count(field):
+        value = getattr(usage, field, 0)
+        return value if isinstance(value, int) and not isinstance(
+            value, bool) else 0
+
+    five_minute = count("cache_creation_5m_input_tokens")
+    one_hour = count("cache_creation_1h_input_tokens")
+    unattributed = count("cache_creation_input_tokens") - five_minute - one_hour
+    if unattributed > 0:
+        five_minute += unattributed
+    return five_minute, one_hour
 
 
 def cost_with_coverage(cost, figure, missing):
@@ -241,17 +332,19 @@ def _parse_role_card(role, block, problems):
     than one per attempted run.
     """
     listed = ", ".join(RATE_KEYS)
+    accepted = (*RATE_KEYS, *OPTIONAL_RATE_KEYS)
     if not isinstance(block, dict):
         problems.append(
             f"{role}: must be a mapping of {listed}, got "
             f"{type(block).__name__}")
         return None
     before = len(problems)
-    unknown = sorted(k for k in block if k not in RATE_KEYS)
+    unknown = sorted(k for k in block if k not in accepted)
     if unknown:
         problems.append(
             f"{role}: unknown key(s) {', '.join(repr(k) for k in unknown)}; a "
-            f"role's card takes exactly {listed}")
+            f"role's card takes {listed}, optionally with "
+            f"{', '.join(OPTIONAL_RATE_KEYS)}")
     missing = [k for k in RATE_KEYS if block.get(k) is None]
     if missing:
         problems.append(
@@ -259,10 +352,15 @@ def _parse_role_card(role, block, problems):
             f"required together (a model with no prompt-cache tier takes 0.0 "
             f"for the cache rates), so a recorded cost is never complete only "
             f"by accident")
-    for key in RATE_KEYS:
+    # The optional rate is held to the same value rules as the required four —
+    # a rate is a rate — and only its ABSENCE is allowed. Absent means the card
+    # states no 1-hour write rate, and a call that reports 1-hour writes then
+    # raises at costing time rather than being priced at the 5-minute rate or
+    # at nothing.
+    for key in accepted:
         value = block.get(key)
         if value is None:
-            continue  # already reported as missing
+            continue  # required: already reported as missing; optional: unset
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             problems.append(
                 f"{role}: {key} must be a number (USD per million tokens), "
@@ -272,4 +370,5 @@ def _parse_role_card(role, block, problems):
                 f"{role}: {key} must be zero or positive, got {value!r}")
     if len(problems) > before:
         return None
-    return Rates(**{key: float(block[key]) for key in RATE_KEYS})
+    return Rates(**{key: float(block[key]) for key in accepted
+                    if block.get(key) is not None})

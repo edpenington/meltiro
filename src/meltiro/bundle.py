@@ -20,12 +20,20 @@ minimal and human-authorable:
   - summary         (optional, str; if present must be non-empty)
 Any unknown key, or any wrong type, is an error.
 
-`summary` is the Checker's identity context for study-level fields (the
-Checker never reads the paper). For a published paper paste a trusted
+`summary` is the CHECKER's identity context for study-level fields (the
+checker never reads the paper). For a published paper paste a trusted
 abstract; for grey literature paste an executive summary or a couple of
 hand-written sentences. When absent, the pipeline falls back to the
-extracted `role: summary` field (see template.py); if neither exists the
-run fails loudly at startup.
+extracted `role: summary` field (see template.py); when neither exists it
+DEGRADES rather than failing — the checker is given the manifest's title and
+DOI as minimal identity context, which says which paper this is but not what
+it found, and the run records an `identity-degradation` warning saying so
+(`Orchestrator._degraded_identity_context`).
+
+Nothing here is consulted at all on a run with no checker
+(`max_checks_per_field: 0`): the identity context exists to be sent to the
+checker, so a bundle with no summary and no populated summary field runs
+clean under that configuration.
 
 Each `figures/*.png` file's stem is its label; this matches how the
 extractor cites image evidence as `<img>label</img>` (the filename stem

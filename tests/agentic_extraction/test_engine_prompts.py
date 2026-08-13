@@ -599,7 +599,7 @@ class TestAValueInterpolatedIntoEngineText:
             [], system_prompt_path=bundle.extractor_system_path,
             reference_lists=bundle.reference_lists,
             max_checks_per_field=3)
-        assert "at most 3 times" in rendered
+        assert "at most 3 check(s)" in rendered
 
     def test_prompt_hash_holds_and_config_fp_moves(self, config_dir):
         bundle = load_config_bundle(config_dir)

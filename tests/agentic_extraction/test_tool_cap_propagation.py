@@ -14,11 +14,12 @@ from meltiro.orchestrator import Orchestrator
 
 
 def test_run_routes_the_loop_stop_before_the_review():
-    """Inspect Orchestrator.run source: the extractor outcome is routed through
-    `_finalise_loop_stop` (which handles the cap-hit pause, surrender, and
-    stall), and that routing happens BEFORE the final-review branch, so a run
-    left mid-extraction is never reviewed."""
-    src = inspect.getsource(Orchestrator.run)
+    """Inspect the source of `_run_to_stop` (run()'s body, split out so the
+    derived documents render outside its try): the extractor outcome is routed
+    through `_finalise_loop_stop` (which handles the cap-hit pause, surrender,
+    and stall), and that routing happens BEFORE the final-review branch, so a
+    run left mid-extraction is never reviewed."""
+    src = inspect.getsource(Orchestrator._run_to_stop)
     assert "self._finalise_loop_stop(extractor_status)" in src
     stop_idx = src.find("self._finalise_loop_stop(extractor_status)")
     review_idx = src.find("if self.final_review:")

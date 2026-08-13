@@ -38,7 +38,6 @@ import dataclasses
 import shutil
 
 import pytest
-import yaml
 
 from meltiro.config_bundle import ConfigBundle, load_config_bundle
 from meltiro.errors import ConfigBundleError
@@ -218,14 +217,14 @@ class TestDuplicateKeys:
 
     def test_duplicate_pipeline_key_rejected_naming_it(self, good_config):
         # The shipped pipeline.yaml already sets max_checks_per_field; a second
-        # entry must not silently win. pipeline.yaml has no YAMLError wrapping,
-        # so the parser's own error (a yaml.YAMLError) propagates, as it does
-        # for any other malformed pipeline.yaml.
+        # entry must not silently win. It arrives as a ConfigBundleError, the
+        # one type this loader raises, carrying the parser's own diagnostic —
+        # the duplicated key and both line numbers — inside it.
         pipeline = good_config / "pipeline.yaml"
         pipeline.write_text(
             pipeline.read_text(encoding="utf-8") + "\nmax_checks_per_field: 0\n",
             encoding="utf-8")
-        with pytest.raises(yaml.YAMLError) as excinfo:
+        with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(good_config)
         msg = str(excinfo.value)
         assert "found duplicate key" in msg
@@ -568,3 +567,64 @@ class TestCheckerUserPlaceholderAllowlist:
             for name in _PLACEHOLDER_TOKEN.findall(line)
         }
         assert substituted == set(_CHECKER_USER_PLACEHOLDERS)
+
+
+class TestTheLoaderRaisesOneErrorType:
+    """`load_config_bundle` raises `ConfigBundleError` and nothing else.
+
+    That is the whole contract every caller is written against: the CLI
+    catches exactly that type, prints its message, and exits 1. A defect the
+    loader let through as some other exception reached an operator as a
+    traceback — the opposite of a bundle that "fails whole" — so the template
+    loader's own errors and pyyaml's are carried inside the contract rather
+    than escaping around it.
+    """
+
+    def test_an_unknown_template_field_key_is_a_bundle_error(
+            self, good_config):
+        tmpl = good_config / "extraction_template.yaml"
+        text = tmpl.read_text(encoding="utf-8")
+        text = text.replace("      required: true",
+                            "      requred: true", 1)
+        tmpl.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(good_config)
+        # The template loader's own message, carried through intact.
+        assert "requred" in str(excinfo.value)
+
+    def test_a_misspelt_variable_key_names_the_section_and_the_mapping(
+            self, good_config):
+        # `varible:` used to reach a bare `f["variable"]` KeyError, which named
+        # neither the field nor the file it was in.
+        tmpl = good_config / "extraction_template.yaml"
+        text = tmpl.read_text(encoding="utf-8")
+        text = text.replace("    - variable:", "    - varible:", 1)
+        tmpl.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(good_config)
+        message = str(excinfo.value)
+        assert "`variable:`" in message
+        # The keys the mapping DOES declare, which is what points at the typo.
+        assert "varible" in message
+
+    def test_a_broken_template_yaml_is_a_bundle_error_with_the_line(
+            self, good_config):
+        tmpl = good_config / "extraction_template.yaml"
+        tmpl.write_text("records:\n  widget:\n   - [unclosed\n",
+                        encoding="utf-8")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(good_config)
+        message = str(excinfo.value)
+        assert "extraction_template.yaml" in message
+        # pyyaml's file/line/column line, which is the useful half.
+        assert "line" in message and "column" in message
+
+    def test_a_broken_pipeline_yaml_is_a_bundle_error_with_the_line(
+            self, good_config):
+        (good_config / "pipeline.yaml").write_text(
+            "extractor_model: [unclosed\n", encoding="utf-8")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(good_config)
+        message = str(excinfo.value)
+        assert "pipeline.yaml" in message
+        assert "line" in message and "column" in message

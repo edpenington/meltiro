@@ -46,6 +46,7 @@ Examples:
 
 import argparse
 import json
+import os
 import sys
 import textwrap
 from datetime import date
@@ -59,8 +60,8 @@ from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, DIAGNOSTICS_LEVELS
 from direktoro import (
-    is_known_model, known_models, model_info, resolved_decoding_params,
-    split_decoding_config)
+    is_known_model, is_retired, known_models, model_info,
+    resolved_decoding_params, split_decoding_config)
 from meltiro.errors import (
     AgenticExtractionError, BundleError, ConfigBundleError, RatesConfigError,
     ResumeRefused, SessionError)
@@ -338,6 +339,68 @@ def _required_max_tokens(loop_cfg, key):
     return value
 
 
+def _strict_int(loop_cfg, key, default):
+    """pipeline.yaml's `key` as an integer, or exit 1 rather than coerce it.
+
+    The sibling of `_required_max_tokens` above, for the bounds that DO have a
+    default: the tool-call caps, the per-field check budget, the checker's
+    parallelism. Each is an operational number the run enforces and then
+    records in `run.json`, so a `"50"`, a `50.0` or a `true` that `int()`
+    swallowed would sit in the artefact indistinguishable from a number the
+    operator wrote, and a bound nobody chose would be enforced under their
+    name. The RANGE is each caller's own business — a check budget legitimately
+    accepts 0 where a cap does not — so this settles the type and leaves the
+    domain to the guard beside the call.
+    """
+    value = loop_cfg.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        print(
+            f"{key} must be an integer, got {value!r}. It is an operational "
+            f"bound this run enforces and records in run.json, so a decimal, "
+            f"a quoted number or a true/false is not one: coercing it would "
+            f"put a number nobody wrote into the run record looking exactly "
+            f"like one the operator chose. Fix pipeline.yaml.",
+            file=sys.stderr)
+        raise SystemExit(1)
+    return value
+
+
+def _warn_ignored_stage_settings(loop_cfg, *, checker_enabled, final_review):
+    """Name, once, every pipeline.yaml key written for a stage this run has
+    switched off.
+
+    A `review_model:` under `final_review: false`, a `checker_max_tokens:`
+    under `max_checks_per_field: 0` — each reads like a setting in force and
+    is not. Not an error: turning a stage off without deleting its settings is
+    how an operator toggles a stage between runs, and refusing the bundle
+    would make that a two-file edit. But silence lets an operator believe the
+    reviewer is configured when the reviewer is not running, so the keys are
+    named on stderr.
+
+    One line, listing the keys, because they share a single cause: the stage
+    is off.
+    """
+    for stage, enabled, keys in (
+        ("the checker (max_checks_per_field: 0)", checker_enabled,
+         ("checker_model", "checker_max_tokens", "checker_decoding",
+          "checker_concurrency", "checker_context_chars")),
+        ("the final reviewer (final_review: false)", final_review,
+         ("review_model", "review_max_tokens", "review_decoding",
+          "max_review_tool_calls")),
+    ):
+        if enabled:
+            continue
+        written = [k for k in keys if loop_cfg.get(k) is not None]
+        if not written:
+            continue
+        print(
+            f"WARNING: ignored-stage-settings: pipeline.yaml sets "
+            f"{', '.join(written)}, but {stage} is off for this run, so none "
+            f"of them is read. Nothing is sent, nothing is priced, and none "
+            f"of these values reaches a fingerprint.",
+            file=sys.stderr)
+
+
 def _resolve_role_rates(enabled_roles, operator_cards, *, today):
     """Each enabled role's rate card, and the startup line that says why.
 
@@ -407,8 +470,8 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     if args.max_tool_calls is not None:
         max_tool_calls = args.max_tool_calls
     else:
-        max_tool_calls = int(loop_cfg.get(
-            "max_tool_calls", DEFAULT_MAX_TOOL_CALLS))
+        max_tool_calls = _strict_int(
+            loop_cfg, "max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
     # Same positive-integer rule as the reviewer's budget below. A cap of
     # zero or less is not a smaller budget: the run pauses at once having
     # done nothing, and `--resume` reaches the same bound again.
@@ -423,8 +486,8 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     if args.max_checks_per_field is not None:
         max_checks_per_field = args.max_checks_per_field
     else:
-        max_checks_per_field = int(loop_cfg.get(
-            "max_checks_per_field", DEFAULT_MAX_CHECKS_PER_FIELD))
+        max_checks_per_field = _strict_int(
+            loop_cfg, "max_checks_per_field", DEFAULT_MAX_CHECKS_PER_FIELD)
     if max_checks_per_field < 0:
         print(
             f"max_checks_per_field must be zero or a positive integer, got "
@@ -438,8 +501,8 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     # could never even call mark_complete, so every run would terminate on
     # the bound with the review stage nominally on: a config error, failed at
     # startup rather than after the extractor has fully spent.
-    max_review_tool_calls = int(loop_cfg.get(
-        "max_review_tool_calls", DEFAULT_MAX_REVIEW_TOOL_CALLS))
+    max_review_tool_calls = _strict_int(
+        loop_cfg, "max_review_tool_calls", DEFAULT_MAX_REVIEW_TOOL_CALLS)
     if max_review_tool_calls < 1:
         print(
             f"max_review_tool_calls must be a positive integer, got "
@@ -501,10 +564,16 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
                if not is_known_model(m)]
     if unknown:
         listed = "; ".join(f"{label}={m!r}" for label, m in unknown)
+        # The STARTABLE list, not the whole registry. The registry keeps
+        # retired entries so a run that already happened still resolves, but
+        # this message is answering "what may I put in pipeline.yaml", and
+        # every retired id it offered would be accepted here and refused two
+        # lines below.
         print(
             f"unknown model(s): {listed}. Known models: "
-            f"{', '.join(known_models())}. Fix pipeline.yaml or pass a known "
-            f"--extractor-model / --checker-model / --review-model.",
+            f"{', '.join(known_models(include_retired=False))}. Fix "
+            f"pipeline.yaml or pass a known --extractor-model / "
+            f"--checker-model / --review-model.",
             file=sys.stderr)
         raise SystemExit(1)
 
@@ -514,8 +583,12 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     # (provenance calls `model_info`), and only starting a NEW run with a
     # withdrawn id is the error. Failing at config load turns a mid-run 404
     # into a clean startup failure before any spend.
-    retired = [(label, m) for label, m in required_models
-               if model_info(m).retired]
+    #
+    # Through direktoro's own `is_retired` predicate rather than by reading the
+    # flag off the record: the registry owns what "retired" means, and asking
+    # it the question keeps this gate answering the same one its `known_models(
+    # include_retired=False)` list above is built from.
+    retired = [(label, m) for label, m in required_models if is_retired(m)]
     if retired:
         listed = "; ".join(f"{label}={m!r}" for label, m in retired)
         print(
@@ -527,7 +600,21 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
             file=sys.stderr)
         raise SystemExit(1)
 
-    checker_config = CheckerConfig.from_env(model_override=checker_model)
+    # Settings for a stage this run has switched off: named, not refused (see
+    # the helper). Placed after the structure toggles are resolved and before
+    # anything reads a stage's own keys.
+    _warn_ignored_stage_settings(loop_cfg, checker_enabled=checker_enabled,
+                                 final_review=final_review)
+
+    # `from_env` reads CHECKER_CONCURRENCY and refuses a value that is not an
+    # integer, naming the VARIABLE rather than a pipeline.yaml key: the value
+    # came from the shell, and pointing an operator at the bundle for a shell
+    # setting sends them to the wrong file.
+    try:
+        checker_config = CheckerConfig.from_env(model_override=checker_model)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1)
     # How many checker calls run at once; it becomes
     # `ThreadPoolExecutor(max_workers=...)`, so 0 is not a way to turn the
     # checker off (that is `max_checks_per_field: 0`) and would abort the
@@ -537,7 +624,8 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     # in the environment fails here too. Purely operational — how fast the
     # same calls are made — so it rides into no fingerprint.
     if loop_cfg.get("checker_concurrency") is not None:
-        checker_config.concurrency = int(loop_cfg["checker_concurrency"])
+        checker_config.concurrency = _strict_int(
+            loop_cfg, "checker_concurrency", None)
     if checker_config.concurrency < 1:
         print(
             f"checker_concurrency must be a positive integer, got "
@@ -645,16 +733,18 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
     except RatesConfigError as e:
         print(str(e), file=sys.stderr)
         raise SystemExit(1)
-    # One card per enabled role, resolved here and reported on stdout so an
-    # operator sees what will price each stage before a token is spent.
+    # One card per enabled role, resolved here so a bad `rates:` block is
+    # refused with the rest of the config. The lines are CARRIED rather than
+    # printed: pre-spend refusals continue past this point — the resume gates
+    # in particular, which run after this function returns — and a rate report
+    # for calls that will never be made reads as a run about to start. The
+    # caller prints them at the last moment before `run()` (see `_announce`).
     rates, pricing_report = _resolve_role_rates(
         enabled_roles, operator_cards, today=date.today())
-    for line in pricing_report:
-        print(line)
 
     extractor_sampling, extractor_thinking = blocks["extractor"]
     review_sampling, review_thinking = blocks["review"]
-    return Orchestrator(
+    orch = Orchestrator(
         config, bundle, out_dir,
         extractor_model=extractor_model,
         checker_config=checker_config,
@@ -687,6 +777,25 @@ def _build_orchestrator(config, bundle, out_dir, loop_cfg, args):
         diagnostics=args.diagnostics,
         dry_run=args.dry_run,
     )
+    # The startup rate report, carried on the orchestrator until the caller is
+    # past every refusal that could still stop this run (see `_announce`).
+    orch.pricing_report = tuple(pricing_report)
+    return orch
+
+
+def _announce(bundle, orch):
+    """The study banner and the startup rate report, printed together at the
+    last moment before the run.
+
+    Both say "a run is starting here, and it will cost money", so both belong
+    AFTER every pre-spend refusal: an unknown model, an unworkable decoding
+    block, an unwritable `--out`, a refused resume. Printed above the refusal
+    they read as a run that began and then failed, and the operator goes
+    looking for a session that was never created.
+    """
+    print(f"\n=== Study {bundle.study_id} ===")
+    for line in orch.pricing_report:
+        print(line)
 
 
 def _print_run_summary(orch, status):
@@ -733,6 +842,20 @@ def _print_run_summary(orch, status):
         print("  same failure, or be refused on config-fingerprint drift).")
         if detail:
             print(f"    surrender reason: {detail}")
+    elif status == "error":
+        # The status word alone sends an operator into the transcript for a
+        # sentence the run already composed. It is in run.json (`error_message`)
+        # and in the run-log entry; print it here so the summary that reports
+        # the failure also says what it was.
+        print()
+        print("  NOTE: the run ended in error. This is terminal and not "
+              "resumable;")
+        print("  the session, its event log and its transcript are on disk.")
+        message = meta.get("error_message")
+        if message:
+            print(textwrap.fill(f"what failed: {message}", width=78,
+                                initial_indent="    ",
+                                subsequent_indent="    "))
     elif status == "complete":
         # A challenge the extractor never satisfied does not hold the run open
         # (the checker is advisory), but it is worth naming at the end of a run
@@ -837,12 +960,15 @@ def _run_one(config, bundle, out_dir, loop_cfg, args):
     key) are AgenticExtractionError subclasses, caught here so they surface
     as a clean one-line stderr message and an "error" status rather than a
     raw traceback.
+
+    The study banner and the rate report are printed by `_announce`, after the
+    session exists and every pre-spend gate has passed — never above a refusal.
     """
-    print(f"\n=== Study {bundle.study_id} ===")
     try:
         orch = _build_orchestrator(config, bundle, out_dir, loop_cfg, args)
 
         if args.dry_run:
+            print(f"\n=== Study {bundle.study_id} ===")
             # A dry run creates NO session: render the instrument, print it
             # in full, and (only when --out was given) write the report files
             # under {out}/{study}/dry_run/. Nothing to resume or finalise, so
@@ -905,6 +1031,9 @@ def _run_one(config, bundle, out_dir, loop_cfg, args):
         else:
             orch.prepare_new_session()
 
+        # Every gate that could refuse this run without spending is behind us:
+        # the session exists, so from here the run is starting.
+        _announce(bundle, orch)
         status = orch.run()
     except AgenticExtractionError as e:
         print(f"  ERROR: {e}", file=sys.stderr)
@@ -919,8 +1048,17 @@ def _resume_one(config, bundle, out_dir, loop_cfg, args):
     session_dir = Path(args.resume)
     meta_path = Session.meta_path_for(session_dir)
     if not meta_path.exists():
-        print(f"No diagnostics/run.json at {meta_path}", file=sys.stderr)
-        sys.exit(1)
+        # The same sentence `meltiro transcript` gives for the same mistake,
+        # and exit 2 like every other guard on this path: `--resume` takes a
+        # SESSION directory, and the commonest way to get here is pointing it
+        # at the study directory above one, or at the run root above that.
+        print(
+            f"no diagnostics/run.json at {meta_path}. `--resume` takes a "
+            f"SESSION directory, the one holding extraction_output.json and "
+            f"diagnostics/, at "
+            f"{{out}}/{{study_id}}/sessions/{{timestamp}}_{{fp}}/.",
+            file=sys.stderr)
+        sys.exit(2)
     meta = json.loads(meta_path.read_text())
     # Guard against pointing --resume at a session for a different study.
     if str(meta.get("study_id")) != str(bundle.study_id):
@@ -953,7 +1091,11 @@ def _resume_one(config, bundle, out_dir, loop_cfg, args):
 
     orch = _build_orchestrator(config, bundle, out_dir, loop_cfg, args)
     try:
+        # The resume gates are the last pre-spend refusal on this path, so
+        # nothing announces the run until they have passed: a rate report above
+        # `Resume refused` describes a run that did not happen.
         orch.resume_session(session_dir)
+        _announce(bundle, orch)
         status = orch.run()
     except ResumeRefused as e:
         print(f"Resume refused: {e}", file=sys.stderr)
@@ -963,6 +1105,76 @@ def _resume_one(config, bundle, out_dir, loop_cfg, args):
         return "error"
     _print_run_summary(orch, status)
     return status
+
+
+def _out_dir_problem(out_dir):
+    """The one-line refusal `--out` earns, or None when the root is usable.
+
+    Answers the only question that matters before a run starts: can this
+    process create session directories and a run log under here. Asked by
+    creating the directory (which a first run legitimately does) and writing a
+    probe file, because the alternatives — `os.access`, a stat of the mode —
+    answer about the path's bits rather than about this process's ability to
+    write, and get it wrong on a read-only mount, an ACL, or a full disk.
+
+    The probe is named per process, and its removal tolerates a file that is
+    already gone. One run root is a shared directory — a batch is several
+    `meltiro extract` processes writing sessions side by side — and a probe
+    with a fixed name is a file two of them own at once: the first to finish
+    removes it, and the second's `unlink` raises `FileNotFoundError` about a
+    root that just proved itself writable, refusing the run.
+
+    Every probe found is swept first, because a pid-named file is nobody's to
+    remove once its process is gone: a run killed between the write and the
+    unlink leaves one behind for good, and the next run at this root is the
+    only thing that ever comes back for it. A live sibling's probe goes too,
+    which is the vanished probe its own `unlink` already tolerates.
+    """
+    out_dir = Path(out_dir)
+    if out_dir.exists() and not out_dir.is_dir():
+        return (f"--out {out_dir} is not a directory. It is the run root: "
+                f"sessions land under {{out}}/{{study_id}}/sessions/ and the "
+                f"run log at {{out}}/run_log.json, so it has to be a "
+                f"directory this run can create files in.")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Each removal is guarded on its own. A probe left by another user is
+        # one this process cannot remove, and a root it can otherwise write to
+        # is writable; the stale probes after it are still this run's to sweep,
+        # and a single guard around the loop would abandon them.
+        for stale in out_dir.glob(".meltiro-write-probe.*"):
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                pass
+        probe = out_dir / f".meltiro-write-probe.{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as e:
+        return (f"--out {out_dir} cannot be written to: {e}. It is the run "
+                f"root, so every session directory, the extraction output and "
+                f"the run log are written under it.")
+    return None
+
+
+def _without_duplicate_studies(bundles):
+    """`bundles` with any repeated study id dropped, saying which and why.
+
+    Keyed on the STUDY ID rather than on the path: two different directories
+    holding one study are the same run, and it is the id that decides where
+    the session lands and which run-log rows describe it.
+    """
+    seen = {}
+    kept = []
+    for bundle in bundles:
+        first = seen.get(bundle.study_id)
+        if first is not None:
+            print(f"skipping duplicate --paper {bundle.root}: study "
+                  f"{bundle.study_id} is already being run from {first}.")
+            continue
+        seen[bundle.study_id] = bundle.root
+        kept.append(bundle)
+    return kept
 
 
 def _cmd_extract(args):
@@ -992,6 +1204,17 @@ def _cmd_extract(args):
     out_dir = Path(args.out) if args.out is not None else Path("./runs")
     loop_cfg = config.pipeline
 
+    # A run root that cannot be written to fails HERE. Left to the first write,
+    # it surfaces partway through session creation, after the study banner and
+    # the rate report have announced a run that was never going to start. A
+    # resume takes its root from the session instead (see `_resume_one`), and a
+    # bare dry run writes nothing at all, so neither is checked.
+    if not (args.resume or (args.dry_run and args.out is None)):
+        problem = _out_dir_problem(out_dir)
+        if problem is not None:
+            print(problem, file=sys.stderr)
+            return 1
+
     # Load + validate every bundle up front so a bad bundle fails loudly
     # before any run starts.
     bundles = []
@@ -1001,6 +1224,14 @@ def _cmd_extract(args):
         except BundleError as e:
             print(str(e), file=sys.stderr)
             return 1
+
+    # One study per invocation, whatever the command line repeats. Two --paper
+    # flags naming one study id would run it twice into the same session root,
+    # billing the paper twice and appending two run-log entries a consumer
+    # cannot tell apart; and the second run would pass over the first's session
+    # as in-progress work. The duplicate is skipped and said so, rather than
+    # refused: the invocation is answerable as written.
+    bundles = _without_duplicate_studies(bundles)
 
     # Exit nonzero (1) only when a study raises or finalises in status
     # "error"; every other terminal status exits 0. A paused run
@@ -1163,8 +1394,10 @@ def _cmd_fingerprint(args):
     """Print a config bundle's content fingerprint as machine-readable JSON.
 
     Thin wrapper over load_config_bundle: prints the component hashes the
-    consumer pins on plus the instrument fingerprint, the model-free,
-    engine-free identity of everything the config author wrote. The composite
+    consumer pins on plus the instrument fingerprint, the model-free identity
+    of everything the config author wrote together with the engine's tool
+    contract (the tool definitions carry the engine's own descriptions, so
+    this axis moves when they are reworded). The composite
     config_fp is deliberately not printed (it folds in the extractor model,
     which this command does not know); the note field says so explicitly.
     """
@@ -1186,10 +1419,14 @@ def _cmd_fingerprint(args):
             "pins (template_hash, reference_lists_hash), which alone decide "
             "whether a stored value is still legal. instrument_fp IS "
             "printable here and is what a run records too, so it is the key "
-            "to group runs of this config across models and meltiro "
-            "versions. A CLI flag overriding pipeline.yaml (for example "
-            "--max-checks-per-field) changes the instrument, so a run started "
-            "that way records a different instrument_fp from this one."
+            "to group runs of this config ACROSS MODELS: it is model-free, "
+            "covering this bundle plus the engine's tool contract. It is not "
+            "engine-free — the tool definitions carry the engine's own "
+            "descriptions of what each tool does — so it can move between "
+            "meltiro versions with the bundle untouched. A CLI flag "
+            "overriding pipeline.yaml (for example --max-checks-per-field) "
+            "changes the instrument too, so a run started that way records a "
+            "different instrument_fp from this one."
         ),
     }
     print(json.dumps(payload, indent=2, sort_keys=False))

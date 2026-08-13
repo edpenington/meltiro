@@ -42,12 +42,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from meltiro.errors import CheckerError, truncation_report
+from meltiro.rates import cache_write_split
 from meltiro.fingerprint import (
     checker_config_fingerprint,
     structure_hash,
@@ -216,11 +216,27 @@ class CheckerConfig:
                     f"disable the checker; use max_checks_per_field=0 for "
                     f"that.")
         else:
-            # The environment fallback's EFFECTIVE value is guarded the same
-            # way one step later, by the CLI, which is where an operator-facing
-            # message belongs (see cli._build_orchestrator).
-            concurrency = int(os.environ.get(
-                "CHECKER_CONCURRENCY", str(DEFAULT_CONCURRENCY)))
+            # The environment fallback. Its RANGE is guarded the same way one
+            # step later, by the CLI; its TYPE has to be settled here, where
+            # the string is read, because `int("ten")` raises a bare ValueError
+            # naming neither the variable nor what it is for. The message names
+            # the VARIABLE, not a pipeline.yaml key: the value came from the
+            # shell, and an operator sent to the bundle would find nothing
+            # there to fix.
+            raw = os.environ.get("CHECKER_CONCURRENCY")
+            if raw is None:
+                concurrency = DEFAULT_CONCURRENCY
+            else:
+                try:
+                    concurrency = int(raw)
+                except ValueError:
+                    raise ValueError(
+                        f"the CHECKER_CONCURRENCY environment variable must "
+                        f"be a positive integer, got {raw!r}. It is how many "
+                        f"checker calls run in parallel. Unset it to take the "
+                        f"default of {DEFAULT_CONCURRENCY}, or set "
+                        f"checker_concurrency in pipeline.yaml, which wins "
+                        f"over it.") from None
         return cls(
             checker_model=model,
             concurrency=concurrency,
@@ -357,20 +373,25 @@ class CheckerConfig:
 # Cost
 # ---------------------------------------------------------------------------
 
-def _compute_cost(rates, input_tokens, output_tokens, cache_creation_tokens,
-                  cache_read_tokens):
-    """One checker call's USD cost under the CHECKER's rate card.
+def _compute_cost(rates, input_tokens, output_tokens, cache_write_5m,
+                  cache_write_1h, cache_read_tokens):
+    """One field's checks, summed and priced under the CHECKER's rate card.
 
     The card prices the checker's model and no other, and it is recorded
     alongside every figure derived from it, so a reader can redo this arithmetic
     from the tokens in the same record however far the provider's prices have
     since moved.
+
+    Cache writes arrive already split by TTL (`rates.cache_write_split`),
+    because the two tiers bill at different multiples of the base input rate
+    and a single figure can only be right for one of them.
     """
     return round(rates.cost_of_call(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_creation_tokens,
+        cache_write_tokens=cache_write_5m,
+        cache_write_1h_tokens=cache_write_1h,
     ), 6)
 
 
@@ -389,14 +410,22 @@ def _spend(config, responses):
     at all, leaving the token counters as the record. None is deliberate there
     and is never a 0.0, which would read as a free call.
 
-    Costing NEVER raises, on any path. A routed response that came back
-    without a charge on it is recorded rather than refused: the returned
-    mapping carries `cost_incomplete` and `unreceipted_responses`, `cost_usd`
-    covers the receipts there were, and the token counters stay whole. One
-    field's check runs in a fan-out beside paid siblings and its verdict is
-    what the run is buying, so an unreadable price is a gap in the accounting
-    to be stated — never grounds for discarding a verdict that was asked for,
-    answered, and billed.
+    Costing NEVER raises, on any path. A routed response whose charge cannot be
+    read is recorded rather than refused: the returned mapping carries
+    `cost_incomplete` and `unreceipted_responses`, `cost_usd` covers the
+    receipts there were, and the token counters stay whole. One field's check
+    runs in a fan-out beside paid siblings and its verdict is what the run is
+    buying, so an unreadable price is a gap in the accounting to be stated —
+    never grounds for discarding a verdict that was asked for, answered, and
+    billed.
+
+    What produces that gap is the POST-BILLING REFUSAL, and only that: a routed
+    response is charged by the gateway and then declined by direktoro's routing
+    layer — a pin that did not hold, an absent generation id, an absent
+    `usage.cost` — and arrives here on the exception (see `_ask_for_verdict`).
+    A routed response that direktoro RETURNS always carries its charge, because
+    a chargeless one is exactly what it refuses, so no successfully answered
+    check can reach the unreceipted branch below.
 
     Called on the way to a verdict AND on the way out of a failure that had
     already been billed, so a degraded field is priced the same way a
@@ -418,6 +447,13 @@ def _spend(config, responses):
     output_tokens = total("output_tokens")
     cache_create = total("cache_creation_input_tokens")
     cache_read = total("cache_read_input_tokens")
+    # The cache-write total is what the check REPORTS; the per-TTL split is
+    # what it is PRICED from, because the two tiers bill at different multiples
+    # of the base input rate. Summed per tier across every ask, on the same
+    # terms as the counters above.
+    splits = [cache_write_split(r.usage) for r in responses]
+    cache_write_5m = sum(five for five, _ in splits)
+    cache_write_1h = sum(hour for _, hour in splits)
 
     unreceipted = 0
     if model_info(config.checker_model).route is not None:
@@ -432,7 +468,7 @@ def _spend(config, responses):
     elif config.rates is not None:
         cost_usd = _compute_cost(
             config.rates, input_tokens, output_tokens,
-            cache_create, cache_read,
+            cache_write_5m, cache_write_1h, cache_read,
         )
     else:
         cost_usd = None
@@ -598,13 +634,16 @@ def _require_cap(config):
 
 def check_one_field(*, system_message_blocks, user_message_blocks, config,
                     client=None, adapter=None, api_logger=None,
-                    api_log_meta=None):
+                    api_log_meta=None, on_retry=None):
     """Call the checker LLM for one field via its provider adapter.
 
     `system_message_blocks` is the cached system prompt as a list of
     content blocks (already including cache_control). `user_message_blocks`
     is the per-field content blocks. `adapter` is a provider adapter; when
     omitted it is built from `config` (and an optional injected `client`).
+    `on_retry(attempt, delay_seconds, error)` is handed to direktoro's retry
+    loop and fires once per retried transient failure; a failed attempt raises
+    before the wire log runs, so it is the only trace one leaves.
 
     Returns a dict with keys: verdict, rationale, notes, reprompted,
     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -629,6 +668,7 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
             user_message_blocks=user_message_blocks,
             config=config, client=client, adapter=adapter,
             api_logger=api_logger, api_log_meta=api_log_meta,
+            on_retry=on_retry,
         )
     except CheckerError:
         # Already priced where it was raised, from these same responses.
@@ -642,7 +682,7 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
 
 def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
                      config, client=None, adapter=None, api_logger=None,
-                     api_log_meta=None):
+                     api_log_meta=None, on_retry=None):
     """Ask until a verdict arrives, appending every billed response to
     `responses`, and return the verdict record `check_one_field` documents.
 
@@ -651,8 +691,9 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
     check re-asked once and then met with a fault was billed for the first
     ask, and a list built and lost inside this frame would ledger it at zero.
     """
-    from direktoro import (ProviderError, ProviderRateLimitError,
-                           ProviderRetryableError, extract_tool_call,
+    from direktoro import (RETRY_BACKOFF_SECONDS, ProviderError,
+                           ProviderRateLimitError, ProviderRetryableError,
+                           create_message_with_retry, extract_tool_call,
                            model_info, tool_choice_named)
     _require_cap(config)
     if adapter is None:
@@ -665,8 +706,15 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
         env = model_info(config.checker_model).api_key_env
         raise CheckerError(f"{env} not set; cannot call checker")
 
-    max_retries = 3
-    backoff = [2, 4, 8]
+    # Retries go through direktoro's `create_message_with_retry`, the same
+    # function the extractor and reviewer call, so all three roles wait on one
+    # schedule (`RETRY_BACKOFF_SECONDS`) and one rule about which failures are
+    # worth retrying — a timeout is deliberately not, because a timed-out
+    # request may already have been served and billed. A schedule kept here as
+    # well would drift from that one silently, and a checker retrying on its
+    # own terms would be invisible: a failed attempt raises before the wire log
+    # runs, so `on_retry` is the only trace it leaves.
+    retries = len(RETRY_BACKOFF_SECONDS)
 
     # The verdict tool, and the strongest tool_choice this model's endpoint
     # honours. `tool_choice_named` returns the wire's "auto" form for an
@@ -701,61 +749,74 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
             # this iteration exists only because it did.
             messages = _reask_messages(original_message, responses[-1])
 
-        response = None
-        for attempt in range(max_retries + 1):
-            try:
-                response = adapter.create_message(
-                    model=config.checker_model,
-                    max_tokens=config.max_tokens,
-                    system=system_message_blocks,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    sampling=config.sampling,
-                    thinking=config.thinking,
-                )
-                break
-            # Each raise carries the spend of the asks that ALREADY completed
-            # (`responses` holds them; the ask that just failed is not among
-            # them and was not billed). A field re-asked once and then met
-            # with a provider error was billed for the first ask, and a
-            # degraded field that ledgered it at zero would understate the run
-            # by however many checks went this way.
-            except ProviderRateLimitError as e:
-                if attempt < max_retries:
-                    time.sleep(backoff[attempt])
-                    continue
-                raise CheckerError(
-                    f"Rate limit after {max_retries} retries: {e}",
-                    spent=_spend(config, responses))
-            except ProviderRetryableError as e:
-                if attempt < max_retries:
-                    time.sleep(backoff[attempt])
-                    continue
-                raise CheckerError(
-                    f"Provider error after {max_retries} retries: {e}",
-                    spent=_spend(config, responses))
-            except ProviderError as e:
-                raise CheckerError(f"Provider API error: {e}",
-                                   spent=_spend(config, responses))
+        try:
+            response = create_message_with_retry(
+                adapter,
+                on_retry=on_retry,
+                model=config.checker_model,
+                max_tokens=config.max_tokens,
+                system=system_message_blocks,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                sampling=config.sampling,
+                thinking=config.thinking,
+            )
+        # Each raise carries the spend of the asks that ALREADY completed
+        # (`responses` holds them; the ask that just failed is not among
+        # them and was not billed). A field re-asked once and then met
+        # with a provider error was billed for the first ask, and a
+        # degraded field that ledgered it at zero would understate the run
+        # by however many checks went this way.
+        except ProviderRateLimitError as e:
+            raise CheckerError(
+                f"Rate limit after {retries} retries: {e}",
+                spent=_spend(config, responses))
+        except ProviderRetryableError as e:
+            raise CheckerError(
+                f"Provider error after {retries} retries: {e}",
+                spent=_spend(config, responses))
+        except ProviderError as e:
+            # A refusal that arrived INSTEAD of a response carries none, and
+            # there is nothing to bill. A refusal about a response carries it
+            # (`ProviderError.response`): the call was served and charged, and
+            # direktoro's routing layer declines the RESULT — a pin that did
+            # not hold, a missing generation id, a missing gateway charge. That
+            # material is banked here, exactly like a successful ask's, before
+            # the field degrades. Ledgering it at $0 would hide a paid call,
+            # and `_spend` already knows how to state a response whose charge
+            # cannot be read: a routed response with no `reported_cost` becomes
+            # coverage on the figure (`cost_incomplete`), which is the shape a
+            # refused routed call takes.
+            billed = getattr(e, "response", None)
+            if billed is not None:
+                responses.append(billed)
+                _log_ask(api_logger, api_log_meta, billed, ask)
+            raise CheckerError(f"Provider API error: {e}",
+                               spent=_spend(config, responses))
 
         responses.append(response)
 
         # Verbatim API audit log, one entry per call — so a re-asked field
         # leaves both asks in the audit trail rather than only the one that
         # answered.
-        if api_logger is not None:
-            try:
-                meta = dict(api_log_meta or {})
-                meta.update(provider=response.provider,
-                            base_url=response.base_url,
-                            wire_model=response.resolved_model,
-                            wire_request=response.wire_request,
-                            ask=ask)
-                api_logger(response.raw_request, response.raw_response, **meta)
-            except Exception:
-                # Audit-side errors must not abort the checker call.
-                pass
+        _log_ask(api_logger, api_log_meta, response, ask)
+
+        # A refusal is the model's answer to this call, and it outranks
+        # whatever else the reply carried (direktoro's canonical vocabulary
+        # puts `refusal` ahead of `tool_use`). Read before the verdict rather
+        # than after it, which is the opposite of the truncation check below
+        # and for the opposite reason: a cap cuts a reply off AFTER the verdict
+        # it was billed for, so a complete verdict stands; a filter blocks the
+        # reply instead of one. Not re-asked either — the same field, the same
+        # value and the same evidence would be blocked again.
+        if getattr(response, "stop_reason", None) == "refusal":
+            raise CheckerError(
+                "the checker model refused this field (stop_reason "
+                "'refusal': a host content filter stopped the reply, or the "
+                "model declined it). No verdict was given, so the field is "
+                "recorded as unchecked rather than as objected to.",
+                spent=_spend(config, responses))
 
         # Read the verdict off the response by BLOCK TYPE, so any leading
         # block a model or endpoint emits ahead of the tool call — reasoning,
@@ -885,6 +946,32 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
     }
 
 
+def _log_ask(api_logger, api_log_meta, response, ask):
+    """Write one ask's verbatim wire entry, if the caller wants one.
+
+    Called for every BILLED response, which is every one the provider served —
+    including one direktoro's routing layer then refused, because the wire
+    record is of what happened on the wire and a refused response happened
+    there. `ask` is the 0-based ask index, so a re-asked field's two calls are
+    told apart in the log.
+
+    Audit-side errors are swallowed: the log is a record of the call, and a
+    fault writing it must not become the call's outcome.
+    """
+    if api_logger is None:
+        return
+    try:
+        meta = dict(api_log_meta or {})
+        meta.update(provider=response.provider,
+                    base_url=response.base_url,
+                    wire_model=response.resolved_model,
+                    wire_request=response.wire_request,
+                    ask=ask)
+        api_logger(response.raw_request, response.raw_response, **meta)
+    except Exception:
+        pass
+
+
 def _reask_messages(original_message, reply):
     """The messages a re-ask sends: a correction, after the reply it corrects.
 
@@ -932,7 +1019,7 @@ def _reask_messages(original_message, reply):
 # ---------------------------------------------------------------------------
 
 def run_checker_batch(*, calls, config, client=None, adapter=None,
-                      on_complete=None, api_logger=None):
+                      on_complete=None, api_logger=None, on_retry=None):
     """Run `check_one_field` for each call in `calls` in parallel.
 
     One batch is the set of fields one tool call wrote: the orchestrator fans
@@ -954,6 +1041,10 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
     land in nondeterministic `as_completed` order, and that order flows into
     the tool result the model reads and into the session event, so the results
     are sorted before returning to keep runs reproducible.
+
+    `on_retry(attempt, delay_seconds, error)` is passed to every call in the
+    batch and fires on the calling thread's behalf from inside the worker
+    thread that retried, once per retried transient failure.
 
     `on_complete(field_path, result)` is an optional callback invoked
     on the calling thread, inside the `as_completed` loop, as each call
@@ -992,6 +1083,7 @@ def run_checker_batch(*, calls, config, client=None, adapter=None,
                 config=config, adapter=adapter,
                 api_logger=api_logger,
                 api_log_meta=api_log_meta,
+                on_retry=on_retry,
             )
         except CheckerError as e:
             # The normal failure path. Genuine transient API errors (rate

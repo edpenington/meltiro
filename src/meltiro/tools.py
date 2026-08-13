@@ -45,9 +45,18 @@ Validation policy is per field for the three field-writing tools
 its own, the fields that pass are written, and the result reports `ok` when
 every field applied, `partial` when some applied and some failed, and
 `validation_failed` when none applied. Only the failed fields need to be
-resubmitted. A STRUCTURAL problem with the call itself (a block that is not
-an object, an empty or missing field map, an unknown record id) addresses no
-field validly, so it stays all-or-nothing and returns `validation_failed`.
+resubmitted.
+
+A STRUCTURAL problem with the call itself addresses no field validly, so it
+stays all-or-nothing and returns `validation_failed`. All three refuse a field
+map that is not an object. `add_record` and `update_record` additionally
+refuse an EMPTY or missing one, and `update_record` an unknown `record_id`:
+each of those calls exists only to write fields, so one carrying none has
+nothing to do. `update_study` is the exception and takes an empty map as `ok`,
+because its optional `notes` argument is a legitimate thing to send on its own
+— a note-only call writes the study scope note and no field, and refusing it
+for having no fields would refuse the call it was written to make.
+
 Warnings (e.g. category-gate violations) are informational only; the call
 still applies.
 

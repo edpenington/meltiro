@@ -51,6 +51,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from meltiro.errors import ConfigBundleError
 from meltiro.fingerprint import (
     canonical_json,
@@ -138,10 +140,12 @@ class ConfigBundle:
     alone decides whether a stored value is still legal. `prompts_hash`
     covers the four prompt files (partials expanded; an un-overridden engine
     section left as its directive, since it is not the author's text to hash —
-    see `_compute_prompts_hash`). `instrument_fp` is the
-    model-free, engine-free composite of everything the config author wrote;
-    the run-time `config_fp` additionally folds in the extractor model and
-    decoding params and so is not derivable here.
+    see `_compute_prompts_hash`). `instrument_fp` is the MODEL-FREE composite
+    of everything the config author wrote plus the engine's tool contract (the
+    tool definitions carry the engine's own descriptions, so `instrument_fp`
+    is not engine-free — see `fingerprint.instrument_fingerprint`); the
+    run-time `config_fp` additionally folds in the extractor model and decoding
+    params and so is not derivable here.
     """
 
     root: Path
@@ -158,6 +162,13 @@ class ConfigBundle:
     reference_lists_hash: str
     prompts_hash: str
     instrument_fp: str
+    # What loading this bundle had to remark on without refusing it: today,
+    # only the engine-section coverage warning. Carried on the object rather
+    # than left as stderr output, because a run has an artefact to caveat and
+    # a warning nobody can read afterwards is one nobody acts on. The
+    # orchestrator copies these into `meta.warnings` at session start, beside
+    # the ones the run itself records. Empty for a bundle with nothing to say.
+    warnings: tuple = ()
 
     @property
     def prompt_paths(self):
@@ -184,10 +195,17 @@ class ConfigBundle:
 
 
 def load_config_bundle(path):
-    """Load and return a `ConfigBundle`. Raises `ConfigBundleError` if any
-    required file is missing, `pipeline.yaml` doesn't parse to a mapping, a
-    reference list is malformed, or the template names a `canonical_reference`
-    that `reference/` does not provide.
+    """Load and return a `ConfigBundle`.
+
+    Raises `ConfigBundleError`, and only that, for every defect in the bundle:
+    a missing required file, a `pipeline.yaml` that does not parse or does not
+    parse to a mapping, a malformed reference list, an extraction template that
+    does not parse or violates the template model, a `canonical_reference` no
+    reference list provides, an unresolvable prompt placeholder. That one type
+    is the whole contract every caller is written against — the CLI catches it
+    and exits 1 with the message on stderr — so a YAML syntax error or a
+    template-model violation is carried inside it, underlying message and all,
+    rather than reaching a caller as a traceback.
     """
     root = Path(path)
     problems = []
@@ -223,8 +241,21 @@ def load_config_bundle(path):
     if problems:
         raise ConfigBundleError(problems, path=root)
 
-    with open(pipeline_path, "r", encoding="utf-8") as f:
-        pipeline = strict_load(f)
+    # `load_config_bundle` raises ConfigBundleError and nothing else (see the
+    # docstring, and every caller, which catches exactly that and exits 1). A
+    # YAML syntax error is a defect in the bundle like any other, so pyyaml's
+    # own diagnostic — which carries the file, line and column of the offending
+    # token, the most useful part of the message — is carried through inside
+    # the contract rather than escaping as a traceback.
+    try:
+        with open(pipeline_path, "r", encoding="utf-8") as f:
+            pipeline = strict_load(f)
+    except yaml.YAMLError as e:
+        raise ConfigBundleError(
+            [f"pipeline.yaml does not parse: {e}"], path=root) from e
+    except OSError as e:
+        raise ConfigBundleError(
+            [f"pipeline.yaml could not be read: {e}"], path=root) from e
     if pipeline is None:
         pipeline = {}
     if not isinstance(pipeline, dict):
@@ -252,8 +283,19 @@ def load_config_bundle(path):
         load_reference_lists(reference_dir) if have_reference_dir else {})
 
     # Loaded once: needed for the reference cross-validation and the content
-    # fingerprint below.
-    template = load_template(template_path)
+    # fingerprint below. `load_template` raises ValueError for a template that
+    # violates the model, a yaml.YAMLError for malformed YAML (a duplicate key
+    # included, via strict_load) and OSError for a read fault. All three are
+    # defects in this bundle, so they arrive at the caller as the one error
+    # this function documents, carrying the underlying message intact.
+    try:
+        template = load_template(template_path)
+    except ConfigBundleError:
+        raise
+    except (ValueError, yaml.YAMLError, OSError) as e:
+        raise ConfigBundleError(
+            [f"extraction_template.yaml is not loadable: {e}"],
+            path=root) from e
 
     _cross_validate_references(template, reference_lists, root)
 
@@ -290,8 +332,10 @@ def load_config_bundle(path):
         pipeline.get("final_review", True))
 
     # Everything above is a defect in what the bundle says; this is a remark
-    # about what it leaves unsaid, so it warns and loads.
-    _warn_engine_sections_uncomposed(
+    # about what it leaves unsaid, so it warns and loads. The messages are
+    # returned as well as printed, so a run can persist them into its own
+    # record rather than leaving them in a terminal nobody keeps.
+    warnings = _warn_engine_sections_uncomposed(
         extractor_system_path, checker_system_path, root,
         predicates=predicates)
 
@@ -319,6 +363,7 @@ def load_config_bundle(path):
         reference_lists_hash=ref_hash,
         prompts_hash=prompts_hash,
         instrument_fp=instrument_fp,
+        warnings=warnings,
     )
 
 
@@ -355,8 +400,10 @@ def _compute_prompts_hash(prompt_paths, partials_dir, predicates):
 
 def _content_instrument_fingerprint(template, pipeline, prompts_hash,
                                     template_hash, reference_hash):
-    """The bundle's instrument fingerprint: the model-free, engine-free
-    identity of everything the config author wrote.
+    """The bundle's instrument fingerprint: the MODEL-FREE identity of
+    everything the config author wrote, together with the engine's tool
+    contract (see `fingerprint.instrument_fingerprint` for why the tool
+    definitions belong in it and why that makes it engine-dependent).
 
     Reuses `fingerprint.instrument_fingerprint`, the same function the
     orchestrator calls at run time, so a bundle's recorded identity and a
@@ -576,7 +623,14 @@ def _warn_engine_sections_uncomposed(extractor_system_path,
     `predicates` is the run's structure map (`stage_predicates`). A role whose
     stage is off is passed over: a bundle that disables the checker is not
     leaving a model underbriefed, because there is no checker call to brief.
+
+    Returns the messages as a tuple, printed AND returned: `load_config_bundle`
+    puts them on the bundle so a run can persist them into `meta.warnings`
+    beside its own. The stored string carries no prefix and the printed line
+    carries `WARNING: `, which is the convention every other warning in the
+    engine already follows (`Orchestrator._warn_inert_decoding_params`).
     """
+    messages = []
     for path in (extractor_system_path, checker_system_path):
         stage = _ROLE_PREDICATE.get(path.stem)
         if stage is not None and not predicates[stage]:
@@ -585,15 +639,17 @@ def _warn_engine_sections_uncomposed(extractor_system_path,
         cited = engine_included_names(path.read_text(encoding="utf-8"))
         if cited & set(sections):
             continue
-        print(
-            f"warning: {path.relative_to(root)} composes no "
-            f"{{include:{ENGINE_NAMESPACE}:...}} section of its own role "
+        message = (
+            f"engine-sections-uncomposed: {path.relative_to(root)} composes "
+            f"no {{include:{ENGINE_NAMESPACE}:...}} section of its own role "
             f"(available: {list(sections)}). The engine's own contract for "
             f"this role — what the tools do, what the pipeline does around "
             f"the call — is then undescribed to the model unless this prompt "
             f"states it correctly itself, and a prompt that describes the "
-            f"engine wrongly is obeyed, not corrected.",
-            file=sys.stderr)
+            f"engine wrongly is obeyed, not corrected.")
+        print(f"WARNING: {message}", file=sys.stderr)
+        messages.append(message)
+    return tuple(messages)
 
 
 # Tool-call cap placeholders, banned from every prompt. Neither is

@@ -578,9 +578,11 @@ with one where that stage ran.
 Three further fingerprints separate what the stage fingerprints blend, so the
 common comparisons are single-axis:
 
-- `instrument_fp` — everything the config author wrote, model-free and
-  engine-free. Same instrument on a different model: `instrument_fp` matches
-  and a call fingerprint moves.
+- `instrument_fp` — model-free, covering the config author's instrument plus
+  the engine's tool contract (the tool definitions carry the engine's own
+  descriptions of what each tool does, and a tool description is part of the
+  question). Same instrument on a different model: `instrument_fp` matches and
+  a call fingerprint moves.
 - `extractor_call_fp` / `checker_call_fp` / `review_call_fp` — one per role:
   which model, and how it is reached.
 - `engine_fp` — the engine is two packages, and this names each of them twice:

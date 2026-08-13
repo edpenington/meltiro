@@ -8,10 +8,10 @@ around it. A field re-checked after a revision gets a genuinely fresh
 context: nothing from the earlier check is carried in.
 
 `build_checker_system_text(...)` returns the cacheable system prompt: the
-bundle's checker prompt file with `{include:...}` partials expanded and
-`{reference:...}` lists rendered in, nothing else. No field catalogue (the
-`template` argument is accepted for signature stability and discarded);
-every field-specific detail reaches the checker through the user message.
+bundle's checker prompt file with `{include:...}` partials expanded,
+`{reference:...}` lists rendered in, and the run's per-field check budget
+substituted, and nothing else. No field catalogue: every field-specific
+detail reaches the checker through the user message.
 `build_checker_user_message(...)` returns that message as a list of content
 blocks: the rendered text, preceded for an image-sourced field by a caption
 block and the cropped PNG, which IS the evidence. The cache_control
@@ -277,7 +277,9 @@ def _render_notes_block(notes):
     checker is shown it: withholding it would leave the checker judging a
     value whose stated grounds it cannot see. The scope notes (the study's,
     each record's) are NOT rendered here or anywhere else in the checker's
-    context; see `orchestrator._fields_in_scope`.
+    context: `orchestrator._build_checker_calls` builds one call per FIELD and
+    a scope note belongs to no field, so nothing ever puts one in front of a
+    checker.
 
     Returns "" when the field carries no note (whitespace counts as none), so
     the slot disappears rather than leaving an empty heading.

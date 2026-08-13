@@ -18,9 +18,14 @@ strict supersets of one another:
 `Session.replay_messages` rebuilds the conversation from it, so a session
 that lacks it cannot be resumed, and `field_history.json` is derived from it.
 Nothing a level omits may ever be needed to resume a session or regenerate a
-derived artefact. The one real consequence of `minimal` is that a transcript
-cannot be re-rendered later: the prompts and tool definitions the model saw
-were never written down.
+derived artefact.
+
+A transcript is written and can be re-rendered at EVERY level: the run writes
+one at every stop, and `meltiro transcript` re-renders any session afterwards.
+What `minimal` costs is not the document but part of what it can show — the
+instrument section, the prompts and tool definitions as sent, was never
+written down, so a transcript rendered from such a session says the level
+stopped it from showing them in place of that section.
 
 The level is an operational choice, not methodology, so it enters no
 fingerprint. It is recorded in `run.json` under `diagnostics`, beside `caps`,

@@ -626,6 +626,10 @@ class TestResolvedMismatchLeavesNoFalseWarning:
         self._set_abstract(
             orch, "A study of widget durability in automotive manufacturing.")
         orch._finalise("complete")
+        # The transcript is phase (b) of stopping, rendered outside run()'s
+        # try (see Orchestrator.run), so a test that finalises by hand renders
+        # by hand too.
+        orch._render_artefacts()
         expected = self._mismatch_warnings(orch)
         assert len(expected) == 1
 
@@ -647,6 +651,7 @@ class TestResolvedMismatchLeavesNoFalseWarning:
         orch = self._orch(config_dir, bundle_minimal_dir, tmp_path)
         self._set_abstract(orch, self._completed(orch))
         orch._finalise("complete")
+        orch._render_artefacts()
         assert self._mismatch_warnings(orch) == []
         document = (orch.session.session_dir /
                     "diagnostics" / "transcript.md").read_text()

@@ -716,6 +716,12 @@ class _Renderer:
         if meta.get("failure_reason"):
             pairs.append(("Failure reason",
                           _code_cell(meta.get("failure_reason"))))
+        if meta.get("error_message"):
+            # The composed message of the failure that ended the run, beside
+            # the status it produced. `error` names a category; this is the
+            # sentence, and having it here means the outcome table answers
+            # "what went wrong" without a search through the turns below.
+            pairs.append(("Error", _cell(meta.get("error_message"))))
         if meta.get("failed_validation_reason"):
             pairs.append(("Stated surrender reason",
                           _cell(meta.get("failed_validation_reason"))))
@@ -1434,6 +1440,11 @@ class _Renderer:
                 "tool calls only.*")
             self._p()
 
+        stop_note = _describe_stop_reason(_turn_stop_reason(events))
+        if stop_note:
+            self._p("*How the turn ended: " + stop_note + "*")
+            self._p()
+
         for event in events:
             name = event.get("event")
             if name in _TOOL_CALL_EVENTS:
@@ -1998,6 +2009,49 @@ def _turn_text(events):
     return ""
 
 
+def _turn_stop_reason(events):
+    """How the provider stopped this turn, or None.
+
+    Every model turn logs exactly one `assistant_message`, and it carries the
+    reason. A turn the loop ended as a refusal records that reason a second
+    time, on its own `extractor_refused` event, and a session whose
+    `assistant_message` carries no `stop_reason` field is read from there: the
+    gloss below is the only place the document states the MECHANISM behind a
+    refusal, so it rests on either record rather than on one of them. With
+    neither, this is None and prints nothing — the same as a turn that ended
+    in the ordinary way.
+    """
+    for event in events:
+        if event.get("event") == "assistant_message" \
+                and event.get("stop_reason") is not None:
+            return event["stop_reason"]
+    for event in events:
+        if event.get("event") == "extractor_refused":
+            return event.get("stop_reason")
+    return None
+
+
+# How a turn's stop reason reads in prose, for the reasons that CHANGE how the
+# turn should be read: a refusal means the reply above was blocked rather than
+# given, and a truncation means it was cut off mid-sentence rather than
+# finished. `end_turn` and `tool_use` are the turn doing what a turn does, and
+# a note saying so on every turn would bury the two that matter.
+_STOP_REASON_GLOSS = {
+    "refusal": (
+        "the endpoint refused it (`stop_reason` `refusal`) — a host content "
+        "filter blocked the reply, or the model declined the request. "
+        "Whatever the turn carried above, it was declined"),
+    "max_tokens": (
+        "it hit the output cap (`stop_reason` `max_tokens`), so the reply "
+        "above is cut off rather than finished"),
+}
+
+
+def _describe_stop_reason(stop_reason):
+    """The sentence for a turn's stop reason, or None when it needs none."""
+    return _STOP_REASON_GLOSS.get(stop_reason)
+
+
 def _describe_run_event(event):
     """One sentence for an event that is not a turn's content.
 
@@ -2064,6 +2118,17 @@ def _describe_run_event(event):
         return (
             f"the run paused ({event.get('pause_reason')}). The session is "
             "still in progress and can be resumed into the same conversation.")
+    if name == "extractor_refused":
+        # What the refusal above cost the run. The mechanism is the turn's own
+        # stop note, immediately above this line — this event carries the
+        # `stop_reason` that note falls back to, so the two sit together
+        # whichever record the reason is read from — and the remedy is the
+        # error note immediately below it.
+        return (
+            "the run ends here. Nothing about the paper or the template was "
+            "judged, so there is no extraction to call valid or invalid: the "
+            "record holds the turns above and this refusal, and no re-prompt "
+            "followed, since it would carry the request that was refused.")
     if name == "extractor_abandoned":
         return ("the extractor called `abandon_extraction` and gave up: "
                 + json.dumps(event.get("reason") or "", ensure_ascii=False))
@@ -2109,9 +2174,10 @@ def _describe_run_event(event):
             "incomplete.")
     if name == "terminate":
         return f"the run finished with status `{event.get('status')}`."
-    # Nothing in the engine writes an event this renderer has no words for,
-    # but an unrecognised one is shown raw rather than dropped: an event the
-    # transcript cannot describe is still an event the run recorded.
+    # An event with no sentence above is shown raw rather than dropped: an
+    # event the transcript cannot describe is still an event the run recorded,
+    # and a new event type reaching a reader as its own JSON is a legible
+    # prompt to give it words here.
     return "unrecognised event " + json.dumps(event, ensure_ascii=False)
 
 

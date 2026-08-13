@@ -70,6 +70,14 @@ from meltiro.run_log import current_engine_fp, direktoro_version, git_state
 from meltiro.statuses import TERMINAL_STATUSES
 
 
+# The paper's own axes, as `capture_bundle_fingerprint` records them and
+# `Session.resume` re-reads them. The composite `bundle_fp` is deliberately not
+# among them: it is a digest OF these three, so comparing it would refuse a
+# changed paper without being able to say which part of it changed, and
+# comparing both would report the same drift twice.
+BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp")
+
+
 def _engine_label(meltiro_v, direktoro_v):
     """One phrase naming both halves of an engine identity."""
     return (f"meltiro {meltiro_v or '(unrecorded)'} + direktoro "
@@ -279,10 +287,30 @@ class Session:
         is never created at all rather than created empty: an empty file
         would read as a run that made no calls.
         """
+        self.write_api_call_entry(
+            self.api_call_entry(call_type, request_kwargs, response, **extra))
+
+    def api_call_entry(self, call_type, request_kwargs, response, **extra):
+        """The entry this call earns, or None at a level that keeps no wire
+        log.
+
+        Composition touches no disk and fails only over its inputs: a
+        diagnostics level this session cannot read, a request or response
+        shape `make_entry` cannot compose. It is separable from the write for
+        exactly that reason — a caller that must survive an IO fault
+        (`Orchestrator._log_api_call_guarded`) can still let those raise.
+        """
         if not captures_api_calls(self.diagnostics):
-            return
+            return None
         from meltiro.api_logger import make_entry
-        entry = make_entry(call_type, request_kwargs, response, **extra)
+        return make_entry(call_type, request_kwargs, response, **extra)
+
+    def write_api_call_entry(self, entry):
+        """Append one composed entry to `api_calls.jsonl`, under the writer's
+        lock. A None entry is a level that keeps no wire log, and there is
+        nothing to append."""
+        if entry is None:
+            return
         self._api_writer.write(entry)
 
     def capture_image_hashes(self, figure_paths):
@@ -492,12 +520,19 @@ class Session:
             # The bounds the orchestrator ACTUALLY honoured, recorded with the
             # run so the transcript view shows them even if the config YAML is
             # edited later. Written here at creation, but NOT frozen: the
-            # tool-call cap and its cleanup bonus are operational budgets that
-            # ride in no fingerprint, so a resume may raise them (the
-            # documented recovery from a cap-hit pause) and rewrites these to
-            # the values then in force. The `resumed` event carries each
+            # extractor's tool-call cap and the reviewer's are operational
+            # budgets that ride in no fingerprint, so a resume may raise them
+            # (the documented recovery from a cap-hit pause) and rewrites these
+            # to the values then in force. The `resumed` event carries each
             # bound's new and previous value, and is the per-segment history
             # this snapshot cannot hold.
+            #
+            # `max_checks_per_field` is NOT one of these and is not here: it is
+            # substituted into the prompts and folded into `structure_hash`, so
+            # it rides in `config_fp`, `checker_fp`, `review_fp` and
+            # `instrument_fp`, and changing it refuses a resume at the drift
+            # gate. It is recorded under `structure` below, with the rest of
+            # what the fingerprints cover.
             "caps": caps or {},
             # How much of the deterministic record this segment kept (see
             # meltiro.diagnostics). Operational, not methodology: it rides in
@@ -576,15 +611,28 @@ class Session:
 
     @classmethod
     def resume(cls, session_dir, *, expected_config_fp=None,
-               expected_checker_fp=None, expected_review_fp=None):
-        """Resume an in-progress session. Refuses on status mismatch or on
-        drift in ANY supplied stage fingerprint (config_fp / checker_fp /
-        review_fp).
+               expected_checker_fp=None, expected_review_fp=None,
+               expected_bundle=None):
+        """Resume an in-progress session. Refuses on status mismatch, on drift
+        in ANY supplied stage fingerprint (config_fp / checker_fp / review_fp),
+        and on a changed PAPER (`expected_bundle`).
 
         Each expected_* argument is checked only when supplied (non-None), so
         callers that care about a subset can pass just those. The orchestrator
-        passes all three so a changed extractor, checker, OR review config
-        blocks the resume rather than silently continuing under new inputs.
+        passes all four so a changed extractor, checker, OR review config —
+        or a changed paper — blocks the resume rather than silently continuing
+        under new inputs.
+
+        `expected_bundle` is the `PaperBundle` this resume was handed, and it
+        is checked against the three axes `capture_bundle_fingerprint` recorded
+        at session start, through the same `bundle_fingerprint` recipe. The
+        stage fingerprints cannot stand in for it: the paper is folded into
+        none of them by design (the config axes say what was asked, the bundle
+        axes say what it was asked of), so an edited `text.md`, a re-cropped
+        figure or a rewritten manifest moves nothing they cover. A resumed
+        session replays a conversation whose earlier turns quoted the OLD text
+        and whose evidence was verified against it, so continuing under new
+        material would produce one extraction citing two different papers.
 
         The session continues at the diagnostics level run.json records. The
         level is operational and rides in no fingerprint, so a resume MAY
@@ -644,6 +692,23 @@ class Session:
                     f"{label} fingerprint drift: session was started with "
                     f"{meta.get(key)}, current config is {expected}. Refusing "
                     f"to resume; start a fresh session. {_drift_axis(meta)}"
+                )
+        if expected_bundle is not None:
+            current = bundle_fingerprint(expected_bundle)
+            moved = [axis for axis in BUNDLE_AXES
+                     if meta.get(axis) != current[axis]]
+            if moved:
+                detail = "; ".join(
+                    f"{axis}: session started with {meta.get(axis)}, the "
+                    f"bundle now supplied is {current[axis]}"
+                    for axis in moved)
+                raise ResumeRefused(
+                    f"the paper bundle changed ({detail}). Refusing to "
+                    f"resume: the conversation being replayed quotes the text "
+                    f"and figures this session started with, and its recorded "
+                    f"evidence was verified against them. Point --paper at "
+                    f"the original bundle, or start a fresh session against "
+                    f"the new one."
                 )
         s = cls(session_dir, meta)
         # A hard kill (power loss) mid-append can leave the last line of the
@@ -782,8 +847,12 @@ class Session:
         some of these reset on resume, so a run resumed N times would
         otherwise append N identical copies; the strings are fully keyed
         (study and specific degradation), so exact-match dedup suffices.
-        The list is created on first use, so a session that has recorded no
-        warning carries no empty `warnings` key.
+
+        The key is ALWAYS present: `Session.create` writes `"warnings": []`, so
+        a session that recorded none carries an empty list rather than no key
+        and a reader never has to tell "nothing to report" apart from "written
+        by something that did not record this". The `setdefault` below is a
+        guard for a meta dict assembled some other way, not the ordinary path.
         """
         warnings = self.meta.setdefault("warnings", [])
         if message in warnings:
@@ -989,6 +1058,12 @@ class Session:
         terminate, ...) are ignored here; they are contextual or carry their
         own message construction in the orchestrator.
 
+        The rebuilt conversation always ends on a USER message. A trailing turn
+        that logged its assistant side and never its user side is a kill in the
+        window between those two appends, and it is dropped rather than
+        replayed — see the guard below for why an assistant-final conversation
+        is not merely untidy but unsendable.
+
         Only the EXTRACTOR's turns are rebuilt. The final reviewer runs its own
         tool loop, whose conversation is deliberately fresh-context and is not
         `self.messages`; replaying it here would splice reviewer turns into the
@@ -1048,6 +1123,25 @@ class Session:
                     "tool_use_id": e["tool_use_id"],
                     "content": result_to_model_text(e["result"]),
                 })
+
+        # A LAST turn with an assistant side and no user side is dropped, and
+        # only the last one. Every completed turn has both — a tool-calling
+        # turn's tool results, a text-only turn's re-prompt — so this shape is
+        # a kill in the window between the two appends. Replaying it would end
+        # the conversation on an assistant message, which the next call sends
+        # as a PREFILL: the model is asked to continue its own narration
+        # instead of answering, and a prefill ending in whitespace is refused
+        # by the API outright, so the resume fails on its first call. Dropping
+        # the turn re-sends it cleanly — the turn made no tool call and changed
+        # no extraction record, so nothing is lost but the model's own words
+        # about it, which the event log still holds. A dangling turn EARLIER in
+        # the log is not this: it would mean the run continued past a turn with
+        # no user side, which nothing can produce, so it is left in place for
+        # `_replay_assistant_content` to meet on its own terms.
+        if order:
+            last = turns[order[-1]]
+            if last["assistant"] is not None and not last["user"]:
+                order = order[:-1]
 
         messages = []
         for tid in order:

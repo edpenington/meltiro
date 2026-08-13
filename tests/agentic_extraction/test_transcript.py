@@ -708,8 +708,12 @@ def _use_real_fanout(monkeypatch, content=None):
             )
 
     real = checker_mod.run_checker_batch
-    monkeypatch.setattr(orch_mod, "run_checker_batch",
-                        lambda **kw: real(adapter=_Adapter(), **kw))
+    # The orchestrator now supplies its own cached adapter (one per run, so a
+    # fan-out reuses the connection pool the last one left warm), so the stub
+    # REPLACES that argument rather than adding one.
+    monkeypatch.setattr(
+        orch_mod, "run_checker_batch",
+        lambda **kw: real(**{**kw, "adapter": _Adapter()}))
 
 
 # ---------------------------------------------------------------------------

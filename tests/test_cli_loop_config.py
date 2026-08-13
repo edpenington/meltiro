@@ -195,8 +195,11 @@ class TestOutputCapsAreUsableBudgets:
 _CARD = {"input_per_1m": 3.0, "output_per_1m": 15.0,
          "cache_read_per_1m": 0.3, "cache_write_per_1m": 3.75}
 # The same card as it is recorded, with the provenance an operator card carries:
-# written by hand, so no reading date and no table behind it.
-_CARD_RECORD = dict(_CARD, source="operator", as_of=None, table_version=None)
+# written by hand, so no reading date and no table behind it. The optional
+# 1-hour cache-write rate is recorded as null rather than left out, so a reader
+# never has to tell "no rate" apart from "no key".
+_CARD_RECORD = dict(_CARD, source="operator", as_of=None, table_version=None,
+                    cache_write_1h_per_1m=None)
 
 
 class TestRatesWiring:
@@ -389,6 +392,18 @@ class TestRatesWiring:
         assert "rates" in KNOWN_PIPELINE_KEYS
 
 
+def _pricing(orch):
+    """The startup rate report the orchestrator carries.
+
+    Carried rather than printed at build time: every pre-spend refusal has to
+    come first, and the resume gates run after `_build_orchestrator` returns
+    (see `cli._announce`). The CONTENT is what these tests are about, so they
+    read it where it is composed; that it reaches stdout before the run, and
+    only then, is `TestNothingIsAnnouncedAboveARefusal` in test_cli.py.
+    """
+    return "\n".join(orch.pricing_report)
+
+
 class TestStartupSaysHowEachRoleIsPriced:
     """Every enabled role gets one line at startup naming what will price it.
 
@@ -398,46 +413,45 @@ class TestStartupSaysHowEachRoleIsPriced:
     the first is visible in `pipeline.yaml`."""
 
     def test_a_table_priced_role_names_the_date_and_its_age(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+            self, config_dir, bundle_minimal_dir, tmp_path):
         loop_cfg = _pipeline(config_dir)
         loop_cfg.pop("rates", None)
-        _orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        out = capsys.readouterr().out
+        out = _pricing(_orch(config_dir, bundle_minimal_dir, tmp_path,
+                             loop_cfg))
         assert "Pricing, extractor (claude-opus-4-8): direktoro price table" \
             in out
         assert "days ago" in out
 
     def test_an_operator_priced_role_says_where_the_card_came_from(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+            self, config_dir, bundle_minimal_dir, tmp_path):
         loop_cfg = _pipeline(config_dir)
         loop_cfg["rates"] = {"checker": dict(_CARD)}
-        _orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
         assert ("Pricing, checker (claude-sonnet-4-6): the card written for "
                 "this role under `rates:` in pipeline.yaml."
-                ) in capsys.readouterr().out
+                ) in _pricing(_orch(config_dir, bundle_minimal_dir, tmp_path,
+                                    loop_cfg))
 
     def test_a_routed_role_is_priced_per_call_not_called_unpriced(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+            self, config_dir, bundle_minimal_dir, tmp_path):
         # A routed model's cost is the charge the gateway reports, so the role
         # is fully priced with no card and is not looked up in the table.
         loop_cfg = _pipeline(config_dir)
         loop_cfg["review_model"] = "z-ai/glm-5v-turbo"
         orch = _orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        out = capsys.readouterr().out
+        out = _pricing(orch)
         assert ("Pricing, review (z-ai/glm-5v-turbo): routed, so every call "
                 "is priced at the charge the gateway reports for it.") in out
         assert "unpriced" not in out
         assert orch.rates["review"] is None
 
     def test_an_unpriced_role_says_the_run_states_no_total(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys,
-            monkeypatch):
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
         from direktoro import prices
         monkeypatch.setattr(prices, "price_for", lambda model: None)
         loop_cfg = _pipeline(config_dir)
         loop_cfg.pop("rates", None)
-        _orch(config_dir, bundle_minimal_dir, tmp_path, loop_cfg)
-        out = capsys.readouterr().out
+        out = _pricing(_orch(config_dir, bundle_minimal_dir, tmp_path,
+                             loop_cfg))
         assert "Pricing, extractor (claude-opus-4-8): unpriced." in out
         assert "the run states no total" in out
 

@@ -2,9 +2,16 @@
 final reviewer. The `request` record is the canonical request as the adapter
 built it — every key it carries, with only inline image bytes stubbed — and
 the `response` record is the full response (id, model, stop_reason, usage,
-content). Both are written to `api_calls.jsonl` in the session directory at
-the time of the call; a wire request that differs from the canonical one is
-stored beside it, redacted the same way (`redact_wire_request`).
+content). Both are written to `diagnostics/api_calls.jsonl` inside the session
+directory at the time of the call; a wire request that differs from the
+canonical one is stored beside it, redacted the same way
+(`redact_wire_request`).
+
+THE FILE EXISTS ONLY AT `--diagnostics full`. It is the one artefact the lower
+levels omit, and `Session.log_api_call` returns without writing there, so the
+file is never created rather than created empty — an empty one would read as a
+run that made no calls. Every other diagnostic, the event log included, is
+kept at every level (see `meltiro.diagnostics`).
 
 The ONLY redaction is for inbound image content blocks: the model's
 input messages contain base64-encoded PNG bytes (large, and identical
@@ -46,9 +53,14 @@ def make_entry(call_type: str, request_kwargs: dict, response: Any,
     the result to api_calls.jsonl under a lock.
 
     `call_type` ∈ {"extractor", "checker", "final_review"}. `extra`
-    carries call-site identifiers: `turn_id` for extractor, `round`
-    and `field_path` for checker, provider/base_url/wire_model for provenance,
-    and an optional `wire_request` — the request that actually went out.
+    carries call-site identifiers: `turn_id` for the extractor and the
+    reviewer; `field_path`, `check_index` and `ask` for the checker —
+    `field_path` naming the field the check was about, `check_index` which of
+    that field's budgeted checks this was, and `ask` (0-based) which attempt
+    within one check, so a re-asked check leaves both of its billed calls in
+    the log and they are told apart. Plus provider/base_url/wire_model for
+    provenance, and an optional `wire_request` — the request that actually
+    went out.
 
     That key is written ONLY when the wire request is not the canonical one
     already stored under `request`. Every adapter response carries a

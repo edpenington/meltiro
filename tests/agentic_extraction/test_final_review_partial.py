@@ -167,7 +167,7 @@ def _review_orch(tmp_path, template, paper_text, image_labels, response,
     monkeypatch.setattr(orch_mod, "build_review_user_blocks",
                         lambda *a, **k: [{"type": "text", "text": "U"}])
     orch._accumulate_usage = lambda *a, **k: None
-    orch.session.log_api_call = lambda *a, **k: None
+    orch._log_api_call_guarded = lambda *a, **k: None
     return orch
 
 

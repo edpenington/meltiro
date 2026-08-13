@@ -7,8 +7,13 @@ It owns:
     quality_check),
   - the auto-assigned record IDs (`<entity>_<n>` in call order, where
     `<entity>` is the record entity the template declares),
-  - the `mark_complete` flag (set when the extractor declares completion;
-    cleared when the checker challenges a field),
+  - the `mark_complete` flag (set when the extractor declares completion,
+    and cleared by any subsequent write to a field or a record). A checker
+    challenge does NOT clear it: the checker is advisory, so a field still
+    challenged when its budget runs out is recorded in
+    `meta.checker_diagnostics` while the run finalises. What reopens the
+    extraction is the extractor revising something, which is a write, and
+    the write is what clears the flag,
 
 Schema convention:
   - `study` and each entry in `records` are dicts of
@@ -17,7 +22,9 @@ Schema convention:
   - `study` and each record also carry the reserved `notes` key (see
     `NOTES_KEY`): the scope note, a free-text string or null holding the
     extractor's commentary about that whole scope. It is not a field: no
-    template may declare a field named `notes`, it is never validated, and
+    template may declare a field named `notes`, its CONTENT is never
+    validated (its type is: the dispatcher refuses a note that is not a
+    string or null, and says so without failing the call), and
     the checker never sees it.
   - `initial_check` and `quality_check` are keyed by the ROLE that recorded
     them (`{role: {variable: value}}`); each role's block is a flat
@@ -32,11 +39,17 @@ both are keyed by role at the top level,
     "initial_check": {"extractor": {...}},
     "quality_check": {"extractor": {...}, "review": {...}}
 
-The extractor's answers are recorded once and are never editable afterwards —
-no tool in the reviewer's catalogue accepts a check-block argument — and the
-reviewer records its OWN quality check under its own key. Only the extractor
-records an initial check (a pre-extraction act with no review-stage
-equivalent); the block is still role-keyed so the two shapes stay uniform.
+A role writes only its OWN block. The reviewer cannot touch the extractor's —
+no tool in the reviewer's catalogue accepts a check-block argument — and it
+records its own quality check under its own key. Within its own turn the
+extractor MAY revise: `record_initial_check` shallow-merges, so calling it
+again revises the variables it names and leaves the rest, which is what
+`engine_prompts/extractor_workflow.md` tells the extractor it can do. What is
+closed is the block's author, not its history.
+
+Only the extractor records an initial check (a pre-extraction act with no
+review-stage equivalent); the block is still role-keyed so the two shapes stay
+uniform.
 
 Role keys are a closed engine-owned vocabulary (`ROLES`); template field
 variables live one level deeper, so a template may declare a field named

@@ -11,19 +11,6 @@ class AgenticExtractionError(Exception):
     """Base class for all errors raised by this package."""
 
 
-class ValidationFailure(AgenticExtractionError):
-    """Raised by a tool dispatcher when a tool call fails validation.
-
-    Carries the structured errors list that will be returned to the model
-    in the tool_result block.
-    """
-
-    def __init__(self, errors):
-        # errors is a list of {path, code, message} dicts
-        self.errors = errors
-        super().__init__(f"{len(errors)} validation error(s)")
-
-
 class CheckerError(AgenticExtractionError):
     """Raised when one checker call cannot produce a verdict.
 
