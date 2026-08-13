@@ -120,7 +120,7 @@ PINNED_DIREKTORO_SOURCE = (
 GOLDEN_TEMPLATE_HASH = \
     "1821dbceb8ba6c4c8ac4835b155420d954a3c6c52ab1d1b42ee477e46c834ce5"
 GOLDEN_PROMPTS_HASH = \
-    "4b28100d08dd2f906de4edc46cd152c4a9ef41de77ec50b945d2b5b0de8bad54"
+    "fa382fa699eb0e3790ff4c1dd8d41308236a0b526cbdd9d4615beae56a79aa88"
 GOLDEN_REFERENCE_LISTS_HASH = \
     "51c7c7184b640abd363e95f5c169cb963760badb1792400a6ac5f017897fbcf6"
 GOLDEN_TOOL_SET_HASH = \
@@ -132,8 +132,8 @@ GOLDEN_EXTRACTOR_PROMPT_HASH = \
 
 # The instrument axis, as a run and `meltiro fingerprint` both record it.
 GOLDEN_INSTRUMENT_FP = ("instrument_fp:"
-                        "004336b29d085c079001e0108a60fb9acdd0aa2873e8e350a"
-                        "02b1401c8265e16")
+                        "c324fc7c142e42349ee2fc5ad697728e371b6abd562ad59d0"
+                        "f5fe9cb9b6dc3de")
 
 # Stage fingerprints over the fixture bundle's real content, with
 # PINNED_CALL_IDENTITY in place of the provider-call identity block.
@@ -141,11 +141,11 @@ GOLDEN_CONFIG_FP = ("config_fp:"
                     "56ade317167cd5031fc91a479565aee7144bcdd77de8b35cf"
                     "849828787b9a79e")
 GOLDEN_CHECKER_FP = ("checker_fp:"
-                     "47b32127bf0baaf2ee167bffc81ce64f83f113bf5e1a8b010"
-                     "7ebcb58b7888967")
+                     "cee4b1e57e3a2a194facb2f11ce77b87365053369e20a2646"
+                     "1849ebfa2505bc9")
 GOLDEN_REVIEW_FP = ("review_fp:"
-                    "9d59a73abc609e5780216e531996c4c61bdb8b2ce905c9649"
-                    "dbb04f466729503")
+                    "84a4e92c8d6716f092ecc86ee11abdd5f545e2c4dbeb5838b"
+                    "bb63bcc98d464d0")
 
 # The call axis over the same placeholder block.
 GOLDEN_CALL_FP = ("call_fp:"
@@ -178,8 +178,8 @@ PINNED_ENGINE_FP = ("engine_fp:"
 # The whole-run identity, composed from the stage goldens and the engine
 # placeholder above.
 GOLDEN_RUN_FP = ("run_fp:"
-                 "bdc5573895e802a9d19b224d5bd5678b765d9556e2882f83572665"
-                 "377e6f0d4d")
+                 "beac3a317e51d2906daa4284364ce3a80dd18111ccbdbd1b22ec3f"
+                 "15d87f1e31")
 GOLDEN_RUN_FP_EXTRACTOR_ONLY = ("run_fp:"
                                 "3a265743b81fc97cab5901b73ec20701e6967f18a"
                                 "a6c5da9d04ae8278787c713")

@@ -8,18 +8,16 @@ from meltiro.prompt_builder import (
 
 def test_review_system_message_renders(synthetic_template, review_system_path):
     txt = build_review_system_message(
-        image_labels={"table_01", "figure_01"},
         system_prompt_path=review_system_path,
         reference_lists={"gauge_list": [{"tool_name": "WDS-9"}]},
     )
     # Role framing.
     assert "final reviewer" in txt.lower() or "reviewer" in txt.lower()
-    # Image labels are mentioned so the reviewer knows what to cite.
-    # (The field catalogue lives in the extraction output JSON the reviewer
-    # reads as part of the user message, not in the system prompt;
-    # mirrors the extractor's tool-schema-based approach.)
-    assert "table_01" in txt
-    assert "figure_01" in txt
+    # The reference list is rendered in. The field catalogue lives in the
+    # extraction output JSON the reviewer reads as part of the user message,
+    # not here; the exhibits it may cite are labelled there too, which mirrors
+    # the extractor.
+    assert "WDS-9" in txt
 
 
 def test_review_user_blocks_includes_paper_images_and_extraction_record():
@@ -38,9 +36,15 @@ def test_review_user_blocks_includes_paper_images_and_extraction_record():
         ],
         "quality_check": {},
     }
-    blocks = build_review_user_blocks("376", paper, figures, extraction_record)
+    blocks = build_review_user_blocks(
+        "376", paper, figures, extraction_record,
+        {"table_01": "Table 1. Unit characteristics"})
     # Header mentions reviewing the study (neutral wording, no "#").
     assert "study 376" in blocks[0]["text"]
+    # Each attachment arrives under its label and the paper's caption for it.
+    assert any(b.get("text") == "[table_01] Table 1. Unit characteristics"
+               for b in blocks)
+    assert any(b.get("text") == "[figure_01]" for b in blocks)
     # Paper text included.
     assert any("WDS-9 administered" in b.get("text", "") for b in blocks)
     # Two image blocks.

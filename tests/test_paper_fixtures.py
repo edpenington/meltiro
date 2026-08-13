@@ -400,20 +400,22 @@ class TestPromptBuildingOverRealBundle:
         i2 = text.index("table_02")
         assert text.index("--- END PAPER TEXT ---") < i1 < i2
 
-    def test_build_system_message_with_real_bundle_labels(self, config_dir,
-                                                          bundle_tables_dir):
-        # The system prompt renders the paper's real figure labels and the
-        # config's reference list without crashing.
+    def test_build_system_message_over_the_real_config(self, config_dir,
+                                                       bundle_tables_dir):
+        # The system prompt renders the config's reference list without
+        # crashing, and carries nothing of the paper: the exhibits this bundle
+        # supplies are labelled where they arrive, in the user message.
         config = load_config_bundle(config_dir)
         template = load_template(config.template_path)
         b = load_bundle(bundle_tables_dir)
         txt = build_system_message(
-            image_labels=set(b.figures),
             system_prompt_path=config.extractor_system_path,
             reference_lists=config.reference_lists,
         )
         assert isinstance(txt, str) and txt
-        assert "figure_01" in txt
+        assert "WDS-9" in txt
+        for label in b.figures:
+            assert label not in txt
 
 
 # ---------------------------------------------------------------------------

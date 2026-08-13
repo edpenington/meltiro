@@ -564,7 +564,6 @@ def _degraded_verdict(message, spent):
         "error": message,
         "verdict": "challenge",
         "rationale": f"(checker error: {message})",
-        "notes": None,
         # Tagged here, at the source, so a downstream disposition never treats
         # a failed check as a genuine objection: an error-origin challenge must
         # never contribute to a trusted status.
@@ -644,7 +643,7 @@ def check_one_field(*, system_message_blocks, user_message_blocks, config,
     loop and fires once per retried transient failure; a failed attempt raises
     before the wire log runs, so it is the only trace one leaves.
 
-    Returns a dict with keys: verdict, rationale, notes, reprompted,
+    Returns a dict with keys: verdict, rationale, reprompted,
     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
     cost_usd. `cost_usd` is None when the call cannot be costed — a direct
     model and no rate card on `config` — so the token counters stand alone
@@ -877,7 +876,6 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
 
     verdict = tool_input.get("verdict")
     rationale = tool_input.get("rationale", "")
-    notes = tool_input.get("notes")  # optional free-text field
     # The schema advertises the vocabulary; nothing enforces it on the wire,
     # so a verdict outside it is refused here rather than believed. NOT
     # re-asked: a tool-free reply is an answer that never arrived, while this
@@ -908,7 +906,6 @@ def _ask_for_verdict(responses, *, system_message_blocks, user_message_blocks,
     return {
         "verdict": verdict,
         "rationale": rationale,
-        "notes": notes,
         # A genuine model verdict. The error path in run_checker_batch tags
         # its synthetic challenge with error_origin=True so a disposition can
         # tell a real challenge from a failed check; a genuine verdict is

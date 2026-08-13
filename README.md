@@ -332,10 +332,10 @@ Each role's system message opens with the engine's prompt for that role, and
 your prompt file for that role is appended after it; wherever both are present,
 one engine sentence marks the handover between the two. Your file supplies the
 review: its scope and criteria, what counts as one record, what each field
-means. One of the files below is conditional on the run's structure, and is
-left out entirely when its stage is switched off. `checker_user.md` is the one
-that is not a system prompt: it is the scaffold each per-field checker message
-is rendered from, and the Checker's own system message is `checker.md`.
+means. Two of the files below are conditional on the run's structure, and are
+left out entirely when their stage is switched off. `checker_user.md` is the
+one that is not a system prompt: it is the scaffold each per-field checker
+message is rendered from, and the Checker's own system message is `checker.md`.
 
 | File | Role | What it states |
 |---|---|---|
@@ -344,11 +344,12 @@ is rendered from, and the Checker's own system message is `checker.md`.
 | `checker.md` | Checker | what the checker is, what one field arrives with, and what a verdict says |
 | `checker_user.md` | Checker | the scaffold of the per-field message: field, context, evidence, value |
 | `reviewer.md` | Reviewer | what the reviewer is, how to read the record it is given, and how the review ends |
+| `reviewer_checker_feedback.md` | Reviewer | *conditional, composed into `reviewer.md` only when the Checker runs*: the same protocol for a challenge on a field the Reviewer itself wrote |
 
 A review **overrides** a file by shipping `prompts/partials/meltiro/NAME.md`.
 Non-empty text replaces that file's text; text that is empty removes it, which
 is the only way to keep engine text out of a model's context. Overriding a
-role's file replaces the whole of that role's engine half, the conditional file
+role's file replaces the whole of that role's engine half, its conditional file
 included — what renders is your text and nothing else. The filename is the
 whole of the wiring, so that directory is enumerated at load: a file named for
 nothing the engine ships (`extracter.md`, `Extractor.md`, `house_style.md`) is

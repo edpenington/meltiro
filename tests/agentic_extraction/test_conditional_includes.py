@@ -68,7 +68,6 @@ def bundle(tmp_path, config_dir):
 
 def _render(root, *, max_checks_per_field, final_review=True):
     return build_system_message(
-        [],
         system_prompt_path=root / "prompts" / "extractor_system.md",
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
@@ -233,7 +232,7 @@ class TestTheRunHashesWhatItRendered:
             config, load_template(config.template_path), config.reference_lists,
             max_checks_per_field=0, final_review=True,
             check_reviewer_edits=False)
-        assert BLOCK not in overridden.render_extractor_system_text([])
+        assert BLOCK not in overridden.render_extractor_system_text()
         assert overridden.config.prompts_hash_for(overridden.predicates()) != \
             config.prompts_hash
 

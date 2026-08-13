@@ -2,13 +2,16 @@
 
 The system message is the LARGE cacheable block: the role's engine prompt
 (`meltiro.prompt_partials`), one transition sentence, and then the config
-bundle's own prompt file for that role, with the image-label list and the
-rendered reference lists substituted into both halves. The field catalogue is
-NOT in it; it lives in the tool `input_schema`s, which are built from the
-extraction template (see `meltiro.tools`).
-The initial user message is also cached: paper text + every cropped
-image. Both get `cache_control: ephemeral` markers so turns 2..N pay the
-0.1x cache-read rate on the bulk of the prompt.
+bundle's own prompt file for that role, with the rendered reference lists
+substituted into both halves. Nothing about the paper is in it, so one config
+yields one system message however many studies it extracts. The field
+catalogue is NOT in it either; it lives in the tool `input_schema`s, which are
+built from the extraction template (see `meltiro.tools`).
+The initial user message is also cached: paper text + every cropped image,
+each image under its label and the paper's caption for it, which is where a
+role learns what an `<img>` citation may name. Both get
+`cache_control: ephemeral` markers so turns 2..N pay the 0.1x cache-read rate
+on the bulk of the prompt.
 
 After the first turn the orchestrator only appends `tool_use` /
 `tool_result` blocks; those are not cached and grow per turn.
@@ -22,10 +25,13 @@ from the engine's half of its system message to the review's. Each piece of
 engine wording lives here, next to the builders that emit it, so it has a
 single home.
 
-Nothing here tells the reviewer that a checker exists. The reviewer is shown
-the paper, the figures, and the assembled extraction output, and nothing
-else: a checker challenge is a per-field note delivered in a tool result,
-never a preamble to the review.
+Nothing the reviewer is HANDED names a checker. It is shown the paper, the
+figures, and the assembled extraction output, and nothing else: a challenge is
+a per-field note delivered in the tool result of a write the reviewer itself
+made, never a preamble to the review and never a report on the extractor's
+run. What the reviewer's engine prompt says about that protocol is the
+engine's own text (`meltiro.engine_prompts`), and it follows the checker stage
+like the extractor's does.
 
 Framing is engine text, so it rides in no fingerprint; the run's recorded
 `engine_fp` identifies it (see `fingerprint`'s module docstring).
@@ -133,55 +139,49 @@ REVIEW_BUNDLE_TRANSITION = (
 EMPTY_ASSISTANT_PLACEHOLDER = "(the model returned no text or tool call.)"
 
 
-def _render_image_labels(image_labels, captions=None):
-    """Render the image-label list a role is shown in its system prompt.
+def image_label_text(label, captions=None):
+    """The text block that introduces one attached exhibit.
 
-    Each line carries the label and, when the paper bundle declared one, the
-    exhibit's caption: a bare `table_01` says nothing about what the image
-    holds, so a model reading it has to guess which crop to cite. The label
-    stays first and stays code-formatted on its own, because it is what an
-    `<img>label</img>` citation must contain; the caption follows it as
-    description, after a colon.
+    The label first and alone in brackets, because it is what an
+    `<img>label</img>` citation must contain; the paper's own caption after
+    it, so a model reading `[table_01]` can tell which crop it is looking at
+    without guessing. `captions` is a label -> caption map
+    (`PaperBundle.exhibits`), looked up on the same normalised key the
+    dispatcher matches a citation on; a label the map has no entry for renders
+    as the bare label, which is what a caller with no caption map at all gets.
 
-    `captions` is a label -> caption map (`PaperBundle.exhibits`). A label with
-    no entry renders as the bare label, so a caller with no caption map (a
-    fingerprint render, a test) gets the label list and nothing else.
+    One definition, used by the message builders and by the text-only render
+    the session captures, so the recorded prompt cannot drift from the
+    message.
     """
-    if not image_labels:
-        return "(no figures or tables were cropped for this study)"
-    captions = captions or {}
-    lines = []
-    for lbl in sorted(image_labels):
-        caption = captions.get(lbl)
-        lines.append(f"- `{lbl}`: {caption}" if caption else f"- `{lbl}`")
-    return "\n".join(lines)
+    caption = (captions or {}).get(str(label).strip().lower())
+    return f"[{label}] {caption}" if caption else f"[{label}]"
 
 
 def _partials_dir(system_prompt_path):
     return Path(system_prompt_path).parent / "partials"
 
 
-def _fill_slots(text, system_prompt_path, *, reference_lists, image_labels,
-                image_captions, max_checks_per_field):
+def _fill_slots(text, system_prompt_path, *, reference_lists,
+                max_checks_per_field):
     """Substitute everything the engine puts into a rendered prompt.
 
     Applied to the engine's half and to the bundle's appended text by the
-    same call, so a slot means the same thing whichever half wrote it: an
-    override may render the image-label list exactly as the text it replaces
-    did.
+    same call, so a slot means the same thing whichever half wrote it.
+
+    Two substitutions and no third: the bundle's reference lists, and the
+    run's per-field check budget. A system message therefore says nothing
+    about a particular paper, which is what makes it identical across every
+    study extracted under one config.
     """
     text = substitute_reference_placeholders(
         text, reference_lists,
         path=bundle_root_for_prompt(system_prompt_path))
-    text = text.replace(
-        "{image_labels_list}",
-        _render_image_labels(image_labels, image_captions))
     return text.replace("{max_checks_per_field}", str(max_checks_per_field))
 
 
 def render_bundle_prompt_text(system_prompt_path, *, predicates,
-                              reference_lists=None, image_labels=(),
-                              image_captions=None, max_checks_per_field=2):
+                              reference_lists=None, max_checks_per_field=2):
     """Render the config bundle's own prompt file for a role.
 
     The half a review writes: its prompt file with `{include:NAME}` partials
@@ -195,27 +195,23 @@ def render_bundle_prompt_text(system_prompt_path, *, predicates,
         predicates=predicates)
     return _fill_slots(
         text, system_prompt_path, reference_lists=reference_lists,
-        image_labels=image_labels, image_captions=image_captions,
         max_checks_per_field=max_checks_per_field)
 
 
 def _render_engine_half(role, system_prompt_path, *, predicates,
-                        reference_lists, image_labels, image_captions,
-                        max_checks_per_field):
+                        reference_lists, max_checks_per_field):
     text = compose_engine_prompt(
         role, _partials_dir(system_prompt_path), predicates=predicates)
     return _fill_slots(
         text, system_prompt_path, reference_lists=reference_lists,
-        image_labels=image_labels, image_captions=image_captions,
         max_checks_per_field=max_checks_per_field)
 
 
-def build_system_message(image_labels, *,
+def build_system_message(*,
                          system_prompt_path,
                          max_checks_per_field=2,
                          final_review=True,
-                         reference_lists=None,
-                         image_captions=None):
+                         reference_lists=None):
     """Build the extractor's system message text.
 
     The extractor's engine prompt first, then the config bundle's prompt file
@@ -226,9 +222,10 @@ def build_system_message(image_labels, *,
     Every `{reference:NAME}` placeholder is substituted with the config
     bundle's rendered reference list; an unresolvable one fails loudly.
 
-    `image_captions` is the paper bundle's label -> caption map, rendered
-    alongside each label in `{image_labels_list}` so the extractor can tell
-    which crop to cite without guessing.
+    Nothing about the paper reaches here. The cropped exhibits the extractor
+    may cite are labelled where they arrive, in the user message
+    (`build_initial_user_blocks`), so this text is one string for the whole
+    config rather than one per study.
 
     The tool-call cap has no placeholder: `{max_tool_calls}` is not
     substituted, and `load_config_bundle` rejects any prompt that cites it —
@@ -239,8 +236,7 @@ def build_system_message(image_labels, *,
     cache_control text block before sending.
     """
     predicates = stage_predicates(max_checks_per_field, final_review)
-    slots = dict(reference_lists=reference_lists, image_labels=image_labels,
-                 image_captions=image_captions,
+    slots = dict(reference_lists=reference_lists,
                  max_checks_per_field=max_checks_per_field)
     return join_role_message(
         _render_engine_half(EXTRACTOR_SYSTEM, system_prompt_path,
@@ -260,9 +256,9 @@ def build_config_prompt_text(role, *, system_prompt_path,
     bundle's appended text as it renders, and the bundle's overrides of the
     engine prompts this run composes for `role`.
 
-    Rendered with an empty `image_labels` list, so the per-paper figure/table
-    label set (and the per-paper exhibit captions beside it) reaches no hash
-    and two extractions of different papers under one config share the value.
+    Nothing of the paper reaches it, because nothing of the paper reaches a
+    system message: two extractions of different papers under one config
+    share the value.
     Reference-list CONTENT does reach it, inlined into the bundle's own text:
     editing a list moves it. Values the engine substitutes into text of the
     author's own reach it too — a bundle that writes `{max_checks_per_field}`
@@ -281,7 +277,7 @@ def build_config_prompt_text(role, *, system_prompt_path,
     return config_prompt_preimage(
         render_bundle_prompt_text(
             system_prompt_path, predicates=predicates,
-            reference_lists=reference_lists, image_labels=[],
+            reference_lists=reference_lists,
             max_checks_per_field=max_checks_per_field),
         engine_override_pairs(role, _partials_dir(system_prompt_path),
                               predicates=predicates),
@@ -323,13 +319,15 @@ def system_message_blocks(text):
     ]
 
 
-def render_user_prompt_text(study_id, paper_text, image_labels):
+def render_user_prompt_text(study_id, paper_text, image_labels,
+                            image_captions=None):
     """Render the text-only view of the initial user message.
 
     Mirrors `build_initial_user_blocks` minus the base64 image bytes,
     suitable for capturing inline into the session as the canonical
     "what was the user prompt" record. The exact text strings match
-    those `build_initial_user_blocks` emits as text content blocks.
+    those `build_initial_user_blocks` emits as text content blocks, captions
+    included.
     """
     header = _extractor_header(study_id)
     parts = [
@@ -338,18 +336,21 @@ def render_user_prompt_text(study_id, paper_text, image_labels):
         + "\n--- END PAPER TEXT ---",
     ]
     for label in image_labels:
-        parts.append(f"[{label}]")
+        parts.append(image_label_text(label, image_captions))
         parts.append(f"(image: {label}.png)")
     return "\n\n".join(parts)
 
 
-def build_initial_user_blocks(study_id, paper_text, figures):
+def build_initial_user_blocks(study_id, paper_text, figures,
+                              image_captions=None):
     """Build the initial user message content blocks.
 
     Args:
         study_id: study identifier (used in the header).
         paper_text: the paper's full text (from PaperBundle.text).
         figures: list of (label, png_bytes) tuples.
+        image_captions: label -> caption map (`PaperBundle.exhibits`), so each
+            attachment arrives under the caption the paper prints beside it.
 
     Returns a list of content blocks. The LAST block carries
     cache_control: ephemeral so the whole user message caches.
@@ -363,8 +364,10 @@ def build_initial_user_blocks(study_id, paper_text, figures):
     })
 
     for label, png_bytes in figures:
-        # Label first so the model can refer to it by name in `source`.
-        blocks.append({"type": "text", "text": f"[{label}]"})
+        # Label first so the model can refer to it by name in `source`, and
+        # the caption beside it so it knows which exhibit it is looking at.
+        blocks.append({"type": "text",
+                       "text": image_label_text(label, image_captions)})
         blocks.append({
             "type": "image",
             "source": {
@@ -380,12 +383,11 @@ def build_initial_user_blocks(study_id, paper_text, figures):
     return blocks
 
 
-def build_review_system_message(image_labels, *,
+def build_review_system_message(*,
                                  system_prompt_path,
                                  max_checks_per_field=2,
                                  final_review=True,
-                                 reference_lists=None,
-                                 image_captions=None):
+                                 reference_lists=None):
     """Build the FINAL REVIEW system message text.
 
     The reviewer's engine prompt first, then the config bundle's review
@@ -394,16 +396,15 @@ def build_review_system_message(image_labels, *,
 
     The reviewer's engine prompt is its own: it frames the model as the reader
     of an already-completed extraction, where the extractor's frames the
-    writer of one. The same image labels are rendered in, with the exhibit
-    captions beside them exactly as the extractor saw them; the field
+    writer of one. Its cropped exhibits arrive labelled in the user message
+    exactly as the extractor's did (`build_review_user_blocks`); the field
     catalogue reaches it through the tool `input_schema`s, as it does the
     extractor. `{reference:NAME}` placeholders are substituted; the tool-call
     cap placeholders are rejected at config-load time (see
     `build_system_message`).
     """
     predicates = stage_predicates(max_checks_per_field, final_review)
-    slots = dict(reference_lists=reference_lists, image_labels=image_labels,
-                 image_captions=image_captions,
+    slots = dict(reference_lists=reference_lists,
                  max_checks_per_field=max_checks_per_field)
     return join_role_message(
         _render_engine_half(REVIEW_SYSTEM, system_prompt_path,
@@ -415,12 +416,13 @@ def build_review_system_message(image_labels, *,
 
 
 def build_review_user_blocks(study_id, paper_text, figures,
-                             extraction_record_dict):
+                             extraction_record_dict, image_captions=None):
     """Build the user content blocks for the final-review pass.
 
-    The reviewer sees the paper text + all cropped images + the
-    assembled extraction output as a JSON block, framed as "review and confirm
-    or revise". Last block carries cache_control.
+    The reviewer sees the paper text + all cropped images, each under its
+    label and the paper's caption for it, + the assembled extraction output as
+    a JSON block, framed as "review and confirm or revise". Last block carries
+    cache_control.
 
     Nothing here reveals that a checker exists: no challenge, no rationale,
     no count of contested cells. The reviewer forms its own view — the
@@ -452,7 +454,8 @@ def build_review_user_blocks(study_id, paper_text, figures,
     })
 
     for label, png_bytes in figures:
-        blocks.append({"type": "text", "text": f"[{label}]"})
+        blocks.append({"type": "text",
+                       "text": image_label_text(label, image_captions)})
         blocks.append({
             "type": "image",
             "source": {

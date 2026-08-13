@@ -806,8 +806,8 @@ class _Renderer:
             roles = ", ".join(f"`{r}`" for r in sorted(omitted))
             self._p(
                 f"The paper's figures were withheld from {roles}: that role's "
-                "model is text-only, so it was sent no image parts and its "
-                "image-label list rendered as the none-available state."
+                "model is text-only, so it was sent no image parts and none "
+                "of the labels that introduce them."
             )
             self._p()
         transport = meta.get("transport")
@@ -1155,9 +1155,10 @@ class _Renderer:
             "instrument-extractor-user",
             "2.2 The extractor's first user message",
             self.s.instrument["extractor_user"],
-            "The text portion of the opening user message: the paper text and "
-            "the image-label notice. Any figures went alongside it as image "
-            "parts, and are listed in 2.6.",
+            "The text portion of the opening user message: the paper text, "
+            "and each attached exhibit's label and caption. The figures "
+            "themselves went alongside it as image parts, and are listed in "
+            "2.6.",
         )
         self._render_prompt(
             "instrument-review-system",
@@ -1820,10 +1821,6 @@ class _Renderer:
         self._p()
         self._block(_quote(_present(verdict.get("rationale"),
                                     "(no rationale recorded)")))
-        if verdict.get("notes"):
-            self._p("Its own note on the verdict:")
-            self._p()
-            self._block(_quote(verdict["notes"]))
 
     @staticmethod
     def _verdict_cost_cell(verdict):

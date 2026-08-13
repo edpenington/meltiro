@@ -59,10 +59,10 @@ rides in `reference_hash` beside it, as it does for every other override.
 
 The system prompt has an allowlist of its own
 (`config_bundle._CHECKER_SYSTEM_PLACEHOLDERS`), holding the one slot this
-function substitutes: `{max_checks_per_field}`. The checker is sent no image
-labels, so `{image_labels_list}` in a bundle's checker prompt or in an
-override of the checker's engine prompt is a load error naming that variable
-rather than a literal token in front of the model.
+function substitutes: `{max_checks_per_field}`. Any other brace-wrapped token
+in a bundle's checker prompt, or in an override of the checker's engine
+prompt, is a load error naming that variable rather than a literal token in
+front of the model.
 """
 
 import base64

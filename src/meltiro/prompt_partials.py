@@ -403,9 +403,8 @@ def compose_engine_prompt(role, partials_dir, *, predicates):
     override of the partial it silenced to change, here or in the fingerprints
     (`engine_override_pairs`).
 
-    Slots (`{image_labels_list}`, `{max_checks_per_field}`) are left for the
-    caller to fill, so this half and the bundle's appended text are filled by
-    the same substitution.
+    The `{max_checks_per_field}` slot is left for the caller to fill, so this
+    half and the bundle's appended text are filled by the same substitution.
     """
     name = role_prompt_name(role)
     text, overridden = read_engine_prompt(name, partials_dir)

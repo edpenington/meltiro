@@ -50,7 +50,7 @@ def _stub_user_message(monkeypatch):
 
 def _verdict(verdict="ok", rationale="fine", **extra):
     base = {
-        "verdict": verdict, "rationale": rationale, "notes": None,
+        "verdict": verdict, "rationale": rationale,
         "error_origin": False, "input_tokens": 10, "output_tokens": 3,
         "cache_creation_tokens": 0, "cache_read_tokens": 0, "cost_usd": 0.001,
     }
@@ -375,13 +375,12 @@ class TestVerdictRouting:
         _, res = self._applied(
             tmp_path, synthetic_template, paper_text, image_labels, monkeypatch,
             {"study.primary_aim": _verdict(
-                "challenge", "no", notes="a longer aside", cost_usd=0.004,
+                "challenge", "no", cost_usd=0.004,
                 input_tokens=120, output_tokens=17)})
         entry = res["_checker_verdicts"]["study.primary_aim"]
         assert entry == {
             "verdict": "challenge",
             "rationale": "no",
-            "notes": "a longer aside",
             "value_checked": "Aim A",
             "evidence_checked": "<q>The WDS-9 was administered</q>",
             "note_checked": None,

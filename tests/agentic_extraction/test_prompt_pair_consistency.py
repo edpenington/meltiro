@@ -281,10 +281,18 @@ REFUTED_CLAIMS = [
 
 # Facts both prompts have to carry, so one cannot quietly drop what the other
 # asserts. Deliberately loose: they pin the subject matter, not the wording.
+#
+# They are about the SHAPE of a check, which is what the extractor weighs a
+# challenge by: one field at a time, on a narrow slice of context. How wide
+# that slice is, is described to the checker, which reads its own material,
+# and left to the checker's own prompt; a second description of it in the
+# extractor's would be a second copy free to drift from the code, which is
+# the failure the refuted claims above exist to catch.
 SHARED_FACTS = [
-    ("the surrounding paper text", [r"surrounding (?:paper )?text"]),
-    ("the table's header row or column headings",
-     [r"header row", r"column headings", r"headings"]),
+    ("the checker judging one field at a time", [r"one field at a time"]),
+    ("how little of the extraction the checker is given",
+     [r"limited (?:amount of )?context", r"deliberately narrow",
+      r"narrower model"]),
 ]
 
 
@@ -314,14 +322,18 @@ class TestTheTwoPromptsAgree:
             "describe the same checker."
         )
 
-    def test_the_table_claim_is_made_about_tables_in_both(
+    def test_the_question_the_checker_answers_is_the_same_in_both(
             self, extractor, checker):
-        # A header-row mention that is not about a table would satisfy the
-        # shared-fact check while saying nothing about the case that matters.
+        # The one thing the two prompts must agree on word for word in
+        # substance: what a verdict is a verdict ABOUT. An extractor briefed
+        # that the checker rules on the field as a whole, or on the extraction,
+        # would weigh every challenge against the wrong question.
         for role, text in (("extractor", extractor), ("checker", checker)):
             sentences = re.split(r"(?<=[.!?])\s+", text)
-            assert any("table" in s.lower()
-                       and re.search(r"header row|headings", s, re.I)
-                       for s in sentences), (
-                f"{role}_system.md never says, in one sentence, that a table "
-                "quote reaches the checker with the table's headings")
+            assert any(
+                re.search(r"\bevidence\b", s, re.I)
+                and re.search(r"\bsupports?\b", s, re.I)
+                and re.search(r"\bvalue\b", s, re.I)
+                for s in sentences), (
+                f"{role}_system.md never says, in one sentence, that the "
+                "checker judges whether the evidence supports the value")

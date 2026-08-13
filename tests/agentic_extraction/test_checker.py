@@ -62,12 +62,9 @@ class _ToolUse:
         self.input = tool_input
 
 
-def _verdict_block(verdict="ok", rationale="matches the quote", notes=None,
+def _verdict_block(verdict="ok", rationale="matches the quote",
                    *, name=CHECKER_VERDICT_TOOL_NAME):
-    payload = {"verdict": verdict, "rationale": rationale}
-    if notes is not None:
-        payload["notes"] = notes
-    return _ToolUse(name, payload)
+    return _ToolUse(name, {"verdict": verdict, "rationale": rationale})
 
 
 def _stream_returning_content(content, *, input_tokens=100, output_tokens=20,
@@ -92,9 +89,9 @@ def _stream_returning_content(content, *, input_tokens=100, output_tokens=20,
 
 
 def _stream_returning_verdict(verdict="ok", rationale="matches the quote",
-                              notes=None, **kw):
+                              **kw):
     return _stream_returning_content(
-        [_verdict_block(verdict, rationale, notes)], **kw)
+        [_verdict_block(verdict, rationale)], **kw)
 
 
 def _client_returning_content(content, **kw):
@@ -104,13 +101,11 @@ def _client_returning_content(content, **kw):
     return client
 
 
-def _client_returning(verdict="ok", rationale="matches the quote",
-                      notes=None, **kw):
+def _client_returning(verdict="ok", rationale="matches the quote", **kw):
     """A client whose every call answers with the verdict tool."""
     client = MagicMock()
     client.messages.stream = MagicMock(
-        return_value=_stream_returning_verdict(
-            verdict, rationale, notes, **kw))
+        return_value=_stream_returning_verdict(verdict, rationale, **kw))
     return client
 
 
@@ -179,13 +174,18 @@ class TestCheckOneField:
         )
         assert result["verdict"] == "challenge"
 
-    def test_notes_ride_through_when_given(self):
-        client = _client_returning("ok", "r", notes="borderline")
+    def test_the_verdict_record_is_the_verdict_and_its_rationale(self):
+        # Two keys of judgement and no third: whatever a checker model puts
+        # beside them is read by nobody, so the schema offers nowhere to put
+        # it and the record carries nowhere to keep it.
+        client = _client_returning("ok", "r")
         result = check_one_field(
             system_message_blocks=[], user_message_blocks=[],
             config=_config(), client=client,
         )
-        assert result["notes"] == "borderline"
+        assert result["verdict"] == "ok"
+        assert result["rationale"] == "r"
+        assert "notes" not in result
 
     def test_call_sends_the_verdict_tool_and_asks_for_it(self):
         # The verdict tool is on every checker request, and the call asks for

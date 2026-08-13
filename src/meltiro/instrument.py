@@ -175,29 +175,25 @@ class Instrument:
     # The extractor's instrument
     # ----------------------------------------------------------------------
 
-    def render_extractor_system_text(self, image_labels, image_captions=None):
-        """The extractor's rendered system message, for `image_labels`.
+    def render_extractor_system_text(self):
+        """The extractor's rendered system message.
 
-        The label set is the caller's because it is a fact about the run, not
-        the instrument: a text-only extractor is given an empty set and the
-        prompt renders its none-available state, while an image-capable one
-        gets the bundle's real labels and the captions beside them.
+        Paper-independent by construction: the cropped exhibits a run attaches
+        are labelled in the extractor's user message, so the same string
+        serves every study extracted under this instrument.
         """
         return build_system_message(
-            image_labels,
             system_prompt_path=self.config.extractor_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
             reference_lists=self.reference_lists,
-            image_captions=image_captions,
         )
 
     def extractor_prompt_hash(self):
         """Paper-INDEPENDENT hash of the extractor's system prompt.
 
-        The same prompt re-rendered with an empty image-label list, so two
-        papers extracted under one config share a `config_fp`. The prompt the
-        model is actually sent keeps the real labels.
+        Two papers extracted under one config share a `config_fp`, because
+        nothing about a paper reaches a system prompt.
         """
         return compute_prompt_config_hash(
             system_prompt_path=self.config.extractor_system_path,
@@ -233,8 +229,8 @@ class Instrument:
     # The reviewer's instrument
     # ----------------------------------------------------------------------
 
-    def render_review_system_text(self, image_labels, image_captions=None):
-        """The reviewer's rendered system message, for `image_labels`.
+    def render_review_system_text(self):
+        """The reviewer's rendered system message.
 
         The single place it is built, so the copy captured into
         `diagnostics/instrument/` at session creation and the copy sent to the
@@ -242,19 +238,17 @@ class Instrument:
         than by two call sites agreeing.
         """
         return build_review_system_message(
-            image_labels,
             system_prompt_path=self.config.review_system_path,
             max_checks_per_field=self.max_checks_per_field,
             final_review=self.final_review,
             reference_lists=self.reference_lists,
-            image_captions=image_captions,
         )
 
     def review_config_prompt_text(self):
         """The config-owned identity of the reviewer's system prompt.
 
-        Mirrors `extractor_prompt_hash`: paper-independent (no image labels
-        reach it) and engine-free, so an engine release that rewords the
+        Mirrors `extractor_prompt_hash`: paper-independent (no part of a
+        paper reaches it) and engine-free, so an engine release that rewords the
         reviewer's engine prompt leaves `review_fp` where it was and a
         bundle's own edit moves it.
         """
@@ -271,8 +265,8 @@ class Instrument:
         off (the review model is then not required, so it is not resolved
         through the registry; a null review_fp is recorded instead).
 
-        The review system prompt component is the CONFIG's half, rendered with
-        an EMPTY image-label list (mirroring `extractor_prompt_hash`) so two
+        The review system prompt component is the CONFIG's half, and it is
+        paper-independent (mirroring `extractor_prompt_hash`) so two
         papers under one config share the fingerprint and the engine's own
         prompts ride in `engine_fp` rather than here; reference-list
         substitution still applies, so editing a canonical name moves it. The

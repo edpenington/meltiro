@@ -20,8 +20,13 @@ extractor's fields are, and the challenge arrives inside that tool result. That
 is a note on its own proposed value, not a briefing about the run, and it is
 off by default. Both halves are pinned here.
 
-The reviewer's system prompt is config, not engine text: what the engine
-guarantees is everything it assembles around it, which is what these test.
+What these test is everything the engine ASSEMBLES for the reviewer: the
+message, the tool catalogue, and the two view tools. The reviewer's system
+prompt describes that narrow exception in general terms and is pinned in
+tests/agentic_extraction/test_engine_prompts.py, where the checker-off silence
+of both halves is asserted; what must never happen is a run's own challenges,
+rationales or contested-cell counts reaching the reviewer, and no assembled
+surface carries them.
 """
 
 import inspect
@@ -219,7 +224,8 @@ def test_build_review_user_blocks_has_no_challenge_parameter():
     # leave the next caller free to reopen it, so the signature is pinned too.
     params = inspect.signature(build_review_user_blocks).parameters
     assert list(params) == [
-        "study_id", "paper_text", "figures", "extraction_record_dict"]
+        "study_id", "paper_text", "figures", "extraction_record_dict",
+        "image_captions"]
 
 
 def test_final_review_passes_the_reviewer_nothing_but_the_output():

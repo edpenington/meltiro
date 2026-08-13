@@ -1,11 +1,11 @@
 """Declared image capability per role.
 
 A role whose model is marked `supports_images=False` is sent no image content
-blocks, has its `{image_labels_list}` rendered as the none-available state,
-validates `<img>` citations against an empty label set, and records the
-omission loudly (a per-role meta.images_omitted flag, a run-start stderr
-warning, and a fingerprint that moves with the flag). Every test here is
-offline: no network, no API key, no live client.
+blocks and none of the label blocks that introduce them, validates `<img>`
+citations against an empty label set, and records the omission loudly (a
+per-role meta.images_omitted flag, a run-start stderr warning, and a
+fingerprint that moves with the flag). Every test here is offline: no network,
+no API key, no live client.
 
 No text-only model exists in the shared registry: EVERY entry (Claude, GPT,
 and the routed GLM/Qwen vision slugs) supports images. So these tests inject a
@@ -30,8 +30,6 @@ from direktoro.registry import (
     known_models, model_info, model_supports_images)
 from meltiro.tools import ToolDispatcher
 
-
-NONE_AVAILABLE = "(no figures or tables were cropped for this study)"
 
 # A synthetic text-only model, injected into the registry by the autouse
 # fixture below. Direct (unrouted) OpenAI-compatible Chat Completions entry with
@@ -98,6 +96,14 @@ def _canonical_image_blocks(messages):
             if isinstance(block, dict) and block.get("type") == "image":
                 out.append(block)
     return out
+
+
+def _message_text(messages):
+    return "\n".join(
+        block.get("text", "")
+        for m in messages
+        for block in (m.get("content") or [])
+        if isinstance(block, dict) and block.get("type") == "text")
 
 
 # ---------------------------------------------------------------------------
@@ -204,29 +210,33 @@ class TestTextOnlyExtractor:
 
         orch._call_extractor(_Capture(), tool_defs=[])
         assert _canonical_image_blocks(captured["messages"]) == []
-        # And the system prompt it received renders the none-available state.
+        # No label block either: a label with no image behind it would invite
+        # a citation of an exhibit the model was never shown.
+        assert "table_01" not in _message_text(captured["messages"])
+        # And nothing about the paper is in the system prompt, whatever the
+        # model's capability.
         sys_text = "".join(b["text"] for b in captured["system"])
-        assert NONE_AVAILABLE in sys_text
         assert "table_01" not in sys_text
 
-    def test_image_labels_list_renders_none_available(
+    def test_the_labels_go_with_the_images(
             self, config_dir, bundle_minimal_dir, tmp_path):
         text_only = _orch(config_dir, bundle_minimal_dir, tmp_path / "glm",
                           extractor_model=TEXT_ONLY_MODEL)
         text_only.prepare_new_session()
-        assert NONE_AVAILABLE in text_only.system_text
-        assert "table_01" not in text_only.system_text
-        # The captured user prompt lists no image labels either.
+        # The captured user prompt lists no image label, and the system
+        # prompt never carried one.
         user_prompt = (text_only.session.instrument_dir /
                        "user_prompt.txt").read_text(encoding="utf-8")
         assert "table_01" not in user_prompt
+        assert "table_01" not in text_only.system_text
 
         capable = _orch(config_dir, bundle_minimal_dir, tmp_path / "opus",
                         extractor_model="claude-opus-4-7")
         capable.prepare_new_session()
-        # Positive control: an image-capable extractor lists the real label.
-        assert "table_01" in capable.system_text
-        assert NONE_AVAILABLE not in capable.system_text
+        # Positive control: an image-capable extractor is shown the real
+        # label, in the message the crop itself arrives in.
+        assert "table_01" in _message_text(capable.messages)
+        assert "table_01" not in capable.system_text
 
     def test_meta_flag_and_warning(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
@@ -300,7 +310,6 @@ class TestNoFiguresBundle:
         orch.prepare_new_session()
         assert _canonical_image_blocks(orch.messages) == []
         assert orch.session.meta["images_omitted"] == {}
-        assert NONE_AVAILABLE in orch.system_text
         assert "images-omitted" not in capsys.readouterr().err
 
     def test_text_only_extractor_withholds_nothing(

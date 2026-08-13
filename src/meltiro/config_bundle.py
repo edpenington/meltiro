@@ -671,11 +671,11 @@ _CHECKER_USER_PLACEHOLDERS = frozenset({
 
 # Every placeholder `checker_prompts.build_checker_system_text` substitutes
 # into the checker SYSTEM prompt: the per-field check budget, and nothing
-# else. The checker is sent no image labels, so `{image_labels_list}` in its
-# prompt would reach the model as a literal token, and the check below names
-# the variable instead. The extractor's and reviewer's prompts need no
-# allowlist of their own: `prompt_builder` substitutes every slot either of
-# them has.
+# else. Any other brace-wrapped token would reach the model as literal text,
+# and the check below names the variable instead. The extractor's and
+# reviewer's prompts need no allowlist of their own: `prompt_builder`
+# substitutes every slot the engine gives either of them, and this is the
+# same one.
 _CHECKER_SYSTEM_PLACEHOLDERS = frozenset({"max_checks_per_field"})
 
 # What counts as a placeholder for the checks above: a brace-wrapped lowercase

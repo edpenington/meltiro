@@ -958,6 +958,9 @@ CHECKER_VERDICTS = ("ok", "challenge")
 CHECKER_VERDICT_TOOL_NAME = "record_verdict"
 
 # The checker's whole catalogue: one tool, carrying one verdict on one field.
+# Two properties and no third: a verdict and the one short sentence behind it
+# are the whole of what a check is bought for, and every one of them is read by
+# the extractor or the reviewer that received it.
 #
 # Deliberately NOT part of `ROLES` / `all_tool_definitions` above. Those
 # catalogues are derived from the extraction template and hash into `config_fp`
@@ -1004,14 +1007,6 @@ _CHECKER_VERDICT_TOOL = {
                     "if you expect the extractor to change the value or the "
                     "evidence; if working through the rationale leaves you "
                     "content with the value, the verdict is `ok`."
-                ),
-            },
-            "notes": {
-                "type": "string",
-                "description": (
-                    "Optional. Any further observation that should reach a "
-                    "human reviewer but is not part of the verdict. Omit it "
-                    "when there is nothing to add."
                 ),
             },
         },

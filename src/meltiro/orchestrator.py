@@ -28,14 +28,15 @@ narrow checker call — re-asked once, as a correction, if it comes back with no
 verdict — and any challenge comes back in the same tool result as the
 validation errors. A challenge is advisory. The model overrules it by ignoring
 it (no reply, no tool call, no counter-argument); revising the field sends the
-new value for one further check, bounded by `max_checks_per_field`. No challenge blocks mark_complete; a field still
+new value for another check only while that field's `max_checks_per_field`
+budget lasts. No challenge blocks mark_complete; a field still
 challenged when its budget runs out is recorded in `meta.checker_diagnostics`
 while the run finalises `complete`.
 
-The final reviewer is never told a checker exists. Its prompt carries the
-paper, the figures, and the extraction output, and nothing else; with
-`check_reviewer_edits` on it sees a challenge on a field it just wrote, and
-still nothing more.
+The final reviewer is told nothing of what the checker did to the extraction it
+is reading. Its message carries the paper, the figures, and the extraction
+output, and nothing else; with `check_reviewer_edits` on it sees a challenge on
+a field it just wrote, in that write's own tool result, and still nothing more.
 
 This module owns the high-level state machine and the two things only a running
 study has: which model each role calls, and which paper is in front of it.
@@ -82,6 +83,7 @@ from meltiro.prompt_builder import (
     REVIEW_TOOL_REPROMPT,
     build_initial_user_blocks,
     build_review_user_blocks,
+    image_label_text,
     render_user_prompt_text,
     system_message_blocks as extractor_sys_blocks,
 )
@@ -345,10 +347,10 @@ class Orchestrator:
         self._refuse_unworkable_decoding()
 
         # Declared per-role image capability, from the registry. A text-only
-        # extractor gets no image parts, `{image_labels_list}` renders the
-        # none-available state, and its dispatcher validates against an empty
-        # label set, so citing an image it never saw fails as an unknown
-        # label. Checker and reviewer guard on their own role models.
+        # extractor gets no image parts and no label blocks, and its
+        # dispatcher validates against an empty label set, so citing an image
+        # it never saw fails as an unknown label. Checker and reviewer guard
+        # on their own role models.
         self.extractor_supports_images = model_supports_images(
             self.extractor_model)
 
@@ -544,11 +546,10 @@ class Orchestrator:
         honouring the extractor model's declared image capability.
 
         A text-only extractor gets no figures and an empty label set: no image
-        content block is built for it, its `{image_labels_list}` renders the
-        none-available state, and the dispatcher it drives validates `<img>`
-        citations against an empty set (so a citation of an unseen image fails
-        as an unknown label). An image-capable extractor gets the real
-        figures/labels, untouched by this method.
+        content block and no label block is built for it, and the dispatcher it
+        drives validates `<img>` citations against an empty set (so a citation
+        of an unseen image fails as an unknown label). An image-capable
+        extractor gets the real figures/labels, untouched by this method.
         """
         if self.extractor_supports_images:
             return self.figures, self.image_labels
@@ -658,11 +659,9 @@ class Orchestrator:
         """
         instrument = self.instrument
         ext_figures, ext_image_labels = self._extractor_image_inputs()
-        system_text = instrument.render_extractor_system_text(
-            ext_image_labels, self.image_captions)
-        # Paper-INDEPENDENT prompt hash: re-rendered with empty image_labels,
-        # so two papers under the same code share a config_fp. The actual
-        # system_text sent to the LLM keeps the real labels.
+        system_text = instrument.render_extractor_system_text()
+        # Paper-INDEPENDENT prompt hash: nothing of the paper reaches a system
+        # prompt, so two papers under the same code share a config_fp.
         prompt_hash = instrument.extractor_prompt_hash()
         tool_hash = instrument.tool_set_hash()
         ext_dec = resolved_decoding_params(
@@ -818,7 +817,7 @@ class Orchestrator:
         # user message are added at the extractor turn. A text-only
         # extractor gets no image blocks (ext_figures is empty).
         self.initial_user_blocks = build_initial_user_blocks(
-            self.study_id, self.paper_text, ext_figures,
+            self.study_id, self.paper_text, ext_figures, self.image_captions,
         )
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
@@ -835,8 +834,7 @@ class Orchestrator:
         # match the original session.
         instrument = self.instrument
         ext_figures, ext_image_labels = self._extractor_image_inputs()
-        self.system_text = instrument.render_extractor_system_text(
-            ext_image_labels, self.image_captions)
+        self.system_text = instrument.render_extractor_system_text()
         # Paper-INDEPENDENT prompt hash; see _build_fingerprints.
         prompt_hash = instrument.extractor_prompt_hash()
         tool_hash = instrument.tool_set_hash()
@@ -995,7 +993,7 @@ class Orchestrator:
         self._warn_images_withheld()
         self._warn_inert_decoding_params()
         self.initial_user_blocks = build_initial_user_blocks(
-            self.study_id, self.paper_text, ext_figures,
+            self.study_id, self.paper_text, ext_figures, self.image_captions,
         )
         replayed = self.session.replay_messages()
         self.messages = [
@@ -1041,7 +1039,12 @@ class Orchestrator:
         self.system_text = fps["system_text"]
 
         tool_catalogue = self.instrument.tool_catalogue()
-        figure_labels = sorted(self.image_labels)
+        # The exhibits as the extractor's user message will label them: the
+        # label it must cite, and the paper's caption beside it. Rendered
+        # through the message builders' own helper, so the preview cannot say
+        # one thing and the message another.
+        figure_labels = [image_label_text(label, self.image_captions)
+                         for label in sorted(self.image_labels)]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -1291,7 +1294,7 @@ class Orchestrator:
         if review_system is not None:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
-        print(f"\n=== FIGURE LABELS ({len(figure_labels)}) ===\n")
+        print(f"\n=== ATTACHED EXHIBITS ({len(figure_labels)}) ===\n")
         for lbl in figure_labels:
             print(f"  {lbl}")
         print("\n=== FINGERPRINTS ===\n")
@@ -1883,8 +1886,8 @@ class Orchestrator:
                 f"(or --no-final-review).")
 
         # Guard on the reviewer's own model: a text-only reviewer is sent no
-        # image parts and has its `{image_labels_list}` rendered as the
-        # none-available state, independent of the extractor's capability.
+        # image parts and no label blocks, independent of the extractor's
+        # capability.
         review_figures, _ = self._review_image_inputs()
         review_system_text = self._render_review_system_text()
         review_user_blocks = build_review_user_blocks(
@@ -1894,6 +1897,7 @@ class Orchestrator:
             # same reason the checker's verdicts are (see
             # build_review_user_blocks).
             self.extraction_record.to_dict(include_checks=False),
+            self.image_captions,
         )
         review_messages = [{"role": "user", "content": review_user_blocks}]
         tool_defs = get_tool_definitions(self.template, role=ROLE_REVIEW)
@@ -2361,31 +2365,28 @@ class Orchestrator:
         _, ext_image_labels = self._extractor_image_inputs()
         return render_user_prompt_text(
             self.study_id, self.paper_text,
-            sorted(ext_image_labels),
+            sorted(ext_image_labels), self.image_captions,
         )
 
     def _review_image_inputs(self):
         """The reviewer's effective (figures, labels).
 
         The reviewer guards on its OWN model: a text-only reviewer is sent no
-        image parts and has its `{image_labels_list}` rendered as the
-        none-available state, whatever the extractor could see.
+        image parts and no label blocks, whatever the extractor could see.
         """
         if model_supports_images(self.review_model):
             return self.figures, self.image_labels
         return [], set()
 
     def _render_review_system_text(self):
-        """The reviewer's rendered system message, for the labels the reviewer
-        can actually see.
+        """The reviewer's rendered system message.
 
-        The reviewer's own image capability decides the label set (a text-only
-        reviewer renders the none-available state whatever the extractor could
-        see); the instrument turns that set into the prompt.
+        Paper-independent, like the extractor's: which cropped exhibits the
+        reviewer actually receives is decided where they are attached
+        (`_review_image_inputs`, guarded on the reviewer's own model), not in
+        this text.
         """
-        _, review_image_labels = self._review_image_inputs()
-        return self.instrument.render_review_system_text(
-            review_image_labels, self.image_captions)
+        return self.instrument.render_review_system_text()
 
     def _render_checker_system_text(self):
         """The checker's rendered system message: one string for the whole run,
@@ -3351,7 +3352,7 @@ class Orchestrator:
           - `_checker_verdicts`, underscore-prefixed and therefore stripped
             from the model-facing payload by `result_to_model_text`: the FULL
             per-field verdict set, including the `ok`s, each verdict's
-            rationale and notes, the value/evidence/note the checker actually
+            rationale, the value/evidence/note the checker actually
             scored, the error-origin flag, and the per-call tokens and cost.
             The session event carries this unstripped, and it is the only
             durable record of what the checker did.
@@ -3384,9 +3385,10 @@ class Orchestrator:
             fp: {
                 "verdict": v.get("verdict"),
                 "rationale": v.get("rationale", ""),
-                "notes": v.get("notes"),
                 "value_checked": envelopes.get(fp, {}).get("value"),
                 "evidence_checked": envelopes.get(fp, {}).get("evidence"),
+                # The EXTRACTOR's note on the field, as the checker was shown
+                # it. The checker records no note of its own.
                 "note_checked": envelopes.get(fp, {}).get("notes"),
                 "error_origin": bool(v.get("error_origin")),
                 # How many times this check had to be re-asked before a

@@ -192,11 +192,11 @@ class TestExtractDryRun:
         assert (report / "checker_system.md").exists()
         assert (report / "review_system.md").exists()
 
-    def test_dry_run_renders_exhibit_captions_into_both_prompts(
+    def test_dry_run_previews_the_exhibits_as_a_role_is_shown_them(
             self, tmp_path, config_dir, bundle_minimal_dir, capsys):
         # End to end from the manifest: the bundle's declared caption reaches
-        # the extractor's and the reviewer's rendered system prompt, beside
-        # the label they must cite. The fixture declares one exhibit.
+        # the preview beside the label a role must cite, in the form the user
+        # message will carry. The fixture declares one exhibit.
         out_dir = tmp_path / "runs"
         code = _run([
             "extract",
@@ -208,11 +208,15 @@ class TestExtractDryRun:
         capsys.readouterr()
         assert code == 0
         report = out_dir / "demo-001" / "dry_run"
-        expected = ("- `table_01`: Table 1. Primary and secondary "
+        expected = ("[table_01] Table 1. Primary and secondary "
                     "associations between baseline CRT-HD total score and "
                     "each outcome")
+        assert expected in (report / "figure_labels.txt").read_text(
+            encoding="utf-8")
+        # ... and neither system prompt names the paper's exhibits at all.
         for name in ("extractor_system.md", "review_system.md"):
-            assert expected in (report / name).read_text(encoding="utf-8")
+            assert "table_01" not in (report / name).read_text(
+                encoding="utf-8")
 
     def test_dry_run_rerun_prunes_toggled_off_stage_files(
             self, tmp_path, config_dir, bundle_minimal_dir, capsys):

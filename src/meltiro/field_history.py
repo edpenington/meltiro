@@ -244,7 +244,6 @@ def build_field_history(events):
                 "kind": kind, **base,
                 "verdict": judgement,
                 "rationale": verdict.get("rationale"),
-                "checker_notes": verdict.get("notes"),
                 "value_checked": verdict.get("value_checked"),
                 "evidence_checked": verdict.get("evidence_checked"),
                 "note_checked": verdict.get("note_checked"),

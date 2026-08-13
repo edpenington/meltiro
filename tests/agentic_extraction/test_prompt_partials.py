@@ -87,7 +87,6 @@ class TestBuilderIntegration:
                     "</review_context>"},
         )
         txt = build_system_message(
-            image_labels=[],
             system_prompt_path=system_path,
             reference_lists={"gauge_list": [
                 {"tool_name": "WDS-9"}, {"tool_name": "CRT-HD"}]},
@@ -103,7 +102,6 @@ class TestBuilderIntegration:
             tmp_path, "<top>\n{include:ghost}\n</top>", {})
         with pytest.raises(ConfigBundleError) as excinfo:
             build_system_message(
-                image_labels=[],
                 system_prompt_path=system_path, reference_lists={})
         assert "ghost" in str(excinfo.value)
 

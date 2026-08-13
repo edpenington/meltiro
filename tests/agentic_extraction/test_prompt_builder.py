@@ -8,9 +8,19 @@ from meltiro.errors import ConfigBundleError
 from meltiro.prompt_builder import (
     build_initial_user_blocks,
     build_review_system_message,
+    build_review_user_blocks,
     build_system_message,
+    render_user_prompt_text,
     system_message_blocks,
 )
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+CAPTIONS = {
+    "table_01": "Table 1. Unit characteristics",
+    "figure_01": "Figure 1. Study flow",
+}
 
 
 def test_system_message_includes_key_sections(synthetic_template,
@@ -19,19 +29,14 @@ def test_system_message_includes_key_sections(synthetic_template,
     # description carries the field's description + allowed values), NOT in
     # the system message, which names no specific field at all. What the
     # system message DOES carry is: the workflow (with a GENERIC tool-call
-    # budget and the interpolated per-field check budget), image labels, and
-    # the reference list substituted for the {reference:gauge_list}
-    # placeholder.
+    # budget and the interpolated per-field check budget) and the reference
+    # list substituted for the {reference:gauge_list} placeholder.
     txt = build_system_message(
-        image_labels={"table_01", "figure_01"},
         system_prompt_path=extractor_system_path,
         max_checks_per_field=3,
         reference_lists={"gauge_list": [
             {"tool_name": "WDS-9"}, {"tool_name": "CRT-HD"}]},
     )
-    # Image labels rendered.
-    assert "table_01" in txt
-    assert "figure_01" in txt
     # The tool-call budget is described generically, with NO number: the cap is
     # an operational bound, kept out of the prompt (and so out of prompt_hash
     # and config identity) so raising it on resume cannot change provenance.
@@ -49,52 +54,73 @@ def test_system_message_includes_key_sections(synthetic_template,
     assert "CRT-HD" in txt
 
 
-def test_image_labels_render_with_their_captions(synthetic_template,
-                                                  extractor_system_path):
-    # A bare `table_01` says nothing about what the image holds. The bundle's
-    # declared caption is rendered beside it, with the label kept alone in
-    # backticks because it is what an <img>label</img> citation carries.
-    txt = build_system_message(
-        image_labels={"table_01", "figure_01"},
-        system_prompt_path=extractor_system_path,
-        reference_lists={"gauge_list": []},
-        image_captions={
-            "table_01": "Table 1. Unit characteristics",
-            "figure_01": "Figure 1. Study flow",
-        },
+def test_the_system_message_carries_nothing_of_the_paper(
+        synthetic_template, extractor_system_path, review_system_path):
+    # Both system messages are one string per config: the exhibits a study
+    # supplies arrive labelled in the user message, so neither text varies
+    # from paper to paper and both cache across a whole review.
+    for build, path in ((build_system_message, extractor_system_path),
+                        (build_review_system_message, review_system_path)):
+        txt = build(system_prompt_path=path,
+                    reference_lists={"gauge_list": []})
+        for label in CAPTIONS:
+            assert label not in txt
+
+
+def test_each_attached_exhibit_is_labelled_with_its_caption():
+    # A bare `table_01` says nothing about what the image holds, so the
+    # bundle's declared caption follows the label in the block that introduces
+    # the attachment. The label stays first and stays alone in the brackets,
+    # because it is what an <img>label</img> citation carries.
+    blocks = build_initial_user_blocks(
+        "376", "Methods.",
+        figures=[("table_01", PNG), ("figure_01", PNG)],
+        image_captions=CAPTIONS,
     )
-    assert "- `table_01`: Table 1. Unit characteristics" in txt
-    assert "- `figure_01`: Figure 1. Study flow" in txt
+    texts = [b.get("text") for b in blocks if b["type"] == "text"]
+    assert "[table_01] Table 1. Unit characteristics" in texts
+    assert "[figure_01] Figure 1. Study flow" in texts
 
 
-def test_reviewer_sees_the_same_captions(synthetic_template,
-                                          review_system_path):
-    txt = build_review_system_message(
-        image_labels={"table_01"},
-        system_prompt_path=review_system_path,
-        reference_lists={"gauge_list": []},
-        image_captions={"table_01": "Table 1. Unit characteristics"},
+def test_the_reviewer_reads_the_same_labels_and_captions():
+    blocks = build_review_user_blocks(
+        "376", "Methods.", [("table_01", PNG)], {"study": {}},
+        CAPTIONS,
     )
-    assert "- `table_01`: Table 1. Unit characteristics" in txt
+    texts = [b.get("text") for b in blocks if b["type"] == "text"]
+    assert "[table_01] Table 1. Unit characteristics" in texts
 
 
-def test_label_without_a_caption_renders_bare(synthetic_template,
-                                               extractor_system_path):
-    # No caption map at all (a fingerprint render, or a caller with no
-    # bundle): each label renders bare, with no trailing colon.
-    txt = build_system_message(
-        image_labels={"table_01"},
-        system_prompt_path=extractor_system_path,
-        reference_lists={"gauge_list": []},
-    )
-    assert "- `table_01`\n" in txt
-    assert "- `table_01`:" not in txt
+def test_a_label_with_no_caption_arrives_bare():
+    # An exhibits manifest that declares no caption for a crop, or a caller
+    # with no caption map at all: the label arrives alone, with no trailing
+    # space.
+    for captions in (None, {"figure_01": "Figure 1. Study flow"}):
+        blocks = build_initial_user_blocks(
+            "376", "Methods.", figures=[("table_01", PNG)],
+            image_captions=captions)
+        texts = [b.get("text") for b in blocks if b["type"] == "text"]
+        assert "[table_01]" in texts
+
+    blocks = build_review_user_blocks(
+        "376", "Methods.", [("table_01", PNG)], {"study": {}})
+    texts = [b.get("text") for b in blocks if b["type"] == "text"]
+    assert "[table_01]" in texts
+
+
+def test_the_captured_user_prompt_mirrors_the_message():
+    # `render_user_prompt_text` is what the session records as "the user
+    # prompt", so its text blocks are the message's own, captions included.
+    text = render_user_prompt_text(
+        "376", "Methods.", ["table_01", "figure_01"], CAPTIONS)
+    assert "[table_01] Table 1. Unit characteristics" in text
+    assert "[figure_01] Figure 1. Study flow" in text
 
 
 def test_system_message_blocks_carries_cache_control(synthetic_template,
                                                      extractor_system_path):
     txt = build_system_message(
-        image_labels=set(), reference_lists={"gauge_list": []},
+        reference_lists={"gauge_list": []},
         system_prompt_path=extractor_system_path,
     )
     blocks = system_message_blocks(txt)
@@ -110,7 +136,7 @@ def test_unresolvable_reference_placeholder_fails_loudly(
     # ship a prompt with a dangling placeholder.
     with pytest.raises(ConfigBundleError) as excinfo:
         build_system_message(
-            image_labels=set(), reference_lists={},
+            reference_lists={},
             system_prompt_path=extractor_system_path,
         )
     assert "gauge_list" in str(excinfo.value)

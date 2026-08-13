@@ -465,7 +465,7 @@ class TestRenderersCarryTheBundleLocation:
         from meltiro.prompt_builder import build_system_message
         path = self._prompt(tmp_path, "extractor_system.md")
         with pytest.raises(ConfigBundleError) as e:
-            build_system_message([], system_prompt_path=path,
+            build_system_message(system_prompt_path=path,
                                  reference_lists={})
         assert e.value.path == tmp_path
 
@@ -473,7 +473,7 @@ class TestRenderersCarryTheBundleLocation:
         from meltiro.prompt_builder import build_review_system_message
         path = self._prompt(tmp_path, "review_system.md")
         with pytest.raises(ConfigBundleError) as e:
-            build_review_system_message([], system_prompt_path=path,
+            build_review_system_message(system_prompt_path=path,
                                         reference_lists={})
         assert e.value.path == tmp_path
 
