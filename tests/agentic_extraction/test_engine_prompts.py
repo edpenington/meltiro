@@ -1,28 +1,32 @@
-"""The engine's prompt spines: what composes, what removes them, what they move.
+"""The engine's own prompts: what composes, what removes them, what they move.
 
-Each role's system message is the engine's spine for that role followed by the
-config bundle's prompt file. The engine chooses the spine, so a review that has
-no opinion about the machinery never has to describe it correctly for the run
-to behave as documented, and a bundle cannot leave a model underbriefed by
+Each role's system message is the engine's prompt for that role followed by the
+config bundle's prompt file. The engine chooses its own half, so a review that
+has no opinion about the machinery never has to describe it correctly for the
+run to behave as documented, and a bundle cannot leave a model underbriefed by
 saying nothing.
 
-The two boundaries pinned here:
+The three boundaries pinned here:
 
-  - EXCLUSION. A section leaves a model's context in exactly two ways: its
-    stage is off for this run, or the bundle overrides it with an empty file.
-    There is no third.
+  - EXCLUSION. An engine prompt leaves a model's context in exactly two ways:
+    it is a partial whose stage is off for this run, or the bundle overrides it
+    with an empty file. There is no third.
+  - SILENCE. A stage that will not run is not described to a model that cannot
+    reach it. The checker is named only where the checker runs, and the
+    reviewer stage is named to the extractor never — no feedback comes back
+    from it, so the extractor has nothing to do with the fact that it exists.
   - OWNERSHIP. Engine text rides in `engine_fp`, through the source digest
     that hashes `engine_prompts/*.md` beside the package's modules. Rewording
-    a section is an engine release, and every bundle's `prompts_hash`,
+    an engine prompt is an engine release, and every bundle's `prompts_hash`,
     `config_fp`, `checker_fp` and `review_fp` hold across it — which is what
     lets a consumer pin those numbers at all. An override
     (`prompts/partials/meltiro/NAME.md`) is text the config author wrote, so it
     rides in the config fingerprints like any other prose of theirs, empty
-    overrides included: leaving a section out is a methodological choice.
+    overrides included: leaving one out is a methodological choice.
 
 The engine's half ends with one transition sentence handing the role over to
-the review's own briefing. It is composed rather than shipped as a section, and
-it falls on the engine's side of both boundaries above.
+the review's own briefing. It is composed rather than shipped as a file, and it
+falls on the engine's side of both hashing boundaries above.
 """
 
 import shutil
@@ -58,9 +62,14 @@ from meltiro.prompt_builder import (
     render_bundle_prompt_text,
 )
 from meltiro.prompt_partials import (
-    ENGINE_SPINES,
+    CHECKER_SYSTEM,
+    CHECKER_USER,
+    ENGINE_ROLE_PROMPTS,
+    EXPAND_ALL_BRANCHES,
     REVIEW_SYSTEM,
-    engine_section_names,
+    composed_engine_names,
+    engine_citations,
+    engine_prompt_names,
     stage_predicates,
 )
 from meltiro.reference_lists import load_reference_lists
@@ -73,6 +82,12 @@ PINNED_CALL_IDENTITY = "call-identity-engine-prompts"
 
 PREDICATES = stage_predicates(2, True)
 
+# The tokens the engine substitutes, and the one citation a role prompt
+# carries. A paragraph holding any of them does not reach a model as written,
+# so the whole-file assertions below skip it and the no-token assertions cover
+# it instead.
+UNRENDERED = ("{image_labels_list}", "{max_checks_per_field}", "{include")
+
 
 def _copy_bundle(tmp_path, config_dir):
     """A writable copy of the fixture bundle."""
@@ -82,7 +97,7 @@ def _copy_bundle(tmp_path, config_dir):
 
 
 def _write_override(bundle_dir, name, text):
-    """Ship a bundle override for engine section `name`."""
+    """Ship a bundle override for engine prompt `name`."""
     override_dir = bundle_dir / "prompts" / "partials" / "meltiro"
     override_dir.mkdir(parents=True, exist_ok=True)
     (override_dir / f"{name}.md").write_text(text, encoding="utf-8")
@@ -92,6 +107,12 @@ def _write_override(bundle_dir, name, text):
 def _engine_text(name):
     return (prompt_partials.ENGINE_PROMPTS_DIR / f"{name}.md").read_text(
         encoding="utf-8").strip()
+
+
+def _paragraphs(name):
+    """The blocks of engine prompt `name` that reach a model as written."""
+    return [p for p in _engine_text(name).split("\n\n")
+            if p.strip() and not any(t in p for t in UNRENDERED)]
 
 
 def _extractor(bundle, **kwargs):
@@ -116,10 +137,10 @@ def _checker(bundle, predicates=PREDICATES, **kwargs):
 def _engine_half(bundle, *, max_checks_per_field=2, final_review=True):
     """The extractor's system message with the bundle's own text cut out.
 
-    What is left is the engine's half: the spine and the transition sentence
-    after it. A review may write whatever it likes in its own prompt file, so
-    a claim about what the ENGINE tells a model has to be made against this
-    rather than against the whole message.
+    What is left is the engine's half: its prompt for the extractor and the
+    transition sentence after it. A review may write whatever it likes in its
+    own prompt file, so a claim about what the ENGINE tells a model has to be
+    made against this rather than against the whole message.
     """
     predicates = stage_predicates(max_checks_per_field, final_review)
     appended = render_bundle_prompt_text(
@@ -173,36 +194,37 @@ def _config_fingerprints(bundle_dir, config_dir):
 
 
 # ---------------------------------------------------------------------------
-# What ships, and where it sits
+# What ships, and what reads it
 # ---------------------------------------------------------------------------
 
-class TestTheSectionsShip:
-    def test_every_section_is_a_named_non_empty_file(self):
-        names = engine_section_names()
-        assert names, "the engine ships no prompt sections at all"
+class TestThePromptsShip:
+    def test_every_prompt_is_a_named_non_empty_file(self):
+        names = engine_prompt_names()
+        assert names, "the engine ships no prompts at all"
         for name in names:
-            assert _engine_text(name), f"engine section {name} is empty"
+            assert _engine_text(name), f"engine prompt {name} is empty"
 
-    def test_every_section_sits_in_exactly_one_spine(self):
-        # The spine is what puts a section in front of a model, so a file
-        # nobody's spine names is inert: it ships, it is overridable, and it
-        # reaches nothing. This is the gate — a section added to
-        # `engine_prompts/` without a line in `ENGINE_SPINES` fails here rather
-        # than shipping unread, and a spine naming a file that no longer ships
-        # fails here too.
-        placed = [name for spine in ENGINE_SPINES.values()
-                  for name, _ in spine]
+    def test_every_file_is_a_role_prompt_or_a_partial_one_role_cites(self):
+        # Being read by a role is what puts a file in front of a model, so a
+        # file no role prompt names is inert: it ships, it is overridable, and
+        # it reaches nothing. This is the gate — a file added to
+        # `engine_prompts/` that nothing cites fails here rather than shipping
+        # unread, and a citation of a file that no longer ships fails here too.
+        placed = []
+        for role in ENGINE_ROLE_PROMPTS:
+            placed += composed_engine_names(
+                role, predicates=EXPAND_ALL_BRANCHES)
         assert sorted(placed) == sorted(set(placed)), (
-            "a section is placed in two spines")
-        assert set(placed) == set(engine_section_names())
+            "a file is read by two roles")
+        assert set(placed) == set(engine_prompt_names())
 
-    def test_every_spine_has_at_least_one_section(self):
-        for role, spine in ENGINE_SPINES.items():
-            assert spine, f"{role} composes no engine section"
+    def test_every_role_reads_a_file_the_engine_ships(self):
+        for role, name in ENGINE_ROLE_PROMPTS.items():
+            assert name in engine_prompt_names(), role
 
-    def test_only_the_declared_predicates_gate_a_section(self):
-        for spine in ENGINE_SPINES.values():
-            for _, predicate in spine:
+    def test_only_the_declared_predicates_gate_a_citation(self):
+        for name in ENGINE_ROLE_PROMPTS.values():
+            for predicate, _ in engine_citations(_engine_text(name)):
                 assert predicate is None or \
                     predicate in prompt_partials.PREDICATE_NAMES
 
@@ -220,59 +242,75 @@ class TestTheSectionsShip:
         patterns = config["tool"]["setuptools"]["package-data"]["meltiro"]
         assert "engine_prompts/*.md" in patterns
 
-    def test_no_section_nests_an_include(self):
+    def test_a_role_prompt_cites_the_engine_namespace_only(self):
+        # A role prompt composing a BUNDLE partial would invert the ownership
+        # boundary the two halves are built on: the review's words would be
+        # woven into the engine's contract rather than appended after it.
+        for name in ENGINE_ROLE_PROMPTS.values():
+            for _, cited in engine_citations(_engine_text(name)):
+                assert prompt_partials.is_engine_name(cited), (name, cited)
+
+    def test_a_cited_partial_cites_nothing_further(self):
         # Expansion is one level deep everywhere else; the engine's own files
         # are held to the same rule rather than exempted from it.
-        for name in engine_section_names():
-            text = _engine_text(name)
-            assert "{include:" not in text
-            assert "{include_if:" not in text
+        roles = set(ENGINE_ROLE_PROMPTS.values())
+        for name in engine_prompt_names():
+            if name in roles:
+                continue
+            assert not engine_citations(_engine_text(name)), name
 
-    def test_no_checker_section_renders_a_slot_the_checker_has_not(self):
-        # The checker is sent no image labels, so `{image_labels_list}` in one
-        # of its sections would reach the model as a literal token. A bundle's
-        # override is refused at load for this; the engine's own copy has
-        # nobody to refuse it, so it is pinned here.
-        for name, _ in ENGINE_SPINES[prompt_partials.CHECKER_SYSTEM]:
+    def test_the_checker_reads_no_slot_the_checker_has_not(self):
+        # The checker is sent no image labels, so `{image_labels_list}` in its
+        # prompt would reach the model as a literal token. A bundle's override
+        # is refused at load for this; the engine's own copy has nobody to
+        # refuse it, so it is pinned here.
+        for name in composed_engine_names(
+                CHECKER_SYSTEM, predicates=EXPAND_ALL_BRANCHES):
             assert "{image_labels_list}" not in _engine_text(name)
 
     def test_the_scaffold_cites_only_slots_the_engine_fills(self, config_dir):
         # Substitution into the per-field scaffold is a plain `str.replace`
         # per known slot, so a misspelt one is not a render-time error: it
         # survives into the message and the checker reads `{field_pat}` where
-        # the field path should be. A bundle's OVERRIDE of the section is
-        # refused at load for exactly this
+        # the field path should be. A bundle's OVERRIDE of it is refused at
+        # load for exactly this
         # (`config_bundle._validate_checker_placeholders`); the engine's own
         # copy has nobody to refuse it, so it is pinned here — over the shipped
         # file, and over the scaffold as it composes.
         composed = render_checker_user_template(
             load_config_bundle(config_dir).partials_dir,
             predicates=PREDICATES)
-        for text in (_engine_text(prompt_partials.CHECKER_USER), composed):
+        for text in (_engine_text(CHECKER_USER), composed):
             unknown = sorted({n for n in _PLACEHOLDER_TOKEN.findall(text)
                               if n not in _CHECKER_USER_PLACEHOLDERS})
             assert not unknown, unknown
 
 
 # ---------------------------------------------------------------------------
-# Composition: the spine reaches the model whatever the bundle says
+# Composition: the engine's half reaches the model whatever the bundle says
 # ---------------------------------------------------------------------------
 
 class TestEveryRoleIsBriefed:
-    def test_the_extractor_reads_its_whole_spine(self, config_dir):
+    def test_the_extractor_reads_its_whole_prompt(self, config_dir):
         rendered = _extractor(load_config_bundle(config_dir))
-        for name, predicate in ENGINE_SPINES["extractor_system"]:
-            assert _engine_text(name).splitlines()[0] in rendered, name
+        for block in _paragraphs("extractor"):
+            assert block in rendered, block[:60]
 
-    def test_the_reviewer_reads_its_whole_spine(self, config_dir):
+    def test_the_reviewer_reads_its_whole_prompt(self, config_dir):
         rendered = _reviewer(load_config_bundle(config_dir))
-        for name, _ in ENGINE_SPINES["review_system"]:
-            assert _engine_text(name).splitlines()[0] in rendered, name
+        for block in _paragraphs("reviewer"):
+            assert block in rendered, block[:60]
 
-    def test_the_checker_reads_its_whole_spine(self, config_dir):
+    def test_the_checker_reads_its_whole_prompt(self, config_dir):
         rendered = _checker(load_config_bundle(config_dir))
-        for name, _ in ENGINE_SPINES["checker_system"]:
-            assert _engine_text(name).splitlines()[0] in rendered, name
+        for block in _paragraphs("checker"):
+            assert block in rendered, block[:60]
+
+    def test_the_extractor_reads_the_partial_its_prompt_cites(self,
+                                                              config_dir):
+        rendered = _extractor(load_config_bundle(config_dir))
+        for block in _paragraphs("extractor_checker_feedback"):
+            assert block in rendered, block[:60]
 
     def test_a_bundle_that_says_nothing_still_briefs_every_model(
             self, tmp_path, config_dir):
@@ -288,16 +326,16 @@ class TestEveryRoleIsBriefed:
         assert "`mark_complete`" in _reviewer(bundle)
         assert "`record_verdict`" in _checker(bundle)
 
-    def test_the_bundles_text_is_appended_after_the_spine(self, config_dir):
+    def test_the_bundles_text_is_appended_after_the_engines(self, config_dir):
         bundle = load_config_bundle(config_dir)
         rendered = _extractor(bundle)
-        spine_tail = _engine_text("recording_conventions").splitlines()[0]
+        engine_tail = _engine_text("extractor").splitlines()[-1]
         bundle_line = "<initial_check>"
-        assert rendered.index(spine_tail) < rendered.index(bundle_line)
+        assert rendered.index(engine_tail) < rendered.index(bundle_line)
 
-    def test_the_spine_starts_the_message(self, config_dir):
+    def test_the_engines_half_starts_the_message(self, config_dir):
         rendered = _extractor(load_config_bundle(config_dir))
-        assert rendered.startswith(_engine_text("extractor_role"))
+        assert rendered.startswith(_paragraphs("extractor")[0])
 
     def test_no_placeholder_survives_on_the_wire(self, config_dir):
         bundle = load_config_bundle(config_dir)
@@ -331,47 +369,37 @@ class TestEveryRoleIsBriefed:
 
 
 # ---------------------------------------------------------------------------
-# Conditional sections
+# Conditional composition
 # ---------------------------------------------------------------------------
 
 CHALLENGE_LINE = "**Checker feedback.**"
-HANDOFF_LINE = "**Final review.**"
 
 
 class TestAStageThatDoesNotRunIsNotDescribed:
-    def test_the_checker_sections_go_with_the_checker(self, config_dir):
+    def test_the_checker_material_goes_with_the_checker(self, config_dir):
         bundle = load_config_bundle(config_dir)
         assert CHALLENGE_LINE in _extractor(bundle, max_checks_per_field=2)
         assert CHALLENGE_LINE not in _extractor(bundle,
                                                 max_checks_per_field=0)
 
-    def test_the_handoff_goes_with_the_reviewer(self, config_dir):
-        bundle = load_config_bundle(config_dir)
-        assert HANDOFF_LINE in _extractor(bundle, final_review=True)
-        assert HANDOFF_LINE not in _extractor(bundle, final_review=False)
-
-    def test_the_two_toggles_are_independent(self, config_dir):
-        bundle = load_config_bundle(config_dir)
-        text = _extractor(bundle, max_checks_per_field=0, final_review=True)
-        assert HANDOFF_LINE in text and CHALLENGE_LINE not in text
-
-    def test_a_dropped_section_leaves_no_gap(self, config_dir):
+    def test_a_dropped_partial_leaves_no_gap(self, config_dir):
         bundle = load_config_bundle(config_dir)
         for text in (_extractor(bundle, max_checks_per_field=0),
-                     _extractor(bundle, final_review=False)):
+                     _extractor(bundle, max_checks_per_field=2)):
             assert "\n\n\n" not in text
 
-    def test_the_sections_around_it_still_read_in_order(self, config_dir):
+    def test_the_text_around_it_still_reads_in_order(self, config_dir):
         bundle = load_config_bundle(config_dir)
         text = _extractor(bundle, max_checks_per_field=0)
-        assert text.index("**Validation feedback.**") < \
-            text.index("**Mark complete") < text.index(HANDOFF_LINE)
+        assert text.index("**Validation feedback.**") \
+            < text.index("**Mark complete") \
+            < text.index("The extractor works within a finite tool-call")
 
     def test_the_toggle_moves_the_fingerprints_through_structure(
             self, config_dir):
-        # The prompt component holds: the sections that came and went are the
-        # engine's, so no config preimage names them. `structure_hash` beside
-        # it carries the toggle, so two runs differing in it never share a
+        # The prompt component holds: the text that came and went is the
+        # engine's, so no config preimage names it. `structure_hash` beside it
+        # carries the toggle, so two runs differing in it never share a
         # `config_fp`.
         bundle = load_config_bundle(config_dir)
 
@@ -391,10 +419,10 @@ class TestAStageThatDoesNotRunIsNotDescribed:
 
     def test_a_checker_off_extractor_is_never_told_a_checker_exists(
             self, config_dir):
-        # Stronger than the section going: a stage that does not run is not
-        # named at all. The conditional section carries every checker fact, so
-        # the unconditional ones around it describe the machinery an extractor
-        # is always in and nothing else.
+        # Stronger than the passage going: a stage that does not run is not
+        # named at all. The cited partial carries every checker fact, so the
+        # text around it describes the machinery an extractor is always in and
+        # nothing else.
         assert "checker" not in _engine_half(
             load_config_bundle(config_dir), max_checks_per_field=0).lower()
 
@@ -407,12 +435,12 @@ class TestAStageThatDoesNotRunIsNotDescribed:
                                    max_checks_per_field=2)
         assert "checker" in engine_half.lower()
         # The one fact that has nowhere else to live once the unconditional
-        # sections stop naming the checker.
+        # text stops naming the checker.
         assert "Scope notes are not among them:" in engine_half
 
-    def test_an_override_of_a_silenced_section_is_not_this_runs_question(
+    def test_an_override_of_a_silenced_partial_is_not_this_runs_question(
             self, tmp_path, config_dir):
-        # A section its stage switched off reaches no model, so the bundle's
+        # A partial its stage switched off reaches no model, so the bundle's
         # own words for it are not part of what this run asks, and the preimage
         # says so: the overriding bundle and the plain one are the same
         # instrument with the checker off. Turn the checker on and the same
@@ -433,78 +461,155 @@ class TestAStageThatDoesNotRunIsNotDescribed:
         assert prompt_hash(plain_dir, 2) != prompt_hash(overridden_dir, 2)
 
 
+class TestTheExtractorIsNeverToldOfTheReviewer:
+    """The reviewer stage is unmentionable to the extractor.
+
+    The extractor receives no reviewer feedback: `mark_complete` ends its work
+    and there is no work after it, both of which the engine states outright.
+    So the reviewer is to the extractor what the checker is to a checker-off
+    run — not a stage described in the conditional, a stage absent from the
+    briefing. A sentence handing the record on would describe machinery the
+    extractor can neither influence nor hear back from, and every word of an
+    extractor's context is context it is not spending on the paper.
+
+    "Review" meaning the systematic review itself — this review's criteria, the
+    review's specifications — is a different word and stays.
+    """
+
+    @pytest.mark.parametrize("max_checks", [0, 2])
+    @pytest.mark.parametrize("final_review", [False, True])
+    def test_no_combination_names_the_stage(self, config_dir, max_checks,
+                                            final_review):
+        engine_half = _engine_half(
+            load_config_bundle(config_dir),
+            max_checks_per_field=max_checks,
+            final_review=final_review).lower()
+        assert "reviewer" not in engine_half
+        assert "final review" not in engine_half
+
+    def test_the_review_toggle_changes_nothing_for_the_extractor(
+            self, config_dir):
+        # The positive statement behind the absence: there is no conditional
+        # left for the toggle to switch, so the two runs read identically.
+        bundle = load_config_bundle(config_dir)
+        assert _extractor(bundle, final_review=True) == \
+            _extractor(bundle, final_review=False)
+
+    def test_the_reviewer_is_still_described_to_itself(self, config_dir):
+        # The stage exists; it is the extractor that is not told about it.
+        assert "reviewer" in _reviewer(load_config_bundle(config_dir)).lower()
+
+
 # ---------------------------------------------------------------------------
-# Overrides: replace in place, or remove
+# Overrides: replace, or remove
 # ---------------------------------------------------------------------------
 
 class TestTheOverrideDirectoryIsEnumerated:
-    """A file in `partials/meltiro/` overrides a section or fails the load.
+    """A file in `partials/meltiro/` overrides an engine prompt or fails the
+    load.
 
     The filename is the whole of the wiring, and a near miss is silent in the
     worst way: the bundle ships text its author believes the model reads, the
     engine's own words go out instead, and every fingerprint agrees with both
     of them. Enumerating the directory is what turns that into an error, and
     it is why the comparison is against a LISTING rather than a probe — a
-    case-insensitive filesystem answers `recording_notes.md.is_file()` for a
-    file called `Recording_Notes.md`, so a probe would pass this bundle on
-    macOS and fail it on Linux.
+    case-insensitive filesystem answers `extractor.md.is_file()` for a file
+    called `Extractor.md`, so a probe would pass this bundle on macOS and fail
+    it on Linux.
     """
 
     def test_a_typo_in_the_stem_is_refused(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_note", "our note policy")
+        _write_override(bundle_dir, "extracter", "our extraction brief")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
         message = str(excinfo.value)
-        assert "recording_note.md" in message
-        for name in engine_section_names():
+        assert "extracter.md" in message
+        for name in engine_prompt_names():
             assert name in message
 
     def test_the_wrong_case_is_refused(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "Recording_Notes", "our note policy")
+        _write_override(bundle_dir, "Extractor", "our extraction brief")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
-        assert "Recording_Notes.md" in str(excinfo.value)
+        assert "Extractor.md" in str(excinfo.value)
 
-    def test_a_name_no_section_has_is_refused(self, tmp_path, config_dir):
+    def test_a_name_no_prompt_has_is_refused(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         _write_override(bundle_dir, "house_style", "our own block")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
         assert "house_style.md" in str(excinfo.value)
 
+    def test_a_name_the_engine_no_longer_ships_is_refused(self, tmp_path,
+                                                          config_dir):
+        # The whole reason the directory is enumerated rather than probed. A
+        # bundle carrying an override under a name this release does not ship
+        # is told so at load, rather than running with the engine's words while
+        # its author believes it is running with theirs.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        _write_override(bundle_dir, "recording_notes", "our note policy")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(bundle_dir)
+        message = str(excinfo.value)
+        assert "recording_notes.md" in message
+        assert "extractor" in message
+
     def test_an_override_may_not_nest_an_include(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_notes",
+        _write_override(bundle_dir, "reviewer",
                         "ours, plus {include:review_context}")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
         assert "nest" in str(excinfo.value).lower()
 
-
-class TestANonEmptyOverrideReplacesInPlace:
-    def test_the_override_is_what_the_model_reads(self, tmp_path, config_dir):
+    def test_a_role_override_may_not_cite_the_engines_own_partial(
+            self, tmp_path, config_dir):
+        # An override is rendered literally, so a citation in one would reach
+        # the model as a directive rather than as the passage it names.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_notes",
-                        "<notes>this review's own note policy</notes>")
-        rendered = _extractor(load_config_bundle(bundle_dir))
-        assert "this review's own note policy" in rendered
-        assert "**Scope notes.**" not in rendered
+        _write_override(
+            bundle_dir, "extractor",
+            "Extract the study.\n"
+            "{include_if:checker:meltiro:extractor_checker_feedback}\n")
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(bundle_dir)
+        assert "nest" in str(excinfo.value).lower()
 
-    def test_it_lands_where_the_section_sat(self, tmp_path, config_dir):
+
+class TestANonEmptyOverrideReplacesTheText:
+    def test_a_role_override_replaces_the_whole_engine_half(
+            self, tmp_path, config_dir):
+        # The consequence of one file per role, stated plainly: a bundle that
+        # overrides a role's prompt has taken on the whole of that role's
+        # engine briefing, the conditional passage included. Nothing of the
+        # engine's is composed around it.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_notes", "OUR NOTE POLICY")
+        _write_override(bundle_dir, "extractor",
+                        "<brief>this review's own extraction brief</brief>")
+        rendered = _extractor(load_config_bundle(bundle_dir),
+                              max_checks_per_field=2)
+        assert rendered.startswith("<brief>")
+        assert CHALLENGE_LINE not in rendered
+        for block in _paragraphs("extractor"):
+            assert block not in rendered, block[:60]
+
+    def test_a_partial_override_lands_where_the_citation_sits(
+            self, tmp_path, config_dir):
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        _write_override(bundle_dir, "extractor_checker_feedback",
+                        "OUR CHALLENGE POLICY")
         rendered = _extractor(load_config_bundle(bundle_dir))
-        before = _engine_text("recording_evidence").splitlines()[0]
-        after = _engine_text("recording_conventions").splitlines()[0]
-        assert rendered.index(before) < rendered.index("OUR NOTE POLICY") \
+        before = "**Validation feedback.**"
+        after = "**Mark complete"
+        assert rendered.index(before) \
+            < rendered.index("OUR CHALLENGE POLICY") \
             < rendered.index(after)
 
-    def test_it_may_render_the_slots_the_section_did(self, tmp_path,
-                                                     config_dir):
+    def test_it_may_render_the_slots_the_text_did(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_evidence",
+        _write_override(bundle_dir, "extractor",
                         "Quote what you cite.\n{image_labels_list}")
         rendered = _extractor(load_config_bundle(bundle_dir))
         assert "{image_labels_list}" not in rendered
@@ -516,57 +621,52 @@ class TestANonEmptyOverrideReplacesInPlace:
         # the prompt it lands in imposes: the checker is sent no image labels,
         # so the token would reach the model verbatim.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "checker_briefing",
+        _write_override(bundle_dir, "checker",
                         "You judge one field.\n{image_labels_list}\n")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
         assert "image_labels_list" in str(excinfo.value)
 
 
-class TestAnEmptyOverrideRemovesTheSection:
-    """The only way to keep a section out of a model's context.
+class TestAnEmptyOverrideRemovesIt:
+    """The only way to keep engine text out of a model's context.
 
-    Nothing about how a bundle composes its prompts can drop one by accident,
+    Nothing about how a bundle composes its prompts can drop it by accident,
     so removal is a file a config author writes on purpose — and it moves the
     fingerprints for the same reason any other edit to the question does.
     """
 
     @pytest.mark.parametrize("text", ["", "   \n\n  \n"])
-    def test_empty_and_whitespace_both_remove_it(self, tmp_path, config_dir,
-                                                 text):
+    def test_empty_and_whitespace_both_remove_a_partial(self, tmp_path,
+                                                        config_dir, text):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_notes", text)
+        _write_override(bundle_dir, "extractor_checker_feedback", text)
+        rendered = _extractor(load_config_bundle(bundle_dir),
+                              max_checks_per_field=2)
+        assert CHALLENGE_LINE not in rendered
+        assert "\n\n\n" not in rendered
+
+    def test_it_removes_that_text_and_no_other(self, tmp_path, config_dir):
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        _write_override(bundle_dir, "extractor_checker_feedback", "")
         rendered = _extractor(load_config_bundle(bundle_dir))
-        assert _engine_text("recording_notes") not in rendered
-        assert "**Scope notes.**" not in rendered
+        for block in _paragraphs("extractor"):
+            assert block in rendered, block[:60]
 
-    def test_it_removes_that_section_and_no_other(self, tmp_path, config_dir):
+    @pytest.mark.parametrize("text", ["", "   \n\n  \n"])
+    def test_an_empty_role_override_leaves_the_bundles_text_alone(
+            self, tmp_path, config_dir, text):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_notes", "")
-        rendered = _extractor(load_config_bundle(bundle_dir))
-        for name, _ in ENGINE_SPINES["extractor_system"]:
-            if name == "recording_notes":
-                continue
-            assert _engine_text(name).splitlines()[0] in rendered, name
-
-    def test_the_hole_closes(self, tmp_path, config_dir):
-        bundle_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(bundle_dir, "recording_notes", "")
-        assert "\n\n\n" not in _extractor(load_config_bundle(bundle_dir))
-
-    def test_removing_every_section_leaves_the_bundles_text_alone(
-            self, tmp_path, config_dir):
-        bundle_dir = _copy_bundle(tmp_path, config_dir)
-        for name, _ in ENGINE_SPINES["extractor_system"]:
-            _write_override(bundle_dir, name, "")
+        _write_override(bundle_dir, "extractor", text)
         rendered = _extractor(load_config_bundle(bundle_dir))
         assert rendered.startswith("<review_context>")
         assert not rendered.startswith("\n")
+        assert CHALLENGE_LINE not in rendered
 
     def test_it_moves_the_config_fingerprints(self, tmp_path, config_dir):
         plain = load_config_bundle(_copy_bundle(tmp_path, config_dir))
         emptied_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(emptied_dir, "recording_notes", "")
+        _write_override(emptied_dir, "reviewer", "")
         emptied = load_config_bundle(emptied_dir)
         assert plain.prompts_hash != emptied.prompts_hash
         assert plain.instrument_fp != emptied.instrument_fp
@@ -576,9 +676,9 @@ class TestAnEmptyOverrideRemovesTheSection:
         # Both leave the engine's words out; they are not the same question,
         # so they must not fingerprint alike.
         removed_dir = _copy_bundle(tmp_path, config_dir)
-        _write_override(removed_dir, "recording_notes", "")
+        _write_override(removed_dir, "reviewer", "")
         replaced_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(replaced_dir, "recording_notes", "our note policy")
+        _write_override(replaced_dir, "reviewer", "our review policy")
         assert load_config_bundle(removed_dir).prompts_hash != \
             load_config_bundle(replaced_dir).prompts_hash
 
@@ -587,7 +687,7 @@ class TestAnOverrideMovesItsRolesFingerprint:
     def test_prompts_hash_and_instrument_fp(self, tmp_path, config_dir):
         before = load_config_bundle(_copy_bundle(tmp_path, config_dir))
         overridden_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(overridden_dir, "recording_notes", "our note policy")
+        _write_override(overridden_dir, "extractor", "our extraction brief")
         after = load_config_bundle(overridden_dir)
         assert before.prompts_hash != after.prompts_hash
         assert before.instrument_fp != after.instrument_fp
@@ -604,7 +704,7 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
         plain = load_config_bundle(_copy_bundle(tmp_path, config_dir))
         overridden_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(overridden_dir, "recording_evidence",
+        _write_override(overridden_dir, "extractor",
                         "quote what you cite.\n{image_labels_list}")
         assert fp(plain) != fp(load_config_bundle(overridden_dir))
 
@@ -620,7 +720,7 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
         plain = load_config_bundle(_copy_bundle(tmp_path, config_dir))
         overridden_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(overridden_dir, "reviewer_workflow",
+        _write_override(overridden_dir, "reviewer",
                         "Read the record and fix what is wrong.")
         assert fp(plain) != fp(load_config_bundle(overridden_dir))
 
@@ -641,15 +741,15 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
         plain_dir = _copy_bundle(tmp_path, config_dir)
         overridden_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(overridden_dir, "checker_briefing",
+        _write_override(overridden_dir, "checker",
                         "you see one field, and the paper around its quotes.")
         assert fp(plain_dir) != fp(overridden_dir)
 
     def test_an_override_of_another_role_does_not_move_this_one(
             self, tmp_path, config_dir):
-        # Per-role ownership: the reviewer's sections are not the extractor's,
-        # so a bundle rewriting one leaves the other stage's fingerprint alone
-        # and the two stages stay separately comparable.
+        # Per-role ownership: the reviewer's prompt is not the extractor's, so
+        # a bundle rewriting one leaves the other stage's fingerprint alone and
+        # the two stages stay separately comparable.
         def prompt_hash(bundle):
             return compute_prompt_config_hash(
                 system_prompt_path=bundle.extractor_system_path,
@@ -658,7 +758,7 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
         plain = load_config_bundle(_copy_bundle(tmp_path, config_dir))
         overridden_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(overridden_dir, "reviewer_workflow", "ours.")
+        _write_override(overridden_dir, "reviewer", "ours.")
         assert prompt_hash(plain) == prompt_hash(
             load_config_bundle(overridden_dir))
 
@@ -666,15 +766,15 @@ class TestAnOverrideMovesItsRolesFingerprint:
             self, tmp_path, config_dir):
         # Deliberate, and the point of the boundary rather than an artefact of
         # it. The two bundles read identically to a model, and they are not the
-        # same instrument: one is pinned to whatever the engine's copy of the
-        # section says in the release it runs under, and the other to a copy
-        # its author owns and an engine release cannot change. A hash that
-        # equated them would report the first bundle as unchanged across a
-        # release that reworded the section under it.
+        # same instrument: one is pinned to whatever the engine's copy says in
+        # the release it runs under, and the other to a copy its author owns
+        # and an engine release cannot change. A hash that equated them would
+        # report the first bundle as unchanged across a release that reworded
+        # the text under it.
         plain_dir = _copy_bundle(tmp_path, config_dir)
         copied_dir = _copy_bundle(tmp_path / "second", config_dir)
-        _write_override(copied_dir, "recording_notes",
-                        _engine_text("recording_notes"))
+        _write_override(copied_dir, "extractor_checker_feedback",
+                        _engine_text("extractor_checker_feedback"))
 
         plain = load_config_bundle(plain_dir)
         copied = load_config_bundle(copied_dir)
@@ -688,29 +788,27 @@ class TestAnOverrideMovesItsRolesFingerprint:
 # ---------------------------------------------------------------------------
 
 class TestTheTransitionSentence:
-    """One engine sentence between a role's spine and the bundle's own text.
+    """One engine sentence between a role's own prompt and the bundle's text.
 
     A system message is two halves written by two authors, and read straight
     through the seam is invisible: the machinery stops being described and the
     review starts, mid-message, with nothing to mark it. The sentence marks it.
 
     It is emitted only where it is true. A bundle prompt file that is empty is
-    promised no briefing, and a bundle that overrode every section away gets no
-    lone engine sentence in front of its own opening line.
+    promised no briefing, and a bundle that overrode the engine's half away
+    gets no lone engine sentence in front of its own opening line.
     """
 
     def test_each_role_reads_it_between_the_two_halves(self, config_dir):
         bundle = load_config_bundle(config_dir)
         cases = (
-            (_extractor(bundle), EXTRACTOR_BUNDLE_TRANSITION,
-             "recording_conventions"),
-            (_reviewer(bundle), REVIEW_BUNDLE_TRANSITION,
-             "reviewer_workflow"),
-            (_checker(bundle), CHECKER_BUNDLE_TRANSITION, "checker_verdict"),
+            (_extractor(bundle), EXTRACTOR_BUNDLE_TRANSITION, "extractor"),
+            (_reviewer(bundle), REVIEW_BUNDLE_TRANSITION, "reviewer"),
+            (_checker(bundle), CHECKER_BUNDLE_TRANSITION, "checker"),
         )
-        for rendered, transition, last_section in cases:
-            spine_tail = _engine_text(last_section).splitlines()[-1]
-            assert rendered.index(spine_tail) < rendered.index(transition) \
+        for rendered, transition, name in cases:
+            engine_tail = _engine_text(name).splitlines()[-1]
+            assert rendered.index(engine_tail) < rendered.index(transition) \
                 < rendered.index("<review_context>")
 
     def test_an_empty_bundle_prompt_gets_none(self, tmp_path, config_dir):
@@ -723,11 +821,10 @@ class TestTheTransitionSentence:
         assert REVIEW_BUNDLE_TRANSITION not in _reviewer(bundle)
         assert CHECKER_BUNDLE_TRANSITION not in _checker(bundle)
 
-    def test_a_spine_overridden_away_gets_none_either(self, tmp_path,
-                                                      config_dir):
+    def test_an_engine_half_overridden_away_gets_none_either(self, tmp_path,
+                                                             config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
-        for name, _ in ENGINE_SPINES["extractor_system"]:
-            _write_override(bundle_dir, name, "")
+        _write_override(bundle_dir, "extractor", "")
         rendered = _extractor(load_config_bundle(bundle_dir))
         assert EXTRACTOR_BUNDLE_TRANSITION not in rendered
         assert rendered.startswith("<review_context>")
@@ -735,7 +832,7 @@ class TestTheTransitionSentence:
     def test_it_moves_no_config_fingerprint(self, tmp_path, config_dir,
                                             monkeypatch):
         # Compose-time framing, so it belongs to the engine on exactly the
-        # terms a spine section does: the model reads it, `engine_fp` carries
+        # terms its own prompts do: the model reads it, `engine_fp` carries
         # it, and no config preimage names it. Asserted by rewording all three
         # and finding every config fingerprint where it was.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
@@ -776,7 +873,7 @@ class TestTheCheckerUserScaffold:
         )
         return "".join(b.get("text", "") for b in blocks)
 
-    def test_it_renders_from_the_engine_section(self, config_dir):
+    def test_it_renders_from_the_engine_prompt(self, config_dir):
         text = self._message(load_config_bundle(config_dir))
         assert "## Field under review" in text
         assert "study.primary_aim" in text
@@ -797,7 +894,7 @@ class TestTheCheckerUserScaffold:
 
     def test_a_reference_list_the_override_cites_is_rendered_in(
             self, tmp_path, config_dir):
-        # The scaffold gets the reference pass the three system spines get, so
+        # The scaffold gets the reference pass the three system prompts get, so
         # a review that wants the canonical names beside the value under review
         # writes the citation and reads the list.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
@@ -850,22 +947,22 @@ class TestTheCheckerUserScaffold:
 # What a bundle may no longer say
 # ---------------------------------------------------------------------------
 
-class TestTheBundleComposesNoEngineSection:
+class TestTheBundleComposesNothingOfTheEngines:
     def test_an_engine_citation_is_refused(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         prompt = bundle_dir / "prompts" / "extractor_system.md"
         prompt.write_text(
             prompt.read_text(encoding="utf-8")
-            + "\n{include:meltiro:recording_notes}\n", encoding="utf-8")
+            + "\n{include:meltiro:extractor}\n", encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
         message = str(excinfo.value)
         assert "extractor_system.md" in message
-        assert "recording_notes" in message
-        assert "partials/meltiro/recording_notes.md" in message
-        # The file, the directive, and the two ways out. Not the section
-        # list: the author is deleting a name here rather than choosing one.
-        assert "reviewer_workflow" not in message
+        assert "partials/meltiro/extractor.md" in message
+        # The file, the directive, and the two ways out. Not the list of what
+        # the engine ships: the author is deleting a name here rather than
+        # choosing one.
+        assert "checker_user" not in message
 
     def test_a_conditional_engine_citation_is_refused(self, tmp_path,
                                                       config_dir):
@@ -873,13 +970,13 @@ class TestTheBundleComposesNoEngineSection:
         prompt = bundle_dir / "prompts" / "checker_system.md"
         prompt.write_text(
             prompt.read_text(encoding="utf-8")
-            + "\n{include_if:checker:meltiro:checker_briefing}\n",
+            + "\n{include_if:checker:meltiro:checker}\n",
             encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
-        assert "checker_briefing" in str(excinfo.value)
+        assert "partials/meltiro/checker.md" in str(excinfo.value)
 
-    def test_a_citation_of_a_name_no_section_has_is_refused_too(
+    def test_a_citation_of_a_name_the_engine_has_not_is_refused_too(
             self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         prompt = bundle_dir / "prompts" / "review_system.md"
@@ -906,7 +1003,7 @@ class TestTheBundleComposesNoEngineSection:
     def test_a_bundle_carrying_both_defects_is_told_both_at_once(
             self, tmp_path, config_dir):
         # A bundle can hold both at once: the scaffold as a file of its own,
-        # and a prompt citing an engine section. One load names both, so the
+        # and a prompt citing an engine prompt. One load names both, so the
         # work is one editing pass rather than one per load.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         (bundle_dir / "prompts" / "checker_user_template.md").write_text(
@@ -914,23 +1011,23 @@ class TestTheBundleComposesNoEngineSection:
         prompt = bundle_dir / "prompts" / "extractor_system.md"
         prompt.write_text(
             prompt.read_text(encoding="utf-8")
-            + "\n{include:meltiro:recording_notes}\n", encoding="utf-8")
+            + "\n{include:meltiro:extractor}\n", encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
         message = str(excinfo.value)
         assert "checker_user_template.md" in message
-        assert "{include:meltiro:recording_notes}" in message
+        assert "{include:meltiro:extractor}" in message
 
 
 # ---------------------------------------------------------------------------
 # The fingerprint boundary
 # ---------------------------------------------------------------------------
 
-class TestEditingAnEngineSection:
+class TestEditingAnEnginePrompt:
     """An engine edit moves the ENGINE axis and leaves the config axes alone.
 
     The engine's copy is swapped for a writable one so the edit can be made
-    without touching the installed package; `engine_section_names` and the
+    without touching the installed package; `engine_prompt_names` and the
     resolution both read the directory at call time, so the substitution is
     complete.
     """
@@ -953,8 +1050,8 @@ class TestEditingAnEngineSection:
                                          config_dir):
         before = _config_fingerprints(bundle_dir, config_dir)
         wire_before = self._wire(bundle_dir)
-        for name in ("extractor_workflow", "recording_notes",
-                     "checker_briefing", "reviewer_workflow"):
+        for name in ("extractor", "extractor_checker_feedback", "checker",
+                     "reviewer"):
             path = engine_dir / f"{name}.md"
             path.write_text(
                 path.read_text(encoding="utf-8")
@@ -966,21 +1063,21 @@ class TestEditingAnEngineSection:
         assert before == after
 
     def test_but_the_model_reads_the_edit(self, engine_dir, bundle_dir):
-        (engine_dir / "recording_notes.md").write_text(
-            "note whatever you like.", encoding="utf-8")
-        assert "note whatever you like." in self._wire(bundle_dir)
+        (engine_dir / "extractor_checker_feedback.md").write_text(
+            "answer a challenge however you like.", encoding="utf-8")
+        assert "answer a challenge however you like." in self._wire(bundle_dir)
 
-    def test_an_overridden_section_is_untouched_by_the_engine_edit(
+    def test_an_overridden_prompt_is_untouched_by_the_engine_edit(
             self, engine_dir, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path / "overriding", config_dir)
-        _write_override(bundle_dir, "recording_notes", "our note policy")
+        _write_override(bundle_dir, "extractor", "our extraction brief")
         before = load_config_bundle(bundle_dir).prompts_hash
-        (engine_dir / "recording_notes.md").write_text(
+        (engine_dir / "extractor.md").write_text(
             "the engine's new wording.", encoding="utf-8")
         bundle = load_config_bundle(bundle_dir)
         assert bundle.prompts_hash == before
         rendered = _extractor(bundle)
-        assert "our note policy" in rendered
+        assert "our extraction brief" in rendered
         assert "the engine's new wording." not in rendered
 
 
@@ -1017,13 +1114,13 @@ class TestAValueInterpolatedIntoEngineText:
 
     def test_an_override_is_hashed_as_it_was_written(self, tmp_path,
                                                      config_dir):
-        # An override is a SECTION, hashed as the author wrote it rather than
-        # as it renders: the budget it states is still a run-structure value,
-        # and `structure_hash` beside the prompt hash is where a structure
-        # value belongs. The model reads the number either way.
+        # An override is an ENGINE prompt, hashed as the author wrote it rather
+        # than as it renders: the budget it states is still a run-structure
+        # value, and `structure_hash` beside the prompt hash is where a
+        # structure value belongs. The model reads the number either way.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         _write_override(
-            bundle_dir, "extractor_workflow",
+            bundle_dir, "extractor",
             "Extract the study. Each field is checked at most "
             "{max_checks_per_field} times.")
         bundle = load_config_bundle(bundle_dir)
@@ -1046,7 +1143,7 @@ class TestAValueInterpolatedIntoEngineText:
 
 
 class TestEngineSourceDigest:
-    """`engine_fp`'s meltiro half has to cover the sections.
+    """`engine_fp`'s meltiro half has to cover the engine's prompts.
 
     It is the only axis that can: no config fingerprint takes engine prose as a
     preimage, by design. If the digest hashed modules alone, rewording the
@@ -1063,24 +1160,26 @@ class TestEngineSourceDigest:
         everything = _hash_tree(package_dir)
         assert modules_only != everything, (
             "source_hash covers *.py alone, so an edit to an engine prompt "
-            "section would move no fingerprint at all")
+            "would move no fingerprint at all")
 
-    def test_editing_a_section_moves_the_digest(self, tmp_path):
+    def test_editing_a_prompt_moves_the_digest(self, tmp_path):
         package = tmp_path / "pkg"
         (package / "engine_prompts").mkdir(parents=True)
         (package / "mod.py").write_text("x = 1\n", encoding="utf-8")
-        section = package / "engine_prompts" / "workflow.md"
-        section.write_text("call the tools in order.\n", encoding="utf-8")
+        engine_prompt = package / "engine_prompts" / "extractor.md"
+        engine_prompt.write_text("call the tools in order.\n",
+                                 encoding="utf-8")
 
         before = _hash_tree(package)
-        section.write_text("call the tools in any order.\n", encoding="utf-8")
+        engine_prompt.write_text("call the tools in any order.\n",
+                                 encoding="utf-8")
         assert _hash_tree(package) != before
 
-    def test_a_section_added_moves_the_digest(self, tmp_path):
+    def test_a_prompt_added_moves_the_digest(self, tmp_path):
         package = tmp_path / "pkg"
         (package / "engine_prompts").mkdir(parents=True)
         (package / "mod.py").write_text("x = 1\n", encoding="utf-8")
         before = _hash_tree(package)
         (package / "engine_prompts" / "extra.md").write_text(
-            "one more section.\n", encoding="utf-8")
+            "one more.\n", encoding="utf-8")
         assert _hash_tree(package) != before

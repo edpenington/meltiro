@@ -309,7 +309,7 @@ class TestASilentBundleStillRuns:
     def test_empty_prompt_files_load_and_the_run_is_still_briefed(
             self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch):
         # A review may have nothing of its own to say to a role. The engine
-        # composes that role's spine regardless, so the run starts and the
+        # composes that role's own prompt regardless, so the run starts and the
         # captured instrument shows the model was told what the tools do.
         config = _config_with(tmp_path, config_dir)
         for name in ("extractor_system", "review_system", "checker_system"):

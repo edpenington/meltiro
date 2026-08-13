@@ -390,7 +390,7 @@ class TestConfigContentGoldens:
         assert bundle.prompts_hash == GOLDEN_PROMPTS_HASH, _moved(
             "prompts_hash",
             "the three prompt files with {include:NAME} partials expanded, "
-            "plus every engine section this bundle overrides",
+            "plus every engine prompt this bundle overrides",
             "every published instrument_fp is now unreproducible, and "
             "`meltiro fingerprint` prints a different identity for an "
             "unedited config bundle.")

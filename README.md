@@ -328,46 +328,36 @@ In addition to the context provided as part of a specific review, each agent
 receives prompts from the engine that enable their core functionality. These
 prompts can be overwritten as part of config.
 
-Each role's system message opens with its engine prompts, in the order below,
-and your prompt file for that role is appended after them; wherever both are
-present, one engine sentence marks the handover between the two. Your file
-supplies the review: its scope and criteria, what counts as one record, what
-each field means. Two sections are conditional on the run's structure, and are
-left out entirely when their stage is switched off. `checker_user` is the one
+Each role's system message opens with the engine's prompt for that role, and
+your prompt file for that role is appended after it; wherever both are present,
+one engine sentence marks the handover between the two. Your file supplies the
+review: its scope and criteria, what counts as one record, what each field
+means. One of the files below is conditional on the run's structure, and is
+left out entirely when its stage is switched off. `checker_user.md` is the one
 that is not a system prompt: it is the scaffold each per-field checker message
-is rendered from, and the Checker's own system message is the three above it.
+is rendered from, and the Checker's own system message is `checker.md`.
 
-| Section | Role | What it states |
+| File | Role | What it states |
 |---|---|---|
-| `extractor_role` | Extractor | what the extractor is and what it produces |
-| `extractor_workflow` | Extractor | the initial-check-first gate, the extraction calls, and the `ok` / `partial` / `validation_failed` result shape |
-| `extractor_checker_feedback` | Extractor | challenges arriving in tool results, revising or overruling one, the per-field check budget — only when the Checker runs |
-| `extractor_completion` | Extractor | `mark_complete` and its required quality check |
-| `extractor_review_handoff` | Extractor | the handoff to the Reviewer — only when the Reviewer runs |
-| `extractor_tool_budget` | Extractor | the finite call budget, `abandon_extraction`, the view tools |
-| `recording_evidence` | Extractor | the `<q>` / `<img>` evidence grammar: normalisation, elision, insertion brackets, and the image-label list |
-| `recording_notes` | Extractor | field notes versus scope notes, and why what a value depends on belongs in the field's own |
-| `recording_conventions` | Extractor | record-id assignment, strict versus open lists, reference-list fields, warnings versus errors |
-| `checker_role` | Checker | what the checker is and what it judges |
-| `checker_briefing` | Checker | the checker's one-field isolation, the quote window and its table expansion, the allowed-values briefing, no memory across checks |
-| `checker_verdict` | Checker | the `record_verdict` call, the two-word verdict vocabulary, and where a verdict goes |
-| `checker_user` | Checker | the scaffold of the per-field message: field, context, evidence, value |
-| `reviewer_role` | Reviewer | what the reviewer is and what it decides |
-| `reviewer_record` | Reviewer | how to read the extraction record it is given, the evidence grammar as a reader, the image-label list |
-| `reviewer_workflow` | Reviewer | the three shortcomings to look for, the view tools, the two terminating tools, the call budget |
+| `extractor.md` | Extractor | what the extractor is, how it works the tools, and the conventions for evidence, notes and records |
+| `extractor_checker_feedback.md` | Extractor | *conditional, composed into `extractor.md` only when the Checker runs*: how a challenge arrives, and what revising or overruling one costs |
+| `checker.md` | Checker | what the checker is, what one field arrives with, and what a verdict says |
+| `checker_user.md` | Checker | the scaffold of the per-field message: field, context, evidence, value |
+| `reviewer.md` | Reviewer | what the reviewer is, how to read the record it is given, and how the review ends |
 
-A review **overrides** a section by shipping `prompts/partials/meltiro/NAME.md`.
-Non-empty text replaces that section where it sits; text that is empty removes
-the section, which is the only way to keep one out of a model's context. The
-filename is the whole of the wiring, so that directory is enumerated at load: a
-file named for no section (`recording_note.md`, `Recording_Notes.md`,
-`house_style.md`) is a load error rather than a file that quietly overrides
-nothing.
+A review **overrides** a file by shipping `prompts/partials/meltiro/NAME.md`.
+Non-empty text replaces that file's text; text that is empty removes it, which
+is the only way to keep engine text out of a model's context. Overriding a
+role's file replaces the whole of that role's engine half, the conditional file
+included — what renders is your text and nothing else. The filename is the
+whole of the wiring, so that directory is enumerated at load: a file named for
+nothing the engine ships (`extracter.md`, `Extractor.md`, `house_style.md`) is
+a load error rather than a file that quietly overrides nothing.
 
 Overriding moves the config fingerprints (`prompts_hash`, `instrument_fp`, and
 that role's stage fingerprint), because the text is now yours — an empty
-override moves them too, since leaving a section out is a decision about what
-the model is asked. A section you have not overridden rides in `engine_fp`
+override moves them too, since leaving engine text out is a decision about what
+the model is asked. A file you have not overridden rides in `engine_fp`
 instead, so an engine release that rewords one leaves every bundle's config
 fingerprints exactly where they were.
 

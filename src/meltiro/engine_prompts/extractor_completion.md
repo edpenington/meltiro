@@ -1,1 +1,0 @@
-**Mark complete, with the quality check.** When the record is complete and every non-null field is justified by evidence, call `mark_complete`. It takes a required `quality_check` argument: the extractor's own reflection on how the extraction went, in the same bare-value shape as the initial check. A successful call ends the extractor's work immediately.

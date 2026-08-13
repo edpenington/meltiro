@@ -19,8 +19,8 @@ Required layout:
         checker_system.md
         partials/              (optional)  one *.md per {include:NAME} block
           <name>.md
-          meltiro/             (optional)  overrides of engine sections
-            <section>.md
+          meltiro/             (optional)  overrides of engine prompts
+            <name>.md
 
 `load_config_bundle(path)` returns a frozen `ConfigBundle` exposing every
 file path, the parsed `pipeline.yaml` mapping, and the loaded reference
@@ -29,17 +29,17 @@ lists. Validation is loud and happens at load, before any API spend: a
 `canonical_reference:` field and `{reference:NAME}` placeholder must resolve
 to a loaded list (`reference/` itself is optional); every `{include:NAME}`
 must resolve to a `prompts/partials/NAME.md`, with no nesting; every file in
-`prompts/partials/meltiro/` must be named for a section the engine ships;
+`prompts/partials/meltiro/` must be named for a prompt the engine ships;
 `pipeline.yaml` keys are checked against `KNOWN_PIPELINE_KEYS`; tool-call cap
 placeholders are banned from every prompt and override; and the checker's
 prompt and overrides may cite only the placeholders the engine substitutes
 into them.
 
-Each role's system message is the engine's spine for that role followed by
+Each role's system message is the engine's prompt for that role followed by
 the bundle's prompt file, appended. A prompt file therefore supplies the
-review's own text and nothing about the engine; to supply different wording
-for a section, a bundle ships `prompts/partials/meltiro/NAME.md`, and an
-empty one leaves the section out (see `meltiro.prompt_partials`).
+review's own text and nothing about the engine; to supply different wording,
+a bundle ships `prompts/partials/meltiro/NAME.md`, and an empty one leaves
+that text out (see `meltiro.prompt_partials`).
 """
 
 import hashlib
@@ -64,13 +64,13 @@ from meltiro.prompt_partials import (
     ENGINE_NAMESPACE,
     EXPAND_ALL_BRANCHES,
     all_engine_override_pairs,
+    composed_engine_names,
     engine_citation_message,
     engine_cited_names,
     engine_override_entries,
     engine_override_path,
-    engine_section_names,
+    engine_prompt_names,
     included_names,
-    spine_sections,
     stage_predicates,
     substitute_include_placeholders,
 )
@@ -140,7 +140,7 @@ class ConfigBundle:
     the orchestrator folds into its run-time fingerprints; pinning that pair
     alone decides whether a stored value is still legal. `prompts_hash`
     covers the three prompt files with their partials expanded, plus every
-    engine section this bundle overrides (see `_compute_prompts_hash`).
+    engine prompt this bundle overrides (see `_compute_prompts_hash`).
     `instrument_fp` is the MODEL-FREE composite of everything the config
     author wrote plus the engine's tool contract (the tool definitions carry
     the engine's own descriptions, so `instrument_fp` is not engine-free — see
@@ -179,7 +179,7 @@ class ConfigBundle:
         `prompts_hash` above is this same hash under `pipeline.yaml`'s own
         toggles. A run can differ: `--max-checks-per-field 0` and
         `--no-final-review` change which `{include_if:...}` branches reach a
-        model and which spine sections compose, so a run computes this against
+        model and which engine partials compose, so a run computes this against
         the toggles it actually honoured (see `Instrument.fingerprint`); the
         two agree exactly when no flag overrode the file.
         """
@@ -300,7 +300,7 @@ def load_config_bundle(path):
 
     # Then what the prompts directory holds and what its prompts say, reported
     # together. A bundle that ships the per-field scaffold as a file of its own
-    # and cites engine sections from its prompts has one piece of work to do,
+    # and cites engine prompts from its own has one piece of work to do,
     # and one load states the whole of it. The later checks expand includes, so
     # every include must already resolve without nesting by the time they run.
     prompt_problems = (
@@ -319,8 +319,8 @@ def load_config_bundle(path):
     _validate_checker_placeholders(checker_system_path, partials_dir, root)
 
     # The bundle's own toggles, as pipeline.yaml states them. They decide
-    # which `{include_if:...}` branch every render below takes, which spine
-    # sections compose, and which stages run at all.
+    # which `{include_if:...}` branch every render below takes, which engine
+    # partials compose, and which stages run at all.
     predicates = stage_predicates(
         pipeline.get("max_checks_per_field", DEFAULT_MAX_CHECKS_PER_FIELD),
         pipeline.get("final_review", True))
@@ -357,10 +357,10 @@ def _compute_prompts_hash(prompt_paths, partials_dir, predicates):
     Two components. The three prompt files with `{include:NAME}` partials
     expanded, keyed by file stem: partials are expanded so a refactor that
     only moves shared text into a partial does not move the hash, while an
-    edit to the text itself does. And every engine section this bundle
+    edit to the text itself does. And every engine prompt this bundle
     OVERRIDES, as `[name, text]` pairs — including the empty overrides that
-    leave a section out, because deciding what a model is not asked is as much
-    a methodological choice as deciding what it is.
+    leave one out, because deciding what a model is not asked is as much a
+    methodological choice as deciding what it is.
 
     `{reference:NAME}` placeholders are left literal: reference-list CONTENT
     is captured separately by `reference_lists_hash`, so folding it in here
@@ -368,10 +368,10 @@ def _compute_prompts_hash(prompt_paths, partials_dir, predicates):
     edits. Canonically serialised, so a dict's insertion order reaches no
     digest.
 
-    An un-overridden section contributes nothing. Its text is the engine's, so
-    it moves `engine_fp` and no config fingerprint, and every bundle's
-    `prompts_hash` holds across a release that rewords it. The consequence is
-    intended: two bundles reading identically to a model, one on the engine's
+    An un-overridden engine prompt contributes nothing. Its text is the
+    engine's, so it moves `engine_fp` and no config fingerprint, and every
+    bundle's `prompts_hash` holds across a release that rewords it. The
+    consequence is intended: two bundles reading identically to a model, one on the engine's
     wording and one overriding it with byte-identical text, hash differently —
     one is pinned to the engine's copy and the other to its own.
     """
@@ -470,21 +470,21 @@ def _cross_validate_references(template, reference_lists, root):
 
 def _validate_engine_overrides(partials_dir, root):
     """Fail loudly if `prompts/partials/meltiro/` holds anything that is not
-    an override of a shipped engine section.
+    an override of a prompt the engine ships.
 
-    An override is read from exactly one path, `<section>.md`, so a file named
-    anything else — `recording_note.md`, `Recording_Notes.md`,
-    `house_style.md`, `recording_notes.txt` — is inert: the section it was
-    written to replace still renders the engine's own words, and the run
-    behaves as though the file were not there. Enumerating the directory turns
-    that silence into a load error naming the sections that exist.
+    An override is read from exactly one path, `<name>.md`, so a file named
+    anything else — `extracter.md`, `Extractor.md`, `house_style.md`,
+    `extractor.txt` — is inert: the prompt it was written to replace still
+    renders the engine's own words, and the run behaves as though the file
+    were not there. Enumerating the directory turns that silence into a load
+    error naming the prompts that exist.
 
     The names come from a directory LISTING and the comparison is
     case-sensitive (see `prompt_partials.engine_override_entries`), so a
     case-insensitive filesystem cannot make a bundle load on macOS and fail on
     Linux, or the reverse.
     """
-    known = engine_section_names()
+    known = engine_prompt_names()
     expected = {f"{name}.md" for name in known}
     problems = []
     for entry in engine_override_entries(partials_dir):
@@ -492,23 +492,23 @@ def _validate_engine_overrides(partials_dir, root):
             continue
         problems.append(
             f"prompts/partials/{ENGINE_NAMESPACE}/{entry} overrides no engine "
-            f"section. An override is read from '<section>.md' with the "
-            f"section spelled exactly as the engine ships it, and the "
-            f"sections are {list(known)}. Rename the file, or move it out of "
+            f"prompt. An override is read from '<name>.md' with the name "
+            f"spelled exactly as the engine ships it, and the engine's "
+            f"prompts are {list(known)}. Rename the file, or move it out of "
             f"{ENGINE_NAMESPACE}/ to make it a partial of your own.")
     if problems:
         raise ConfigBundleError(problems, path=root)
 
 
 def _override_paths(partials_dir):
-    """Every engine-section override this bundle ships, as `(name, path)`.
+    """Every engine-prompt override this bundle ships, as `(name, path)`.
 
-    Read from the shipped sections rather than from the directory listing, so
+    Read from the shipped prompts rather than from the directory listing, so
     the caller iterates over overrides that resolve;
     `_validate_engine_overrides` has already refused anything else in there.
     """
     return [(name, engine_override_path(name, partials_dir))
-            for name in engine_section_names()
+            for name in engine_prompt_names()
             if engine_override_path(name, partials_dir).is_file()]
 
 
@@ -516,7 +516,7 @@ def _stray_prompt_file_problems(prompts_dir, root):
     """Every file in `prompts/` that nothing reads.
 
     The per-field checker message is rendered from the engine's own
-    `checker_user` section, so a `checker_user_template.md` in the bundle is
+    `checker_user` prompt, so a `checker_user_template.md` in the bundle is
     read by nothing. Reported rather than ignored, because a bundle whose
     author believes the checker reads it would run with wording nobody sent.
 
@@ -529,15 +529,15 @@ def _stray_prompt_file_problems(prompts_dir, root):
     return [
         f"{stray.relative_to(root)} is not part of a config bundle: the "
         f"engine renders the per-field checker message from its own "
-        f"`{CHECKER_USER}` section. Delete the file, or move its wording to "
+        f"`{CHECKER_USER}` prompt. Delete the file, or move its wording to "
         f"prompts/partials/{ENGINE_NAMESPACE}/{CHECKER_USER}.md to override "
-        f"that section."
+        f"it."
     ]
 
 
 def _prompt_partial_problems(prompt_paths, partials_dir, root):
     """Every prompt that cites an `{include:NAME}` with no
-    `prompts/partials/NAME.md`, cites an engine section, or whose partial or
+    `prompts/partials/NAME.md`, cites an engine prompt, or whose partial or
     override nests another include.
 
     The render-time expansion in prompt_partials.py raises on all of these
@@ -572,13 +572,13 @@ def _prompt_partial_problems(prompt_paths, partials_dir, root):
                     f"include(s) {nested}; nesting is not supported. Inline "
                     f"the nested content or flatten the partials.")
     # Overrides are checked whether or not any prompt mentions them, because
-    # nothing does: the engine composes a section by name, so an override's
+    # nothing does: the engine composes its prompts by name, so an override's
     # only appearance in the bundle is the file itself.
     for name, override in _override_paths(partials_dir):
         nested = _nested_names(override.read_text(encoding="utf-8"))
         if nested:
             problems.append(
-                f"engine-section override "
+                f"engine-prompt override "
                 f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md nests further "
                 f"include(s) {nested}; nesting is not supported. Inline the "
                 f"nested content or flatten the partials.")
@@ -685,13 +685,14 @@ def _validate_checker_placeholders(checker_system_path, partials_dir, root):
     Three surfaces, because three pieces of text reach a checker call and the
     bundle can write any of them: the bundle's own checker prompt file
     (includes expanded, so a token arriving through a partial is caught), its
-    overrides of the checker's system sections, and its override of the
-    per-field scaffold. The two allowlists differ — the scaffold gets the
+    override of the checker's engine prompt, and its override of the per-field
+    scaffold. The two allowlists differ — the scaffold gets the
     per-field slots, the system prompt gets the check budget — so each surface
     is checked against its own. A slot a text OMITS is fine: the engine
     substitutes what is there.
     """
-    checker_sections = {name for name, _ in spine_sections(CHECKER_SYSTEM)}
+    checker_prompt_names = set(composed_engine_names(
+        CHECKER_SYSTEM, predicates=EXPAND_ALL_BRANCHES))
     surfaces = [(
         checker_system_path.relative_to(root),
         substitute_include_placeholders(
@@ -700,7 +701,7 @@ def _validate_checker_placeholders(checker_system_path, partials_dir, root):
         _CHECKER_SYSTEM_PLACEHOLDERS,
     )]
     for name, override in _override_paths(partials_dir):
-        if name in checker_sections:
+        if name in checker_prompt_names:
             allowed = _CHECKER_SYSTEM_PLACEHOLDERS
         elif name == CHECKER_USER:
             allowed = _CHECKER_USER_PLACEHOLDERS

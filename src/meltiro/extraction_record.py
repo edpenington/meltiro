@@ -44,7 +44,7 @@ no tool in the reviewer's catalogue accepts a check-block argument — and it
 records its own quality check under its own key. Within its own turn the
 extractor MAY revise: `record_initial_check` shallow-merges, so calling it
 again revises the variables it names and leaves the rest, which is what
-`engine_prompts/extractor_workflow.md` tells the extractor it can do. What is
+`engine_prompts/extractor.md` tells the extractor it can do. What is
 closed is the block's author, not its history.
 
 Only the extractor records an initial check (a pre-extraction act with no

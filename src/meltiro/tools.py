@@ -413,8 +413,9 @@ def _envelope_property_schema(field):
             "value": _field_value_subschema(field),
             # No `description` on `evidence`; the full format spec
             # (verbatim <q> tags, <img> labels, prose, required-vs-optional
-            # rules) lives in the system prompt's <recording_evidence>
-            # block. Repeating it on every envelope field cost ~9k tokens.
+            # rules) lives in the evidence passage of the engine's
+            # extractor prompt. Repeating it on every envelope field
+            # cost ~9k tokens.
             "evidence": {"type": ["string", "null"]},
             "notes": _NOTES_SUBSCHEMA,
         },

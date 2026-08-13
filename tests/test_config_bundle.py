@@ -447,13 +447,13 @@ class TestCapPlaceholders:
         # would otherwise be the one place it could still be interpolated.
         override = good_config / "prompts" / "partials" / "meltiro"
         override.mkdir(parents=True, exist_ok=True)
-        (override / "recording_notes.md").write_text(
+        (override / "reviewer.md").write_text(
             "Cap: {max_tool_calls}.\n", encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(good_config)
         msg = str(excinfo.value)
         assert "{max_tool_calls}" in msg
-        assert "recording_notes.md" in msg
+        assert "reviewer.md" in msg
 
     def test_cap_placeholder_inside_partial_rejected(self, good_config):
         # A placeholder hiding in an included partial is caught too: the check

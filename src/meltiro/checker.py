@@ -1,7 +1,7 @@
 """Narrow per-field checker LLM client + ThreadPoolExecutor fan-out.
 
 One call per field a tool call just wrote, in parallel up to a configurable
-concurrency. Each call gets a cached system prompt (the checker's engine spine
+concurrency. Each call gets a cached system prompt (the checker's engine prompt
 followed by the config bundle's checker prompt and the rendered reference
 lists, with no field catalogue in it) plus a small per-field user message
 (field identity, the field's definition and allowed values, identity context,
@@ -164,7 +164,7 @@ class CheckerConfig:
     # (`ConfigBundle.checker_system_path`); the orchestrator sets it at
     # construction time. No CWD-relative default; a real run must supply it.
     # It also locates `prompts/partials/`, which is where a bundle's overrides
-    # of the checker's engine sections and of the per-field scaffold are read
+    # of the checker's engine prompt and of the per-field scaffold are read
     # from, so the two prompts this role sends resolve against one directory.
     system_prompt_path: str = None
     # The checker's own thinking / reasoning-effort spec, or None to say
@@ -247,14 +247,14 @@ class CheckerConfig:
     @property
     def partials_dir(self):
         """The bundle's `prompts/partials/`, where its overrides of the
-        checker's engine sections live. Derived from the system prompt's path
+        checker's engine prompt lives. Derived from the system prompt's path
         rather than stored beside it, so the two cannot name different
         bundles."""
         return Path(self.system_prompt_path).parent / "partials"
 
     def user_prompt_template_text(self, *, predicates, reference_lists=None):
         """Return the scaffold one per-field checker message is rendered from:
-        the engine section `checker_user`, or this bundle's override of it,
+        the engine prompt `checker_user`, or this bundle's override of it,
         with any `{reference:NAME}` it cites rendered in. The same call the
         render path (`checker_prompts.build_checker_user_message`) makes, so
         this is the text a check is sent, before its per-field slots are

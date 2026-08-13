@@ -18,7 +18,7 @@ together, in two halves that have to agree:
    what the checker sees breaks them first.
 
 2. THE PAIR. Every claim below is checked against BOTH system prompts of every
-   config fixture AS THEY RENDER — the engine's spine for that role plus the
+   config fixture AS THEY RENDER — the engine's prompt for that role plus the
    bundle's own text with its partials expanded, which is what a model is
    actually shown — never against the one that happened to carry it. A false
    claim that migrates from one prompt to the other still fails, a prompt that
@@ -44,7 +44,7 @@ from meltiro.prompt_partials import (
     CHECKER_SYSTEM,
     EXPAND_ALL_BRANCHES,
     EXTRACTOR_SYSTEM,
-    compose_engine_spine,
+    compose_engine_prompt,
     join_blocks,
     substitute_include_placeholders,
 )
@@ -201,15 +201,15 @@ def _rendered(role, prompt_path):
     """A system prompt as a model receives it: the whole composed message.
 
     The claims below are about what reaches a model, and most of the checker's
-    contract is in the engine's spine rather than in a bundle's covering text.
+    contract is in the engine's prompt rather than in a bundle's covering text.
     Reading the bundle's file alone would check the wrapper and skip the body,
-    so the spine is composed here exactly as the builders compose it. Every
-    branch is expanded, so a stage a bundle happens to disable today cannot
-    hide a false claim that surfaces when someone switches it on.
+    so the engine's half is composed here exactly as the builders compose it.
+    Every branch is expanded, so a stage a bundle happens to disable today
+    cannot hide a false claim that surfaces when someone switches it on.
     """
     partials = prompt_path.parent / "partials"
     return join_blocks(
-        compose_engine_spine(role, partials, predicates=EXPAND_ALL_BRANCHES),
+        compose_engine_prompt(role, partials, predicates=EXPAND_ALL_BRANCHES),
         substitute_include_placeholders(
             prompt_path.read_text(encoding="utf-8"), partials,
             predicates=EXPAND_ALL_BRANCHES),

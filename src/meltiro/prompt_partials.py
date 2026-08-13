@@ -1,54 +1,62 @@
-"""The engine's prompt spines, and the `{include:NAME}` partials a bundle owns.
+"""The engine's own prompts, and the `{include:NAME}` partials a bundle owns.
 
-Each role's system message is built from two halves. The ENGINE SPINE comes
-first: an ordered run of named sections, shipped as one markdown file each
-under `meltiro/engine_prompts/` and assembled here in code. The config
-bundle's own prompt file for that role is APPENDED after it. Neither half can
-be lost by accident — the spine is chosen by the engine and the bundle's file
-is required — so a model is briefed on the machinery whatever the bundle says
-about the review.
+Each role's system message is built from two halves. The ENGINE PROMPT comes
+first: one markdown file per role under `meltiro/engine_prompts/`, rendered
+here. The config bundle's own prompt file for that role is APPENDED after it.
+Neither half can be lost by accident — the engine chooses its own prompt and
+the bundle's file is required — so a model is briefed on the machinery
+whatever the bundle says about the review.
 
 Between the two halves the engine writes one transition sentence, so a model
 reading straight through knows where its briefing on the machinery ends and the
 review's own briefing begins (`join_role_message`; each builder holds its
 role's wording).
 
-The spines are declared in `ENGINE_SPINES`, one entry per role, each section
-paired with the pipeline stage it depends on or `None` for a section that is
-always composed:
+`ENGINE_ROLE_PROMPTS` names the file each role renders:
 
   - `extractor_system`, `checker_system`, `review_system` -- the three system
-    messages. The bundle's prompt file of the same name supplies the appended
-    half.
+    messages, from `extractor.md`, `checker.md` and `reviewer.md`. The
+    bundle's prompt file of the same role supplies the appended half.
   - `checker_user` -- the scaffold the per-field checker message is rendered
-    from. The engine owns it whole; there is no bundle file to append.
+    from, `checker_user.md`. The engine owns it whole; there is no bundle
+    file to append.
 
-Two stage predicates gate a conditional section, matching the two structure
+A role prompt may compose an engine PARTIAL by citing
+`{include:meltiro:NAME}` or `{include_if:PREDICATE:meltiro:NAME}`, which is
+how a passage that belongs to one stage only reaches a model exactly when
+that stage runs. `extractor.md` cites `extractor_checker_feedback` that way.
+Citation is one level deep and engine-only: a cited partial may cite nothing
+further, and a role prompt may cite no bundle partial, which would invert the
+ownership boundary the two halves are built on.
+
+Two stage predicates gate a conditional citation, matching the two structure
 toggles the engine resolves before any prompt is rendered:
 
   - `checker` -- true when `max_checks_per_field > 0`
   - `review`  -- true when `final_review` is on
 
-A section whose stage is off is left out entirely, and the sections around it
-close up: a run with no checker must not brief its extractor on challenges
+A partial whose stage is off is left out entirely, and the text around it
+closes up: a run with no checker must not brief its extractor on challenges
 that cannot arrive.
 
-OVERRIDING A SECTION. A bundle ships `prompts/partials/meltiro/NAME.md` to
-supply its own words for engine section `NAME`. Non-empty text REPLACES that
-section where it sits in the spine. Text that is empty (or whitespace only)
-REMOVES the section, and that is the only way a section is excluded from a
-model's context. The name must be a section the engine ships; that directory
-is ENUMERATED at load (`config_bundle._validate_engine_overrides`), so a file
-whose name is not exactly a shipped section's is refused rather than sitting
-there overriding nothing.
+OVERRIDING. A bundle ships `prompts/partials/meltiro/NAME.md` to supply its
+own words for engine prompt `NAME`. Non-empty text REPLACES that file's text,
+rendered literally — an override carries no citations of its own, so
+overriding a ROLE prompt replaces the whole of that role's engine half,
+conditional partial included. Text that is empty (or whitespace only) REMOVES
+it, and that is the only way an engine prompt is excluded from a model's
+context. The name must be one the engine ships; that directory is ENUMERATED
+at load (`config_bundle._validate_engine_overrides`), so a file whose name is
+not exactly a shipped one is refused rather than sitting there overriding
+nothing.
 
 HASHING follows ownership. An override is hand-authored, so it belongs to the
 config's identity and rides in the config fingerprints, empty overrides
-included: excluding a section is a methodological choice and has to move them.
-An un-overridden section is engine text and reaches no config preimage
+included: excluding an engine prompt is a methodological choice and has to
+move them. An un-overridden engine prompt reaches no config preimage
 (`config_prompt_preimage`); it moves `engine_fp` instead, through the source
 digest that hashes `engine_prompts/*.md` beside the package's modules (see
-`run_log.source_hash`). Which sections compose at all is decided by the engine
+`run_log.source_hash`). Which files compose at all is decided by the engine
 and the run's structure toggles, and those toggles ride in `structure_hash`.
 
 THE BUNDLE'S OWN PARTIALS. A bundle prompt may cite a reusable block of its
@@ -56,7 +64,7 @@ own with `{include:NAME}`, replaced at render time by the content of
 `prompts/partials/NAME.md` in the same bundle, so a block several prompts
 share lives in one file and the copies cannot drift apart.
 `{include_if:PREDICATE:NAME}` makes such a block conditional on a stage, on
-the same terms as a spine section.
+the same terms as an engine partial.
 
 Rules:
 
@@ -76,14 +84,14 @@ Rules:
     blank line, so a disabled block leaves no ragged gap in the rendered
     prompt. A rendered prompt is hashed into `prompts_hash`, so whitespace
     is not cosmetic here.
-  - The `meltiro:` namespace names engine sections and nothing else. A bundle
-    prompt citing `{include:meltiro:NAME}` is refused: the engine composes its
-    own sections, and a prompt that also cited one would compose it twice.
+  - The `meltiro:` namespace names the engine's own prompts and nothing else.
+    A bundle prompt citing `{include:meltiro:NAME}` is refused: the engine
+    composes its own, and a prompt that also cited one would compose it twice.
 
 An included partial's content is inserted with surrounding whitespace
 stripped, so the placeholder is expected to sit on its own line as a
 block-level include. The `partials/` directory is optional: a bundle whose
-prompts cite no include placeholder and overrides no section needs no
+prompts cite no include placeholder and overrides nothing needs no
 `partials/` directory at all.
 
 The config bundle validates every placeholder at load time
@@ -99,56 +107,38 @@ from meltiro.errors import ConfigBundleError
 from meltiro.fingerprint import canonical_json
 
 
-# The reserved namespace, and the directory its sections are read from. The
-# directory is where a section's TEXT comes from; `ENGINE_SPINES` below is
-# where its position comes from, and every shipped file appears in exactly one
-# spine (tests/agentic_extraction/test_engine_prompts.py pins that).
+# The reserved namespace, and the directory the engine's prompts are read
+# from. Every shipped file is either a role's prompt or a partial exactly one
+# role prompt cites (tests/agentic_extraction/test_engine_prompts.py pins
+# that), so nothing in there can ship unread.
 ENGINE_NAMESPACE = "meltiro"
 ENGINE_PROMPTS_DIR = Path(__file__).resolve().parent / "engine_prompts"
 
-# The roles a spine is composed for. The first three name the bundle prompt
-# file whose text is appended after the spine; `checker_user` has no bundle
+# The roles an engine prompt is rendered for. The first three name the bundle
+# prompt file whose text is appended after it; `checker_user` has no bundle
 # file, because the per-field scaffold is the engine's whole to write.
 EXTRACTOR_SYSTEM = "extractor_system"
 CHECKER_SYSTEM = "checker_system"
 REVIEW_SYSTEM = "review_system"
 CHECKER_USER = "checker_user"
 
-# The predicates a conditional section or include may name. Deliberately
+# The predicates a conditional citation or include may name. Deliberately
 # closed: an unknown predicate is a typo or a stage that does not exist, and
 # silently treating it as false would hide a block rather than report the
 # mistake.
 PREDICATE_NAMES = ("checker", "review")
 
-# Each role's spine: the sections the engine composes, in order, each with the
-# stage it depends on or None for one that is always composed. Order is the
-# prompt's order, so a section moves by moving its line here.
-ENGINE_SPINES = {
-    EXTRACTOR_SYSTEM: (
-        ("extractor_role", None),
-        ("extractor_workflow", None),
-        ("extractor_checker_feedback", "checker"),
-        ("extractor_completion", None),
-        ("extractor_review_handoff", "review"),
-        ("extractor_tool_budget", None),
-        ("recording_evidence", None),
-        ("recording_notes", None),
-        ("recording_conventions", None),
-    ),
-    CHECKER_SYSTEM: (
-        ("checker_role", None),
-        ("checker_briefing", None),
-        ("checker_verdict", None),
-    ),
-    REVIEW_SYSTEM: (
-        ("reviewer_role", None),
-        ("reviewer_record", None),
-        ("reviewer_workflow", None),
-    ),
-    CHECKER_USER: (
-        ("checker_user", None),
-    ),
+# The one file each role's engine half is rendered from. Its own text decides
+# what else composes and in what order, so a passage moves by moving it in
+# that file rather than by editing a table here.
+ENGINE_ROLE_PROMPTS = {
+    EXTRACTOR_SYSTEM: "extractor",
+    CHECKER_SYSTEM: "checker",
+    REVIEW_SYSTEM: "reviewer",
+    CHECKER_USER: "checker_user",
 }
+
+ROLE_PROMPT_NAMES = frozenset(ENGINE_ROLE_PROMPTS.values())
 
 # A file-stem-shaped token, mirroring the reference-placeholder grammar in
 # reference_lists.py, optionally qualified by the engine namespace. The
@@ -177,10 +167,11 @@ _INCLUDE_IF_LINE = re.compile(
 # switched on. Not for render paths -- see `substitute_include_placeholders`.
 EXPAND_ALL_BRANCHES = "expand-all-branches"
 
-# How two composed blocks are separated, whether they are two spine sections
-# or the spine and the bundle's appended text. One blank line, applied in one
-# place, so every rendered prompt has the same shape and a hash taken over one
-# cannot disagree with the message sent from another.
+# How two composed blocks are separated, whether they are an engine partial
+# and the text around it or the engine's half and the bundle's appended one.
+# One blank line, applied in one place, so every rendered prompt has the same
+# shape and a hash taken over one cannot disagree with the message sent from
+# another.
 BLOCK_SEPARATOR = "\n\n"
 
 
@@ -196,26 +187,68 @@ def stage_predicates(max_checks_per_field, final_review):
     }
 
 
-def engine_section_names():
-    """Every engine section the package ships, sorted.
+def engine_prompt_names():
+    """Every prompt the engine ships, sorted.
 
     Read off `engine_prompts/` every call, so the shipped files are the whole
-    answer and no second list can fall out of step with them. What a section
-    is FOR — which spine it sits in, at what position, behind which stage —
-    is `ENGINE_SPINES`.
+    answer and no second list can fall out of step with them. Which of them a
+    role renders is `ENGINE_ROLE_PROMPTS` and the citations inside the file it
+    names.
     """
     return tuple(sorted(p.stem for p in ENGINE_PROMPTS_DIR.glob("*.md")))
 
 
-def spine_sections(role):
-    """The `(name, predicate)` pairs composing `role`'s spine, in order."""
+def role_prompt_name(role):
+    """The engine prompt `role` renders."""
     try:
-        return ENGINE_SPINES[role]
+        return ENGINE_ROLE_PROMPTS[role]
     except KeyError:
         raise ValueError(
-            f"unknown prompt role {role!r}; the engine composes a spine for "
-            f"{list(ENGINE_SPINES)}. This is an engine bug: a role is added by "
-            f"adding its spine.") from None
+            f"unknown prompt role {role!r}; the engine renders a prompt for "
+            f"{list(ENGINE_ROLE_PROMPTS)}. This is an engine bug: a role is "
+            f"added by giving it a file.") from None
+
+
+def _shipped_text(name):
+    """The engine's own copy of a prompt, whatever a bundle says about it."""
+    return (ENGINE_PROMPTS_DIR / f"{name}.md").read_text(
+        encoding="utf-8").strip()
+
+
+def engine_citations(text):
+    """The `(predicate, name)` pairs `text` cites, in the order it cites them.
+
+    `predicate` is `None` for an unconditional `{include:...}`. Names are
+    returned as written, namespace and all, so a caller can tell an engine
+    citation from a bundle one it must refuse. Found with the same two
+    patterns the substitution below expands, so what a caller enumerates and
+    what a render replaces cannot disagree.
+    """
+    found = [(m.start(), None, m.group(1))
+             for m in _INCLUDE_PLACEHOLDER.finditer(text)]
+    found += [(m.start(), m.group(1), m.group(2))
+              for m in _INCLUDE_IF_PLACEHOLDER.finditer(text)]
+    return [(predicate, name)
+            for _, predicate, name in sorted(found, key=lambda c: c[0])]
+
+
+def composed_engine_names(role, *, predicates):
+    """Every engine prompt name `role` composes, in the order it reads them.
+
+    The role's own file, then each partial it cites whose stage is on. Read
+    off the SHIPPED files, so which names compose is the engine's answer alone
+    and a bundle's overrides cannot change it — the same question the run's
+    structure toggles answer, and the reason a silenced partial's override is
+    not part of what this run asks (see `engine_override_pairs`).
+    """
+    name = role_prompt_name(role)
+    names = [name]
+    for predicate, cited in engine_citations(_shipped_text(name)):
+        section = _unqualified(cited)
+        if predicate is None or _predicate_value(
+                predicate, section, predicates):
+            names.append(section)
+    return names
 
 
 def is_engine_name(name):
@@ -249,9 +282,9 @@ def included_names(text):
 def engine_cited_names(text):
     """Return every `meltiro:`-qualified name cited by `text`, unqualified.
 
-    Every one of them is a defect: the engine composes its own sections, so a
-    prompt has none to cite. Collected rather than raised on the first, so the
-    load error names them all.
+    Every one of them is a defect in a BUNDLE prompt: the engine composes its
+    own, so a bundle prompt has none to cite. Collected rather than raised on
+    the first, so the load error names them all.
     """
     return {_unqualified(n) for n in _all_cited_names(text)
             if is_engine_name(n)}
@@ -266,11 +299,11 @@ def engine_citation_message(name, where=None):
     prefix = f"prompt {where} cites" if where else "prompt cites"
     return (
         f"{prefix} {{include:{ENGINE_NAMESPACE}:{name}}}. The engine composes "
-        f"its own sections into each role's prompt, and this file supplies the "
-        f"text appended after them, so delete the placeholder. To supply your "
-        f"own wording for that section instead, ship "
-        f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md; an empty file leaves "
-        f"the section out altogether."
+        f"its own prompts for each role, and this file supplies the text "
+        f"appended after them, so delete the placeholder. To supply your own "
+        f"wording instead, ship "
+        f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md; "
+        f"an empty file leaves that text out altogether."
     )
 
 
@@ -285,12 +318,12 @@ def _reject_nesting(name, content, where):
 
 
 def engine_override_dir(partials_dir):
-    """Where a bundle puts its overrides of the engine's sections."""
+    """Where a bundle puts its overrides of the engine's prompts."""
     return Path(partials_dir) / ENGINE_NAMESPACE
 
 
 def engine_override_path(name, partials_dir):
-    """Where a bundle puts its own text for engine section `name`."""
+    """Where a bundle puts its own text for engine prompt `name`."""
     return engine_override_dir(partials_dir) / f"{name}.md"
 
 
@@ -313,80 +346,81 @@ def engine_override_entries(partials_dir):
     return tuple(sorted(p.name for p in override_dir.iterdir()))
 
 
-def read_engine_section(name, partials_dir):
-    """Return `(text, overridden)` for an engine section.
+def read_engine_prompt(name, partials_dir):
+    """Return `(text, overridden)` for one of the engine's prompts.
 
     The bundle's `prompts/partials/meltiro/NAME.md` wins when it exists, and
     the flag says which happened so a hashing caller can tell hand-authored
     text from engine text. An override that is empty or whitespace-only
-    returns the empty string, which is how a section is left out of a model's
-    context.
+    returns the empty string, which is how an engine prompt is left out of a
+    model's context.
 
-    Whichever file supplies the text is held to the no-nesting rule. The
-    engine's own copy is checked by the same call as an override: a shipped
-    section carrying `{include:...}` would put the literal directive in front
-    of a model, which is the failure the rule exists to prevent whoever wrote
-    the text.
+    An override carries no citations, whichever file it replaces: it is
+    rendered literally, so an override of a role prompt supplies that role's
+    whole engine half. A shipped PARTIAL carries none either — citation is one
+    level deep, and a directive inside an expansion would reach a model as
+    literal text. A shipped ROLE prompt is the one file that may cite, and
+    `compose_engine_prompt` is what expands it.
     """
-    known = engine_section_names()
+    known = engine_prompt_names()
     if name not in known:
         raise ConfigBundleError(
-            [f"unknown engine section '{name}'; the engine's sections are "
+            [f"unknown engine prompt '{name}'; the engine's prompts are "
              f"{list(known)}."]
         )
     override = engine_override_path(name, partials_dir)
     overridden = override.is_file()
     source = override if overridden else ENGINE_PROMPTS_DIR / f"{name}.md"
     content = source.read_text(encoding="utf-8")
-    _reject_nesting(
-        name, content,
-        "engine-section override" if overridden else "engine section")
+    if overridden:
+        _reject_nesting(name, content, "engine-prompt override")
+    elif name not in ROLE_PROMPT_NAMES:
+        _reject_nesting(name, content, "engine partial")
     return content.strip(), overridden
 
 
-def compose_engine_spine(role, partials_dir, *, predicates):
-    """Render `role`'s engine spine: its sections joined by a blank line.
+def compose_engine_prompt(role, partials_dir, *, predicates):
+    """Render `role`'s engine half: its prompt file, citations expanded.
 
-    Overrides are resolved per section, and a section whose stage is off or
-    whose override is empty contributes nothing at all — no heading, no gap.
-    A section is dropped for one of two reasons, and they are different
-    reasons: its stage is off for this run, or the bundle overrode it with an
-    empty file. Only the second is the config author's choice, so only the
-    second reaches a config fingerprint (see `config_prompt_preimage`).
+    A cited partial whose stage is off contributes nothing at all — no
+    heading, no gap — and neither does one the bundle overrode with an empty
+    file. Those are different reasons: the stage is off for this run, or the
+    config author decided the words should not be sent. Only the second is a
+    choice about what this run asks, so only the second reaches a config
+    fingerprint (see `config_prompt_preimage`).
+
+    An overridden role prompt renders literally, conditional citation and all:
+    the bundle supplied the whole of that role's engine half, so there is
+    nothing of the engine's left to compose into it.
+
     Slots (`{image_labels_list}`, `{max_checks_per_field}`) are left for the
-    caller to fill, so the spine and the bundle's appended text are filled by
+    caller to fill, so this half and the bundle's appended text are filled by
     the same substitution.
     """
-    parts = []
-    for name, predicate in spine_sections(role):
-        if predicate is not None and not _predicate_value(
-                predicate, name, predicates):
-            continue
-        text, _ = read_engine_section(name, partials_dir)
-        if text:
-            parts.append(text)
-    return BLOCK_SEPARATOR.join(parts)
+    name = role_prompt_name(role)
+    text, overridden = read_engine_prompt(name, partials_dir)
+    if overridden:
+        return text
+    return _expand_engine_citations(
+        text, name, partials_dir, predicates=predicates)
 
 
 def engine_override_pairs(role, partials_dir, *, predicates):
-    """The bundle's overrides of `role`'s spine, as sorted `[name, text]`
-    pairs.
+    """The bundle's overrides of `role`'s engine half, as sorted `[name,
+    text]` pairs.
 
-    The config-owned half of an engine spine, and the whole of what a spine
-    contributes to a config fingerprint. Empty overrides are included and
-    carry their empty string: leaving a section out is a decision about what
-    the model is asked, so it has to move the fingerprints exactly as
-    rewriting the section would.
+    The config-owned part of that half, and the whole of what it contributes
+    to a config fingerprint. Empty overrides are included and carry their
+    empty string: leaving an engine prompt out is a decision about what the
+    model is asked, so it has to move the fingerprints exactly as rewriting it
+    would.
 
-    A section whose stage is off is skipped whether or not the bundle
+    A partial whose stage is off is skipped whether or not the bundle
     overrides it: it reaches no model this run, and the toggle that silenced
     it already rides in `structure_hash`.
     """
     pairs = []
-    for name, predicate in spine_sections(role):
-        if predicate is not None and not _predicate_value(
-                predicate, name, predicates):
-            continue
+    for name in composed_engine_names(role, predicates=predicates):
         override = engine_override_path(name, partials_dir)
         if override.is_file():
             pairs.append([name, override.read_text(encoding="utf-8").strip()])
@@ -397,11 +431,11 @@ def all_engine_override_pairs(partials_dir, *, predicates):
     """Every role's override pairs, merged and sorted.
 
     For the bundle-wide `prompts_hash`, which covers the whole prompt surface
-    rather than one role's. A section belongs to exactly one spine, so the
-    merge cannot produce two entries for one name.
+    rather than one role's. An engine prompt belongs to exactly one role, so
+    the merge cannot produce two entries for one name.
     """
     merged = {}
-    for role in ENGINE_SPINES:
+    for role in ENGINE_ROLE_PROMPTS:
         for name, text in engine_override_pairs(
                 role, partials_dir, predicates=predicates):
             merged[name] = text
@@ -412,10 +446,10 @@ def config_prompt_preimage(prompt_text, override_pairs):
     """The config-owned identity of one role's prompt, as a canonical string.
 
     Two components, and only these two: the bundle's appended text as it
-    renders, and the bundle's overrides of the sections this run composed. An
-    un-overridden section contributes nothing, which is what keeps every
-    bundle's config fingerprints steady across an engine release that rewords
-    one.
+    renders, and the bundle's overrides of the engine prompts this run
+    composed. An un-overridden engine prompt contributes nothing, which is
+    what keeps every bundle's config fingerprints steady across an engine
+    release that rewords one.
 
     Hashed by `prompt_builder.compute_prompt_config_hash` and folded verbatim
     into `checker_fp` and `review_fp`, so all three stages state ownership the
@@ -430,30 +464,30 @@ def config_prompt_preimage(prompt_text, override_pairs):
 def join_blocks(*blocks):
     """Join rendered blocks with one blank line, dropping the empty ones.
 
-    An empty spine (every section overridden away) or an empty bundle prompt
-    file leaves no leading or trailing gap behind it: a rendered prompt is
-    hashed, so whitespace is content.
+    An engine half overridden away, or an empty bundle prompt file, leaves no
+    leading or trailing gap behind it: a rendered prompt is hashed, so
+    whitespace is content.
     """
     return BLOCK_SEPARATOR.join(b for b in (b.strip() for b in blocks) if b)
 
 
-def join_role_message(spine, transition, bundle_text):
-    """Join one role's system message: spine, transition sentence, bundle text.
+def join_role_message(engine_text, transition, bundle_text):
+    """Join one role's system message: engine half, transition, bundle half.
 
     The transition is the engine's signpost from its own half of the message to
     the review's, and each role has its own (the builders hold the wording,
     beside the rest of their framing). It is emitted only when there is text on
     BOTH sides of it: a bundle whose prompt file is empty is promised no
-    briefing that never arrives, and a bundle that overrode every section away
-    reads its own opening line first rather than a lone engine sentence.
+    briefing that never arrives, and a bundle that overrode the engine's half
+    away reads its own opening line first rather than a lone engine sentence.
 
     Compose-time framing, so it is engine text like the user-block headers: it
     reaches the wire and `engine_fp`, and no config preimage is built through
     here (see `config_prompt_preimage`, which takes the bundle's text on its
     own).
     """
-    blocks = [spine, bundle_text]
-    if spine.strip() and bundle_text.strip():
+    blocks = [engine_text, bundle_text]
+    if engine_text.strip() and bundle_text.strip():
         blocks.insert(1, transition)
     return join_blocks(*blocks)
 
@@ -497,6 +531,48 @@ def _predicate_value(predicate, name, predicates):
     return bool(predicates[predicate])
 
 
+def _expand_engine_citations(text, where, partials_dir, *, predicates):
+    """Expand a role prompt's `{include:meltiro:NAME}` citations.
+
+    The engine-side counterpart of `substitute_include_placeholders`, sharing
+    its patterns and so its whitespace behaviour: a conditional standing alone
+    on its line takes the line and one following blank line with it when its
+    stage is off, and a partial overridden away does the same, so what a
+    reader sees is a document with a paragraph in it or a document without
+    one, never a gap where a paragraph was.
+
+    A cited partial is resolved through `read_engine_prompt`, so the bundle's
+    override of it lands here exactly as an override of a role prompt lands in
+    `compose_engine_prompt`.
+    """
+    def resolve(name, placeholder):
+        if not is_engine_name(name):
+            raise ConfigBundleError(
+                [f"engine prompt '{where}.md' cites {placeholder}, which "
+                 f"names a partial of the config bundle's. An engine prompt "
+                 f"composes the engine's own text only. This is an engine "
+                 f"bug: the bundle's text is appended after this file, never "
+                 f"woven into it."]
+            )
+        return read_engine_prompt(_unqualified(name), partials_dir)[0]
+
+    def _conditional(match, *, standalone):
+        predicate, name = match.group(1), match.group(2)
+        content = resolve(name, f"{{include_if:{predicate}:{name}}}")
+        if not _predicate_value(predicate, _unqualified(name), predicates):
+            return ""
+        if standalone:
+            return f"{content}\n\n" if content else ""
+        return content
+
+    text = _INCLUDE_IF_LINE.sub(
+        lambda m: _conditional(m, standalone=True), text)
+    text = _INCLUDE_IF_PLACEHOLDER.sub(
+        lambda m: _conditional(m, standalone=False), text)
+    return _INCLUDE_PLACEHOLDER.sub(
+        lambda m: resolve(m.group(1), f"{{include:{m.group(1)}}}"), text)
+
+
 def substitute_include_placeholders(text, partials_dir, *, predicates=None):
     """Replace every include placeholder in `text` with a bundle partial.
 
@@ -510,7 +586,7 @@ def substitute_include_placeholders(text, partials_dir, *, predicates=None):
     `ConfigBundleError`, whether or not its branch is taken, so a typo cannot
     hide behind a disabled stage. So does a partial that itself contains an
     include placeholder: nesting is not supported. So does a
-    `meltiro:`-qualified name: the engine composes its own sections, and this
+    `meltiro:`-qualified name: the engine composes its own prompts, and this
     text is the half appended after them.
 
     `predicates` is a mapping from `PREDICATE_NAMES` to bool, normally built

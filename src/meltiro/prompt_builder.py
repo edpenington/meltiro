@@ -1,6 +1,6 @@
 """Build the extractor's and reviewer's system + user messages.
 
-The system message is the LARGE cacheable block: the role's engine spine
+The system message is the LARGE cacheable block: the role's engine prompt
 (`meltiro.prompt_partials`), one transition sentence, and then the config
 bundle's own prompt file for that role, with the image-label list and the
 rendered reference lists substituted into both halves. The field catalogue is
@@ -40,7 +40,7 @@ from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
     EXTRACTOR_SYSTEM,
     REVIEW_SYSTEM,
-    compose_engine_spine,
+    compose_engine_prompt,
     config_prompt_preimage,
     engine_override_pairs,
     join_role_message,
@@ -165,9 +165,10 @@ def _fill_slots(text, system_prompt_path, *, reference_lists, image_labels,
                 image_captions, max_checks_per_field):
     """Substitute everything the engine puts into a rendered prompt.
 
-    Applied to the engine spine and to the bundle's appended text by the same
-    call, so a slot means the same thing whichever half wrote it: an override
-    may render the image-label list exactly as the section it replaces did.
+    Applied to the engine's half and to the bundle's appended text by the
+    same call, so a slot means the same thing whichever half wrote it: an
+    override may render the image-label list exactly as the text it replaces
+    did.
     """
     text = substitute_reference_placeholders(
         text, reference_lists,
@@ -185,9 +186,9 @@ def render_bundle_prompt_text(system_prompt_path, *, predicates,
 
     The half a review writes: its prompt file with `{include:NAME}` partials
     expanded, `{reference:NAME}` lists inlined, and the engine's slots filled.
-    It is appended after the engine spine on the wire, and it is the `prompt`
-    component of that role's config preimage, so the text a model reads and
-    the text a fingerprint covers come off one function.
+    It is appended after the engine's half on the wire, and it is the
+    `prompt` component of that role's config preimage, so the text a model
+    reads and the text a fingerprint covers come off one function.
     """
     text = substitute_include_placeholders(
         _load_text(system_prompt_path), _partials_dir(system_prompt_path),
@@ -198,9 +199,10 @@ def render_bundle_prompt_text(system_prompt_path, *, predicates,
         max_checks_per_field=max_checks_per_field)
 
 
-def _render_spine(role, system_prompt_path, *, predicates, reference_lists,
-                  image_labels, image_captions, max_checks_per_field):
-    text = compose_engine_spine(
+def _render_engine_half(role, system_prompt_path, *, predicates,
+                        reference_lists, image_labels, image_captions,
+                        max_checks_per_field):
+    text = compose_engine_prompt(
         role, _partials_dir(system_prompt_path), predicates=predicates)
     return _fill_slots(
         text, system_prompt_path, reference_lists=reference_lists,
@@ -216,7 +218,7 @@ def build_system_message(image_labels, *,
                          image_captions=None):
     """Build the extractor's system message text.
 
-    The extractor's engine spine first, then the config bundle's prompt file
+    The extractor's engine prompt first, then the config bundle's prompt file
     appended after it. `system_prompt_path` is REQUIRED; it comes from the
     config bundle (`ConfigBundle.extractor_system_path`), and it also locates
     the `partials/` directory both halves resolve against.
@@ -241,8 +243,8 @@ def build_system_message(image_labels, *,
                  image_captions=image_captions,
                  max_checks_per_field=max_checks_per_field)
     return join_role_message(
-        _render_spine(EXTRACTOR_SYSTEM, system_prompt_path,
-                      predicates=predicates, **slots),
+        _render_engine_half(EXTRACTOR_SYSTEM, system_prompt_path,
+                            predicates=predicates, **slots),
         EXTRACTOR_BUNDLE_TRANSITION,
         render_bundle_prompt_text(system_prompt_path, predicates=predicates,
                                   **slots),
@@ -256,7 +258,7 @@ def build_config_prompt_text(role, *, system_prompt_path,
 
     Two components (see `prompt_partials.config_prompt_preimage`): the
     bundle's appended text as it renders, and the bundle's overrides of the
-    engine sections this run composes for `role`.
+    engine prompts this run composes for `role`.
 
     Rendered with an empty `image_labels` list, so the per-paper figure/table
     label set (and the per-paper exhibit captions beside it) reaches no hash
@@ -266,7 +268,7 @@ def build_config_prompt_text(role, *, system_prompt_path,
     author's own reach it too — a bundle that writes `{max_checks_per_field}`
     into its prompt hashes the number.
 
-    Engine text reaches it never. Whatever a composed section says, and
+    Engine text reaches it never. Whatever the engine's half says, and
     whatever the engine substitutes into it, is outside the preimage: the
     check budget stated in `extractor_checker_feedback` moves this by exactly
     nothing. That is the boundary, not a gap in it. The budget reaches a run's
@@ -386,14 +388,14 @@ def build_review_system_message(image_labels, *,
                                  image_captions=None):
     """Build the FINAL REVIEW system message text.
 
-    The reviewer's engine spine first, then the config bundle's review prompt
-    file appended after it. `system_prompt_path` is REQUIRED; it comes from
-    the config bundle (`ConfigBundle.review_system_path`).
+    The reviewer's engine prompt first, then the config bundle's review
+    prompt file appended after it. `system_prompt_path` is REQUIRED; it comes
+    from the config bundle (`ConfigBundle.review_system_path`).
 
-    The reviewer's spine is its own: it frames the model as the reader of an
-    already-completed extraction, where the extractor's frames the writer of
-    one. The same image labels are rendered in, with the exhibit captions
-    beside them exactly as the extractor saw them; the field catalogue reaches
+    The reviewer's engine prompt is its own: it frames the model as the reader
+    of an already-completed extraction, where the extractor's frames the
+    writer of one. The same image labels are rendered in, with the exhibit
+    captions beside them exactly as the extractor saw them; the field catalogue reaches
     it through the tool `input_schema`s, as it does the extractor.
     `{reference:NAME}` placeholders are substituted; the tool-call cap
     placeholders are rejected at config-load time (see `build_system_message`).
@@ -403,8 +405,8 @@ def build_review_system_message(image_labels, *,
                  image_captions=image_captions,
                  max_checks_per_field=max_checks_per_field)
     return join_role_message(
-        _render_spine(REVIEW_SYSTEM, system_prompt_path,
-                      predicates=predicates, **slots),
+        _render_engine_half(REVIEW_SYSTEM, system_prompt_path,
+                            predicates=predicates, **slots),
         REVIEW_BUNDLE_TRANSITION,
         render_bundle_prompt_text(system_prompt_path, predicates=predicates,
                                   **slots),

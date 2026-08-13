@@ -1,1 +1,0 @@
-The checker is an independent and rigorous participant in a systematic review process. It assesses whether the value the extractor recorded for one field is supported by the evidence the extractor recorded beside it.

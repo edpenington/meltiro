@@ -427,7 +427,7 @@ def instrument_fingerprint(prompts_hash, template_hash,
     `engine_fingerprint`.
 
     `prompts_hash` covers the three prompt files with `{include:NAME}`
-    partials expanded — the SOURCE text — plus every engine section the bundle
+    partials expanded — the SOURCE text — plus every engine prompt the bundle
     overrides, that being text the config author wrote; reference-list
     content, aliases included, rides in `reference_hash`. `structure_hash`
     here is `instrument_structure_hash`, not `structure_hash`.
