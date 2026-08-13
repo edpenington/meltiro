@@ -140,13 +140,13 @@ class TestFingerprintMovesOnPartialEdit:
         assert before != after
 
 
-class TestCheckerUserTemplatePartials:
-    """checker_fp must move when a partial cited by the checker user
-    template changes (the render path expands includes per field, so the
-    fingerprint must hash the expanded text, not the raw file)."""
+class TestTheCheckerSystemPromptPartials:
+    """checker_fp must move when a partial cited by the checker's own prompt
+    file changes (the render path expands includes before the call, so the
+    fingerprint has to hash the expanded text, not the raw file)."""
 
     def test_editing_cited_partial_moves_checker_fp(
-            self, tmp_path, config_dir, checker_system_path):
+            self, tmp_path, config_dir):
         from meltiro.checker import CheckerConfig
         from meltiro.reference_lists import load_reference_lists
         from meltiro.template import load_template
@@ -157,31 +157,26 @@ class TestCheckerUserTemplatePartials:
         prompts = tmp_path / "prompts"
         partials = prompts / "partials"
         partials.mkdir(parents=True)
-        user_tmpl = prompts / "checker_user_template.md"
-        user_tmpl.write_text(
-            "{include:ctx}\nfield: {field_description}\n", encoding="utf-8")
+        system = prompts / "checker_system.md"
+        system.write_text("{include:ctx}\n", encoding="utf-8")
         (partials / "ctx.md").write_text("VERSION-A", encoding="utf-8")
 
         # A real registry id: checker_fp folds in the model's provider and
         # base_url, so an unregistered id fails model resolution.
-        cfg = CheckerConfig(max_tokens=1024, 
+        cfg = CheckerConfig(
+            max_tokens=1024,
             checker_model="claude-sonnet-4-6",
-            system_prompt_path=str(checker_system_path),
-            user_prompt_template_path=str(user_tmpl),
+            system_prompt_path=str(system),
         )
         # The run's structure predicates, which the checker takes as an
         # argument because it keeps no copy of the toggles behind them. Held
         # fixed here: what varies is the partial's content.
         predicates = stage_predicates(2, True)
-        assert "VERSION-A" in cfg.user_prompt_template_text(
-            predicates=predicates)
         fp_a = cfg.fingerprint(template, reference_lists,
                                predicates=predicates,
                                max_checks_per_field=2)
 
         (partials / "ctx.md").write_text("VERSION-B", encoding="utf-8")
-        assert "VERSION-B" in cfg.user_prompt_template_text(
-            predicates=predicates)
         fp_b = cfg.fingerprint(template, reference_lists,
                                predicates=predicates,
                                max_checks_per_field=2)

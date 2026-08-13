@@ -221,12 +221,10 @@ class Orchestrator:
 
         self.extractor_model = extractor_model
         self.checker_config = checker_config or CheckerConfig.from_env()
-        # Checker prompt paths come from the config bundle, so the checker
-        # fingerprint reflects the config actually used.
+        # The checker's prompt path comes from the config bundle, so the
+        # checker fingerprint reflects the config actually used.
         self.checker_config.system_prompt_path = str(
             config.checker_system_path)
-        self.checker_config.user_prompt_template_path = str(
-            config.checker_user_template_path)
         self.review_model = review_model
         self.max_tool_calls = max_tool_calls
         # The reviewer's own budget, counted over the review conversation only:
@@ -786,7 +784,6 @@ class Orchestrator:
         # configured that this run's models never send.
         self._warn_images_withheld()
         self._warn_inert_decoding_params()
-        self._persist_config_warnings()
 
         # Extraction record + dispatcher. The dispatcher validates `<img>`
         # citations against the extractor's effective label set, so a
@@ -988,7 +985,6 @@ class Orchestrator:
         # persisted meta.images_omitted carries over from session creation).
         self._warn_images_withheld()
         self._warn_inert_decoding_params()
-        self._persist_config_warnings()
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures,
         )
@@ -2649,25 +2645,6 @@ class Orchestrator:
         self.session.add_warning(message)
         print("WARNING: " + message, file=sys.stderr)
 
-    def _persist_config_warnings(self):
-        """Carry the CONFIG BUNDLE's load-time warnings into this session's
-        durable record.
-
-        `load_config_bundle` says its piece on stderr while the bundle is
-        being read, which is before any session exists — so on a real run that
-        line scrolls past and the artefact carries no trace of it. A remark
-        worth making about the instrument is worth making in the record of
-        every run that used it, beside the ones the run makes itself
-        (inert decoding params, identity degradation). Already printed by the
-        loader, so this only stores; `add_warning` dedups, so a resume adds
-        nothing a second time. Never on a dry run, which has no artefact to
-        caveat.
-        """
-        if self.session is None or self.dry_run:
-            return
-        for message in getattr(self.config, "warnings", ()) or ():
-            self.session.add_warning(message)
-
     def _retry_logger(self, stage):
         """Return an on_retry callback that records each retried transient
         provider failure as a `provider_retry` session event. Failed attempts
@@ -3473,11 +3450,11 @@ class Orchestrator:
                 envelope=envelope,
                 identity_context=identity_context,
                 image_labels=checker_image_labels,
-                user_prompt_path=self.config.checker_user_template_path,
+                partials_dir=self.config.partials_dir,
                 # The run's one predicate map, from the instrument that owns
-                # the structure toggles, so this per-field template and the
+                # the structure toggles, so this per-field scaffold and the
                 # checker system prompt cached beside it resolve their
-                # conditional blocks the same way, and checker_fp covers the
+                # conditional sections the same way, and checker_fp covers the
                 # text that was actually sent.
                 predicates=self.instrument.predicates(),
                 figures=checker_figures,

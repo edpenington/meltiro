@@ -365,7 +365,7 @@ class TestZeroContextChars:
         assert "in context" not in with_zero
 
     def test_zero_is_the_default_of_the_message_builder(
-            self, synthetic_template, checker_user_template_path,
+            self, synthetic_template, checker_partials_dir,
             table_paper):
         # The renderer asks for no context unless a caller supplies both the
         # paper text and a width, so a call site supplying neither gets the
@@ -376,7 +376,7 @@ class TestZeroContextChars:
             envelope={"value": "X", "evidence": f"<q>{TABLE_CELL}</q>"},
             identity_context="ctx",
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
             paper_text=table_paper,
         )
         assert QUOTE_OPEN_MARKER not in blocks[0]["text"]
@@ -674,14 +674,12 @@ class TestFingerprint:
         assert self._fp(1000) == self._fp(1000)
 
     def test_the_checker_config_folds_its_width_in(self, synthetic_template,
-                                                   checker_system_path,
-                                                   checker_user_template_path):
+                                                   checker_system_path):
         from meltiro.checker import CheckerConfig
         from meltiro.prompt_partials import stage_predicates
         cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(checker_system_path),
-            user_prompt_template_path=str(checker_user_template_path),
         )
         # Structure held fixed: the width is the only thing that varies here,
         # and it is the checker's own knob rather than a pipeline toggle.

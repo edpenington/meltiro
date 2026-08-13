@@ -8,9 +8,10 @@ around it. A field re-checked after a revision gets a genuinely fresh
 context: nothing from the earlier check is carried in.
 
 `build_checker_system_text(...)` returns the cacheable system prompt: the
-bundle's checker prompt file with `{include:...}` partials expanded,
-`{reference:...}` lists rendered in, and the run's per-field check budget
-substituted, and nothing else. No field catalogue: every field-specific
+checker's engine spine (what the checker is, what it is shown, what a verdict
+means) followed by the bundle's checker prompt file, with `{include:...}`
+partials expanded, `{reference:...}` lists rendered in, and the run's
+per-field check budget substituted. No field catalogue: every field-specific
 detail reaches the checker through the user message.
 `build_checker_user_message(...)` returns that message as a list of content
 blocks: the rendered text, preceded for an image-sourced field by a caption
@@ -34,20 +35,20 @@ joined by ` | ` as a human-readable hint. The engine holds no
 review-specific field names, and the record id is the only identifier
 (content never identifies a record).
 
-The user template is config, but the engine writes the wording that fills
-its slots. Every slot is on a load-time allowlist
-(`config_bundle._CHECKER_USER_PLACEHOLDERS`), so a template that misspells
-one fails at load instead of shipping the literal token to the model. Slot
+The user message's scaffold is the engine section `checker_user`, and the
+engine writes the wording that fills its slots as well. Every slot is on an
+allowlist (`config_bundle._CHECKER_USER_PLACEHOLDERS`), checked at load
+against a bundle's override of that section, so an override that misspells
+one fails there instead of shipping the literal token to the model. Slot
 wording is FRAMING — engine text, not config — so it rides in no
 fingerprint; the run's recorded `engine_fp` identifies it.
 
 The system prompt has an allowlist of its own
 (`config_bundle._CHECKER_SYSTEM_PLACEHOLDERS`), holding the one slot this
-function substitutes: `{max_checks_per_field}`. It covers the composed engine
-sections too, so a prompt composing a section written for the extractor —
-`recording_evidence` renders `{image_labels_list}`, which no checker call has
-— is a load error naming that variable rather than a literal token in front
-of the model.
+function substitutes: `{max_checks_per_field}`. The checker is sent no image
+labels, so `{image_labels_list}` in a bundle's checker prompt or in an
+override of a checker section is a load error naming that variable rather
+than a literal token in front of the model.
 """
 
 import base64
@@ -57,7 +58,15 @@ from pathlib import Path
 from meltiro.prompt_builder import (  # noqa: F401
     bundle_root_for_prompt, system_message_blocks)
 from meltiro.reference_lists import substitute_reference_placeholders
-from meltiro.prompt_partials import WIRE, substitute_include_placeholders
+from meltiro.prompt_partials import (
+    CHECKER_SYSTEM,
+    CHECKER_USER,
+    compose_engine_spine,
+    config_prompt_preimage,
+    engine_override_pairs,
+    join_blocks,
+    substitute_include_placeholders,
+)
 from meltiro.quote_context import (
     QUOTE_CLOSE_MARKER,
     QUOTE_OPEN_MARKER,
@@ -74,13 +83,41 @@ def _load(path):
     return Path(path).read_text(encoding="utf-8").strip()
 
 
+def _partials_dir(system_prompt_path):
+    return Path(system_prompt_path).parent / "partials"
+
+
+def _fill_slots(text, system_prompt_path, reference_lists,
+                max_checks_per_field):
+    text = substitute_reference_placeholders(
+        text, reference_lists,
+        path=bundle_root_for_prompt(system_prompt_path))
+    return text.replace("{max_checks_per_field}", str(max_checks_per_field))
+
+
+def render_checker_bundle_text(*, system_prompt_path, max_checks_per_field,
+                               reference_lists=None, predicates=None):
+    """Render the config bundle's own checker prompt file.
+
+    The half a review writes, appended after the checker's engine spine on the
+    wire and hashed on its own into `checker_fp` (see
+    `build_checker_config_text`).
+    """
+    text = substitute_include_placeholders(
+        _load(system_prompt_path), _partials_dir(system_prompt_path),
+        predicates=predicates)
+    return _fill_slots(text, system_prompt_path, reference_lists,
+                       max_checks_per_field)
+
+
 def build_checker_system_text(*, system_prompt_path, max_checks_per_field,
-                              reference_lists=None, predicates=None,
-                              mode=WIRE):
+                              reference_lists=None, predicates=None):
     """Render the checker's system prompt text.
 
-    `system_prompt_path` is REQUIRED; it comes from the config bundle
-    (`ConfigBundle.checker_system_path`).
+    The checker's engine spine first, then the config bundle's checker prompt
+    file appended after it. `system_prompt_path` is REQUIRED; it comes from
+    the config bundle (`ConfigBundle.checker_system_path`), and it also
+    locates the `partials/` directory both halves resolve against.
 
     The system prompt is generic across all per-field calls; every
     field-specific detail lives in the per-field user message built by
@@ -96,24 +133,66 @@ def build_checker_system_text(*, system_prompt_path, max_checks_per_field,
     REQUIRED and has no default: the value is the run's structure, held by
     `Instrument`, and a budget nobody chose would describe a run that never
     happened — the same reason `predicates` must be passed in rather than
-    guessed. Substituted in both modes, so the text a check is sent and the
-    text `checker_fp` covers differ in nothing but engine ownership.
-
-    `mode` picks the render: the checker is SENT the `WIRE` text, with every
-    engine section it composes expanded, and `checker_fp` is taken over the
-    `HASH` one, where an un-overridden engine section stays as its directive
-    token (see `meltiro.prompt_partials`).
+    guessed.
     """
-    text = _load(system_prompt_path)
-    # Expand `{include:NAME}` partials BEFORE reference substitution, so a
-    # partial may itself carry `{reference:...}` placeholders.
-    text = substitute_include_placeholders(
-        text, Path(system_prompt_path).parent / "partials",
-        predicates=predicates, mode=mode)
-    text = substitute_reference_placeholders(
-        text, reference_lists,
-        path=bundle_root_for_prompt(system_prompt_path))
-    return text.replace("{max_checks_per_field}", str(max_checks_per_field))
+    spine = compose_engine_spine(
+        CHECKER_SYSTEM, _partials_dir(system_prompt_path),
+        predicates=predicates)
+    return join_blocks(
+        _fill_slots(spine, system_prompt_path, reference_lists,
+                    max_checks_per_field),
+        render_checker_bundle_text(
+            system_prompt_path=system_prompt_path,
+            max_checks_per_field=max_checks_per_field,
+            reference_lists=reference_lists, predicates=predicates),
+    )
+
+
+def build_checker_config_text(*, system_prompt_path, max_checks_per_field,
+                              reference_lists=None, predicates=None):
+    """The config-owned identity of the checker's system prompt.
+
+    The bundle's appended text as it renders, plus the bundle's overrides of
+    the checker sections this run composes — and nothing the engine wrote (see
+    `prompt_partials.config_prompt_preimage`). Folded into `checker_fp`, so
+    rewording the engine's briefing moves `engine_fp` and leaves every
+    bundle's `checker_fp` where it was.
+    """
+    return config_prompt_preimage(
+        render_checker_bundle_text(
+            system_prompt_path=system_prompt_path,
+            max_checks_per_field=max_checks_per_field,
+            reference_lists=reference_lists, predicates=predicates),
+        engine_override_pairs(CHECKER_SYSTEM,
+                              _partials_dir(system_prompt_path),
+                              predicates=predicates),
+    )
+
+
+def render_checker_user_template(partials_dir, *, predicates):
+    """The scaffold one per-field checker message is rendered from.
+
+    The engine section `checker_user`, or the bundle's override of it. A spine
+    of one: there is no bundle file to append, because a message whose whole
+    content is engine-supplied slots has nothing for a review to add around
+    them, and a review that wants different wording overrides the section.
+    """
+    return compose_engine_spine(
+        CHECKER_USER, partials_dir, predicates=predicates)
+
+
+def checker_user_config_text(partials_dir, *, predicates):
+    """The config-owned identity of the per-field scaffold.
+
+    The bundle's override of `checker_user` when it ships one, and nothing at
+    all when it does not. Folded into `checker_fp` beside the system prompt's
+    preimage, so a review that rewords the scaffold says so in the
+    fingerprint and one that takes the engine's wording holds steady across a
+    release that rewords it.
+    """
+    return config_prompt_preimage(
+        "", engine_override_pairs(CHECKER_USER, partials_dir,
+                                  predicates=predicates))
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +563,7 @@ def build_checker_user_message(
         identity_context,
         image_labels,
         *,
-        user_prompt_path,
+        partials_dir,
         figures=None,
         paper_text=None,
         context_chars=0,
@@ -504,8 +583,10 @@ def build_checker_user_message(
             context plus the record context label (record).
         image_labels: set of figure stems (lower-case) used to detect
             image-sourced evidence.
-        user_prompt_path: REQUIRED; the checker user-message template,
-            from the config bundle (`ConfigBundle.checker_user_template_path`).
+        partials_dir: REQUIRED; the config bundle's `prompts/partials/`
+            (`ConfigBundle.partials_dir`). The scaffold comes from the engine
+            section `checker_user`, and this is where a bundle's override of
+            it is read from.
         figures: the paper bundle's figures map (label -> png Path). Used
             to attach the cropped PNG for image-cited evidence.
         paper_text: the paper's full text, used to window the surrounding
@@ -527,11 +608,7 @@ def build_checker_user_message(
     evidence = envelope.get("evidence")
     notes = envelope.get("notes")
 
-    tmpl = _load(user_prompt_path)
-    # Expand `{include:NAME}` partials before the per-field substitutions.
-    tmpl = substitute_include_placeholders(
-        tmpl, Path(user_prompt_path).parent / "partials",
-        predicates=predicates)
+    tmpl = render_checker_user_template(partials_dir, predicates=predicates)
 
     extraction_instr_block = _render_extraction_instruction_block(field_spec)
     allowed_block = _render_allowed_values_block(field_spec, value)

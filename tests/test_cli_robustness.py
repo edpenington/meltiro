@@ -301,31 +301,29 @@ class TestADuplicatePaperIsSkipped:
 
 
 # ---------------------------------------------------------------------------
-# (e) A config-load warning outlives the terminal
+# (e) A bundle that says nothing still briefs every model
 # ---------------------------------------------------------------------------
 
-class TestAConfigWarningReachesTheRunRecord:
+class TestASilentBundleStillRuns:
 
-    def test_the_engine_section_warning_is_persisted(
-            self, tmp_path, config_dir, bundle_minimal_dir, capsys,
-            monkeypatch):
-        # Strip the engine-section includes from the extractor prompt: the
-        # bundle still loads, and the run it produces has to carry the remark.
+    def test_empty_prompt_files_load_and_the_run_is_still_briefed(
+            self, tmp_path, config_dir, bundle_minimal_dir, monkeypatch):
+        # A review may have nothing of its own to say to a role. The engine
+        # composes that role's spine regardless, so the run starts and the
+        # captured instrument shows the model was told what the tools do.
         config = _config_with(tmp_path, config_dir)
-        prompt = config / "prompts" / "extractor_system.md"
-        kept = [line for line in prompt.read_text(encoding="utf-8").splitlines()
-                if "{include:meltiro:" not in line]
-        prompt.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        for name in ("extractor_system", "review_system", "checker_system"):
+            (config / "prompts" / f"{name}.md").write_text(
+                "", encoding="utf-8")
 
         monkeypatch.setattr(Orchestrator, "run", lambda self: "complete")
         out_dir = tmp_path / "runs"
         assert _extract(config, bundle_minimal_dir, out_dir) == 0
-        assert "WARNING: engine-sections-uncomposed" in capsys.readouterr().err
 
         session, = (out_dir / "demo-001" / "sessions").iterdir()
-        meta = json.loads((session / "diagnostics" / "run.json").read_text())
-        assert any("engine-sections-uncomposed" in w
-                   for w in meta["warnings"])
+        system = (session / "diagnostics" / "instrument"
+                  / "system_prompt.txt").read_text(encoding="utf-8")
+        assert "record_initial_check" in system
 
 
 # ---------------------------------------------------------------------------

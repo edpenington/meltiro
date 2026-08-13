@@ -17,7 +17,6 @@ Required layout:
         extractor_system.md
         review_system.md
         checker_system.md
-        checker_user_template.md
         partials/              (optional)  one *.md per {include:NAME} block
           <name>.md
           meltiro/             (optional)  overrides of engine sections
@@ -29,25 +28,23 @@ lists. Validation is loud and happens at load, before any API spend: a
 `ConfigBundleError` lists EVERY missing required file; every
 `canonical_reference:` field and `{reference:NAME}` placeholder must resolve
 to a loaded list (`reference/` itself is optional); every `{include:NAME}`
-must resolve to a `prompts/partials/NAME.md`, with no nesting; every
-`{include:meltiro:NAME}` must name a section the engine ships and every file
-in `prompts/partials/meltiro/` must be named for one; `pipeline.yaml` keys are
-checked against `KNOWN_PIPELINE_KEYS`; tool-call cap placeholders are banned
-from all prompts; and each checker prompt may cite only the placeholders the
-engine substitutes into it.
+must resolve to a `prompts/partials/NAME.md`, with no nesting; every file in
+`prompts/partials/meltiro/` must be named for a section the engine ships;
+`pipeline.yaml` keys are checked against `KNOWN_PIPELINE_KEYS`; tool-call cap
+placeholders are banned from every prompt and override; and the checker's
+prompt and overrides may cite only the placeholders the engine substitutes
+into them.
 
-A prompt composes the engine's own contract with `{include:meltiro:NAME}`,
-resolved from the package unless the bundle overrides it at
-`prompts/partials/meltiro/NAME.md` (see `meltiro.prompt_partials`). One thing
-is warned about rather than refused: a role prompt composing no engine section
-of its own role loads, and says on stderr that the engine is then described to
-that model only by whatever the prompt says itself.
+Each role's system message is the engine's spine for that role followed by
+the bundle's prompt file, appended. A prompt file therefore supplies the
+review's own text and nothing about the engine; to supply different wording
+for a section, a bundle ships `prompts/partials/meltiro/NAME.md`, and an
+empty one leaves the section out (see `meltiro.prompt_partials`).
 """
 
 import hashlib
 import json
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,14 +59,18 @@ from meltiro.fingerprint import (
     tool_set_hash as _tool_set_hash,
 )
 from meltiro.prompt_partials import (
+    CHECKER_SYSTEM,
+    CHECKER_USER,
     ENGINE_NAMESPACE,
     EXPAND_ALL_BRANCHES,
-    HASH,
-    engine_included_names,
+    all_engine_override_pairs,
+    engine_citation_message,
+    engine_cited_names,
     engine_override_entries,
     engine_override_path,
     engine_section_names,
     included_names,
+    spine_sections,
     stage_predicates,
     substitute_include_placeholders,
 )
@@ -138,14 +139,14 @@ class ConfigBundle:
     recipe. `template_hash` and `reference_lists_hash` are exactly the values
     the orchestrator folds into its run-time fingerprints; pinning that pair
     alone decides whether a stored value is still legal. `prompts_hash`
-    covers the four prompt files (partials expanded; an un-overridden engine
-    section left as its directive, since it is not the author's text to hash —
-    see `_compute_prompts_hash`). `instrument_fp` is the MODEL-FREE composite
-    of everything the config author wrote plus the engine's tool contract (the
-    tool definitions carry the engine's own descriptions, so `instrument_fp`
-    is not engine-free — see `fingerprint.instrument_fingerprint`); the
-    run-time `config_fp` additionally folds in the extractor model and decoding
-    params and so is not derivable here.
+    covers the three prompt files with their partials expanded, plus every
+    engine section this bundle overrides (see `_compute_prompts_hash`).
+    `instrument_fp` is the MODEL-FREE composite of everything the config
+    author wrote plus the engine's tool contract (the tool definitions carry
+    the engine's own descriptions, so `instrument_fp` is not engine-free — see
+    `fingerprint.instrument_fingerprint`); the run-time `config_fp`
+    additionally folds in the extractor model and decoding params and so is
+    not derivable here.
     """
 
     root: Path
@@ -155,40 +156,32 @@ class ConfigBundle:
     extractor_system_path: Path
     review_system_path: Path
     checker_system_path: Path
-    checker_user_template_path: Path
     partials_dir: Path
     pipeline: dict
     template_hash: str
     reference_lists_hash: str
     prompts_hash: str
     instrument_fp: str
-    # What loading this bundle had to remark on without refusing it: today,
-    # only the engine-section coverage warning. Carried on the object rather
-    # than left as stderr output, because a run has an artefact to caveat and
-    # a warning nobody can read afterwards is one nobody acts on. The
-    # orchestrator copies these into `meta.warnings` at session start, beside
-    # the ones the run itself records. Empty for a bundle with nothing to say.
-    warnings: tuple = ()
 
     @property
     def prompt_paths(self):
-        """The four prompt files, in the fixed order the hash is keyed by.
+        """The three prompt files, in the fixed order the hash is keyed by.
 
         Named once here so the load-time hash and any later recomputation
         cover the same set.
         """
         return [self.extractor_system_path, self.review_system_path,
-                self.checker_system_path, self.checker_user_template_path]
+                self.checker_system_path]
 
     def prompts_hash_for(self, predicates):
-        """The four-prompt content hash as it renders under `predicates`.
+        """The prompt content hash as it renders under `predicates`.
 
         `prompts_hash` above is this same hash under `pipeline.yaml`'s own
         toggles. A run can differ: `--max-checks-per-field 0` and
         `--no-final-review` change which `{include_if:...}` branches reach a
-        model, so a run computes this against the toggles it actually
-        honoured (see `Instrument.fingerprint`); the two agree exactly when
-        no flag overrode the file.
+        model and which spine sections compose, so a run computes this against
+        the toggles it actually honoured (see `Instrument.fingerprint`); the
+        two agree exactly when no flag overrode the file.
         """
         return _compute_prompts_hash(
             self.prompt_paths, self.partials_dir, predicates)
@@ -224,7 +217,6 @@ def load_config_bundle(path):
     extractor_system_path = prompts_dir / "extractor_system.md"
     review_system_path = prompts_dir / "review_system.md"
     checker_system_path = prompts_dir / "checker_system.md"
-    checker_user_template_path = prompts_dir / "checker_user_template.md"
 
     required = [
         pipeline_path,
@@ -232,11 +224,23 @@ def load_config_bundle(path):
         extractor_system_path,
         review_system_path,
         checker_system_path,
-        checker_user_template_path,
     ]
     for p in required:
         if not p.is_file():
             problems.append(f"missing required file: {p.relative_to(root)}")
+
+    # The per-field checker message is rendered from the engine's own
+    # `checker_user` section, so a file of that name in the bundle would be
+    # read by nothing. Refused rather than ignored, because a bundle whose
+    # author believes the checker reads it would run with wording nobody sent.
+    stray_checker_user = prompts_dir / "checker_user_template.md"
+    if stray_checker_user.is_file():
+        problems.append(
+            f"{stray_checker_user.relative_to(root)} is not part of a config "
+            f"bundle: the engine renders the per-field checker message from "
+            f"its own `{CHECKER_USER}` section. Delete the file, or move its "
+            f"wording to prompts/partials/{ENGINE_NAMESPACE}/{CHECKER_USER}.md "
+            f"to override that section.")
 
     if problems:
         raise ConfigBundleError(problems, path=root)
@@ -300,7 +304,7 @@ def load_config_bundle(path):
     _cross_validate_references(template, reference_lists, root)
 
     prompt_paths = [extractor_system_path, review_system_path,
-                    checker_system_path, checker_user_template_path]
+                    checker_system_path]
 
     # The override directory first: a file sitting there under a name no
     # section has overrides nothing, and every check below would pass a bundle
@@ -318,26 +322,14 @@ def load_config_bundle(path):
 
     # After the cap guard, so a cited cap gets its targeted message rather
     # than the generic unknown-placeholder one.
-    _validate_substituted_placeholders(
-        checker_user_template_path, partials_dir,
-        _CHECKER_USER_PLACEHOLDERS, root)
-    _validate_substituted_placeholders(
-        checker_system_path, partials_dir, _CHECKER_SYSTEM_PLACEHOLDERS, root)
+    _validate_checker_placeholders(checker_system_path, partials_dir, root)
 
     # The bundle's own toggles, as pipeline.yaml states them. They decide
-    # which `{include_if:...}` branch every render below takes, and which
-    # stages run at all.
+    # which `{include_if:...}` branch every render below takes, which spine
+    # sections compose, and which stages run at all.
     predicates = stage_predicates(
         pipeline.get("max_checks_per_field", DEFAULT_MAX_CHECKS_PER_FIELD),
         pipeline.get("final_review", True))
-
-    # Everything above is a defect in what the bundle says; this is a remark
-    # about what it leaves unsaid, so it warns and loads. The messages are
-    # returned as well as printed, so a run can persist them into its own
-    # record rather than leaving them in a terminal nobody keeps.
-    warnings = _warn_engine_sections_uncomposed(
-        extractor_system_path, checker_system_path, root,
-        predicates=predicates)
 
     # Content fingerprint, computed here so the identity rides with the
     # loaded bundle.
@@ -356,44 +348,45 @@ def load_config_bundle(path):
         extractor_system_path=extractor_system_path,
         review_system_path=review_system_path,
         checker_system_path=checker_system_path,
-        checker_user_template_path=checker_user_template_path,
         partials_dir=partials_dir,
         pipeline=pipeline,
         template_hash=template_hash,
         reference_lists_hash=ref_hash,
         prompts_hash=prompts_hash,
         instrument_fp=instrument_fp,
-        warnings=warnings,
     )
 
 
 def _compute_prompts_hash(prompt_paths, partials_dir, predicates):
-    """SHA-256 of the four prompt files with `{include:NAME}` partials
-    expanded.
+    """SHA-256 over everything the config author wrote as prompt text.
 
-    Partials are expanded so a prompt refactor that only moves shared text
-    into a partial does not move the hash, while an edit to the text itself
-    does. `{reference:NAME}` placeholders are left literal: reference-list
-    CONTENT is captured separately by `reference_lists_hash`, so folding it
-    in here too would be redundant and would couple the prompts hash to
-    reference edits. Keyed by file stem and canonically serialised so the
-    hash is order-independent and stable.
+    Two components. The three prompt files with `{include:NAME}` partials
+    expanded, keyed by file stem: partials are expanded so a refactor that
+    only moves shared text into a partial does not move the hash, while an
+    edit to the text itself does. And every engine section this bundle
+    OVERRIDES, as `[name, text]` pairs — including the empty overrides that
+    leave a section out, because deciding what a model is not asked is as much
+    a methodological choice as deciding what it is.
 
-    Engine sections are the deliberate exception, and the rule is ownership:
-    this hash covers what the config author WROTE. An un-overridden
-    `{include:meltiro:NAME}` contributes its directive token, unexpanded, so
-    the engine's own text moves `engine_fp` and no config fingerprint. An
-    OVERRIDDEN one contributes the override's text, because a bundle that
-    ships `partials/meltiro/NAME.md` wrote that text itself. The consequence
-    is intended: two bundles composing the same section, one relying on the
-    default and one overriding it with byte-identical text, hash differently —
+    `{reference:NAME}` placeholders are left literal: reference-list CONTENT
+    is captured separately by `reference_lists_hash`, so folding it in here
+    too would be redundant and would couple the prompts hash to reference
+    edits. Canonically serialised, so a dict's insertion order reaches no
+    digest.
+
+    An un-overridden section contributes nothing. Its text is the engine's, so
+    it moves `engine_fp` and no config fingerprint, and every bundle's
+    `prompts_hash` holds across a release that rewords it. The consequence is
+    intended: two bundles reading identically to a model, one on the engine's
+    wording and one overriding it with byte-identical text, hash differently —
     one is pinned to the engine's copy and the other to its own.
     """
-    payload = {}
+    payload = {"prompts": {}, "engine_overrides": all_engine_override_pairs(
+        partials_dir, predicates=predicates)}
     for path in prompt_paths:
         text = path.read_text(encoding="utf-8")
-        payload[path.stem] = substitute_include_placeholders(
-            text, partials_dir, predicates=predicates, mode=HASH)
+        payload["prompts"][path.stem] = substitute_include_placeholders(
+            text, partials_dir, predicates=predicates)
     canonical = canonical_json(payload)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -513,10 +506,22 @@ def _validate_engine_overrides(partials_dir, root):
         raise ConfigBundleError(problems, path=root)
 
 
+def _override_paths(partials_dir):
+    """Every engine-section override this bundle ships, as `(name, path)`.
+
+    Read from the shipped sections rather than from the directory listing, so
+    the caller iterates over overrides that resolve;
+    `_validate_engine_overrides` has already refused anything else in there.
+    """
+    return [(name, engine_override_path(name, partials_dir))
+            for name in engine_section_names()
+            if engine_override_path(name, partials_dir).is_file()]
+
+
 def _validate_prompt_partials(prompt_paths, partials_dir, root):
-    """Fail loudly if any prompt cites an `{include:NAME}` with no
-    `prompts/partials/NAME.md`, an `{include:meltiro:NAME}` that is not an
-    engine section, or a partial that nests another include.
+    """Fail loudly if a prompt cites an `{include:NAME}` with no
+    `prompts/partials/NAME.md`, cites an engine section, or a partial or an
+    override nests another include.
 
     The render-time expansion in prompt_partials.py raises on all of these
     too, but only mid-run; this hoists them to config-load time, before any
@@ -524,39 +529,12 @@ def _validate_prompt_partials(prompt_paths, partials_dir, root):
     is optional and touched only for includes actually cited.
     """
     problems = []
-    known_engine = engine_section_names()
     checked = set()
-    checked_engine = set()
     for path in prompt_paths:
         text = path.read_text(encoding="utf-8")
-        for name in sorted(engine_included_names(text)):
-            if name in checked_engine:
-                continue
-            checked_engine.add(name)
-            if name not in known_engine:
-                problems.append(
-                    f"prompt {path.relative_to(root)} cites unknown engine "
-                    f"section '{name}' via "
-                    f"{{include:{ENGINE_NAMESPACE}:{name}}}; the "
-                    f"{ENGINE_NAMESPACE}: namespace is reserved for the "
-                    f"engine's own sections, which are {list(known_engine)}. "
-                    f"Fix the name, or drop the {ENGINE_NAMESPACE}: prefix to "
-                    f"cite a partial of your own.")
-                continue
-            override = engine_override_path(name, partials_dir)
-            if override.is_file():
-                content = override.read_text(encoding="utf-8")
-                nested = sorted(
-                    included_names(content)
-                    | {f"{ENGINE_NAMESPACE}:{n}"
-                       for n in engine_included_names(content)})
-                if nested:
-                    problems.append(
-                        f"engine-section override "
-                        f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md nests "
-                        f"further include(s) {nested}; nesting is not "
-                        f"supported. Inline the nested content or flatten the "
-                        f"partials.")
+        for name in sorted(engine_cited_names(text)):
+            problems.append(
+                engine_citation_message(name, where=path.relative_to(root)))
         for name in sorted(included_names(text)):
             if name in checked:
                 continue
@@ -570,100 +548,47 @@ def _validate_prompt_partials(prompt_paths, partials_dir, root):
                     f"placeholder.")
                 continue
             content = partial_path.read_text(encoding="utf-8")
-            nested = sorted(
-                included_names(content)
-                | {f"{ENGINE_NAMESPACE}:{n}"
-                   for n in engine_included_names(content)})
+            nested = _nested_names(content)
             if nested:
                 problems.append(
                     f"partial prompts/partials/{name}.md nests further "
                     f"include(s) {nested}; nesting is not supported. Inline "
                     f"the nested content or flatten the partials.")
+    # Overrides are checked whether or not any prompt mentions them, because
+    # nothing does: the engine composes a section by name, so an override's
+    # only appearance in the bundle is the file itself.
+    for name, override in _override_paths(partials_dir):
+        nested = _nested_names(override.read_text(encoding="utf-8"))
+        if nested:
+            problems.append(
+                f"engine-section override "
+                f"prompts/partials/{ENGINE_NAMESPACE}/{name}.md nests further "
+                f"include(s) {nested}; nesting is not supported. Inline the "
+                f"nested content or flatten the partials.")
     if problems:
         raise ConfigBundleError(problems, path=root)
 
 
-# Which shipped engine sections belong to which role's prompt, stated here
-# beside the sections rather than derived from their names: `recording_notes`
-# is the extractor's and reads nothing like `extractor_`, and a naming scheme
-# that carried the answer would have to be obeyed by every section added
-# later. Every shipped section appears under exactly one role
-# (tests/agentic_extraction/test_engine_prompts.py pins that), so a new
-# section is classified before it can ship.
-_ROLE_SECTIONS = {
-    "extractor_system": ("extractor_workflow", "recording_evidence",
-                         "recording_notes", "recording_conventions"),
-    "checker_system": ("checker_briefing",),
-}
-
-# The stage a role's prompt is rendered for, where that stage can be switched
-# off. The extractor always runs, so its prompt is always worth a remark; the
-# checker runs only when `max_checks_per_field > 0`, and a prompt that is
-# never sent describes the engine to nobody.
-_ROLE_PREDICATE = {"checker_system": "checker"}
-
-
-def _warn_engine_sections_uncomposed(extractor_system_path,
-                                     checker_system_path, root, *,
-                                     predicates):
-    """Warn on stderr when a role's system prompt composes no engine section
-    for its own role.
-
-    Not an error: a bundle may legitimately describe the engine in its own
-    words, and refusing to load one would make the engine sections mandatory
-    rather than default. What it cannot do is leave the description out
-    altogether — a prompt citing none of its role's sections has told that
-    model nothing about the machinery around it, and the run misbehaves
-    quietly rather than failing.
-
-    An OVERRIDE is composition: a bundle that ships
-    `prompts/partials/meltiro/NAME.md` still cites the section to get its own
-    text in, so the directive is there and nothing is warned about.
-
-    `predicates` is the run's structure map (`stage_predicates`). A role whose
-    stage is off is passed over: a bundle that disables the checker is not
-    leaving a model underbriefed, because there is no checker call to brief.
-
-    Returns the messages as a tuple, printed AND returned: `load_config_bundle`
-    puts them on the bundle so a run can persist them into `meta.warnings`
-    beside its own. The stored string carries no prefix and the printed line
-    carries `WARNING: `, which is the convention every other warning in the
-    engine already follows (`Orchestrator._warn_inert_decoding_params`).
-    """
-    messages = []
-    for path in (extractor_system_path, checker_system_path):
-        stage = _ROLE_PREDICATE.get(path.stem)
-        if stage is not None and not predicates[stage]:
-            continue
-        sections = _ROLE_SECTIONS[path.stem]
-        cited = engine_included_names(path.read_text(encoding="utf-8"))
-        if cited & set(sections):
-            continue
-        message = (
-            f"engine-sections-uncomposed: {path.relative_to(root)} composes "
-            f"no {{include:{ENGINE_NAMESPACE}:...}} section of its own role "
-            f"(available: {list(sections)}). The engine's own contract for "
-            f"this role — what the tools do, what the pipeline does around "
-            f"the call — is then undescribed to the model unless this prompt "
-            f"states it correctly itself, and a prompt that describes the "
-            f"engine wrongly is obeyed, not corrected.")
-        print(f"WARNING: {message}", file=sys.stderr)
-        messages.append(message)
-    return tuple(messages)
+def _nested_names(content):
+    """Every include placeholder inside a partial or an override, sorted."""
+    return sorted(
+        included_names(content)
+        | {f"{ENGINE_NAMESPACE}:{n}" for n in engine_cited_names(content)})
 
 
 # Tool-call cap placeholders, banned from every prompt. Neither is
 # substituted, and interpolating a cap would couple it into prompt_hash (and
 # thus config_fp), refusing the documented "hit the cap, resume with a raised
 # cap" recovery. Any other unknown placeholder ships to the model verbatim;
-# the checker user template's allowlist catches that for the one prompt the
-# engine does substitute into.
+# the checker's allowlists catch that for the two prompts the engine does
+# substitute into.
 _BANNED_PROMPT_PLACEHOLDERS = ("{max_tool_calls}",
                                "{max_review_tool_calls}")
 
 
 def _validate_no_cap_placeholders(prompt_paths, partials_dir, root):
-    """Fail loudly if any prompt interpolates a tool-call cap placeholder.
+    """Fail loudly if any prompt or override interpolates a tool-call cap
+    placeholder.
 
     A cap is an operational budget, kept out of the rendered prompt so
     raising it and resuming a cap-hit pause is not refused as config drift,
@@ -673,14 +598,22 @@ def _validate_no_cap_placeholders(prompt_paths, partials_dir, root):
     caught; every offender is collected into one error.
     """
     problems = []
-    for path in prompt_paths:
-        text = path.read_text(encoding="utf-8")
-        expanded = substitute_include_placeholders(
-            text, partials_dir, predicates=EXPAND_ALL_BRANCHES)
+    sources = [
+        (path.relative_to(root),
+         substitute_include_placeholders(
+             path.read_text(encoding="utf-8"), partials_dir,
+             predicates=EXPAND_ALL_BRANCHES))
+        for path in prompt_paths
+    ]
+    sources += [
+        (override.relative_to(root), override.read_text(encoding="utf-8"))
+        for _, override in _override_paths(partials_dir)
+    ]
+    for where, text in sources:
         for token in _BANNED_PROMPT_PLACEHOLDERS:
-            if token in expanded:
+            if token in text:
                 problems.append(
-                    f"prompt {path.relative_to(root)} contains the "
+                    f"prompt {where} contains the "
                     f"tool-call cap placeholder '{token}'. The cap is an "
                     f"operational budget, kept out of the rendered prompt (and "
                     f"so out of prompt_hash, config_fp, and review_fp) so "
@@ -691,7 +624,7 @@ def _validate_no_cap_placeholders(prompt_paths, partials_dir, root):
 
 
 # Every placeholder `checker_prompts.build_checker_user_message` substitutes
-# into the checker user template — keep in step with that function.
+# into the per-field scaffold — keep in step with that function.
 # Substitution is a plain `str.replace`, so an unknown token would ship to
 # the model as literal prompt text.
 _CHECKER_USER_PLACEHOLDERS = frozenset({
@@ -707,12 +640,11 @@ _CHECKER_USER_PLACEHOLDERS = frozenset({
 
 # Every placeholder `checker_prompts.build_checker_system_text` substitutes
 # into the checker SYSTEM prompt: the per-field check budget, and nothing
-# else. The checker is sent no image labels, so a section that renders them
-# (`{image_labels_list}`, in the extractor's `recording_evidence`) is composed
-# into this prompt only by mistake, and the check below names the variable
-# rather than letting the token reach the model. The extractor's and
-# reviewer's prompts need no allowlist of their own: `prompt_builder`
-# substitutes every slot either of them has.
+# else. The checker is sent no image labels, so `{image_labels_list}` in its
+# prompt would reach the model as a literal token, and the check below names
+# the variable instead. The extractor's and reviewer's prompts need no
+# allowlist of their own: `prompt_builder` substitutes every slot either of
+# them has.
 _CHECKER_SYSTEM_PLACEHOLDERS = frozenset({"max_checks_per_field"})
 
 # What counts as a placeholder for the checks above: a brace-wrapped lowercase
@@ -725,64 +657,87 @@ _CHECKER_SYSTEM_PLACEHOLDERS = frozenset({"max_checks_per_field"})
 _PLACEHOLDER_TOKEN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
-def _validate_substituted_placeholders(prompt_path, partials_dir, allowed,
-                                       root):
-    """Fail loudly if `prompt_path` cites a placeholder the engine does not
-    substitute into it.
+def _validate_checker_placeholders(checker_system_path, partials_dir, root):
+    """Fail loudly if the checker's config text cites a placeholder the engine
+    does not substitute into it.
 
     Substitution is a plain `str.replace` per known slot, so an unknown
     placeholder is not a render-time error — it survives into the prompt as
     literal text, and the model reads `{field_pat}` where the field path
-    should be. It is rejected here at load time instead. Includes are expanded
-    first, so a token reaching the prompt through a partial or an engine
-    section is caught where the prompt's own text would be; every offending
-    token is collected into one error. A slot the prompt OMITS is fine: the
-    engine substitutes what is there.
+    should be. It is rejected here at load time instead.
 
-    `allowed` is the set for THIS prompt, and the two differ: the checker's
-    user template gets the per-field slots, its system prompt gets the check
-    budget.
+    Three surfaces, because three pieces of text reach a checker call and the
+    bundle can write any of them: the bundle's own checker prompt file
+    (includes expanded, so a token arriving through a partial is caught), its
+    overrides of the checker's system sections, and its override of the
+    per-field scaffold. The two allowlists differ — the scaffold gets the
+    per-field slots, the system prompt gets the check budget — so each surface
+    is checked against its own. A slot a text OMITS is fine: the engine
+    substitutes what is there.
     """
-    text = prompt_path.read_text(encoding="utf-8")
-    expanded = substitute_include_placeholders(
-        text, partials_dir, predicates=EXPAND_ALL_BRANCHES)
-    unknown = sorted({
-        name for name in _PLACEHOLDER_TOKEN.findall(expanded)
-        if name not in allowed
-    })
-    if unknown:
-        raise ConfigBundleError(
-            [f"prompt {prompt_path.relative_to(root)} cites "
-             f"unknown placeholder '{{{name}}}'; the engine substitutes only "
-             f"{sorted(allowed)} into it. An unknown placeholder is "
-             f"not substituted, so it would be sent to the checker as literal "
-             f"prompt text. Fix the spelling or remove the placeholder."
-             for name in unknown],
-            path=root,
-        )
+    checker_sections = {name for name, _ in spine_sections(CHECKER_SYSTEM)}
+    surfaces = [(
+        checker_system_path.relative_to(root),
+        substitute_include_placeholders(
+            checker_system_path.read_text(encoding="utf-8"), partials_dir,
+            predicates=EXPAND_ALL_BRANCHES),
+        _CHECKER_SYSTEM_PLACEHOLDERS,
+    )]
+    for name, override in _override_paths(partials_dir):
+        if name in checker_sections:
+            allowed = _CHECKER_SYSTEM_PLACEHOLDERS
+        elif name == CHECKER_USER:
+            allowed = _CHECKER_USER_PLACEHOLDERS
+        else:
+            continue
+        surfaces.append((override.relative_to(root),
+                         override.read_text(encoding="utf-8"), allowed))
+
+    problems = []
+    for where, text, allowed in surfaces:
+        for name in sorted({n for n in _PLACEHOLDER_TOKEN.findall(text)
+                            if n not in allowed}):
+            problems.append(
+                f"prompt {where} cites unknown placeholder '{{{name}}}'; the "
+                f"engine substitutes only {sorted(allowed)} into it. An "
+                f"unknown placeholder is not substituted, so it would be sent "
+                f"to the checker as literal prompt text. Fix the spelling or "
+                f"remove the placeholder.")
+    if problems:
+        raise ConfigBundleError(problems, path=root)
 
 
 def _validate_prompt_references(prompt_paths, partials_dir, reference_lists,
                                 root):
-    """Fail loudly if any prompt cites a `{reference:NAME}` placeholder that
-    the config bundle does not provide as a reference list.
+    """Fail loudly if any prompt or override cites a `{reference:NAME}`
+    placeholder that the config bundle does not provide as a reference list.
 
     Includes are expanded first so a placeholder inside a partial is checked
-    too (`_validate_prompt_partials` has already guaranteed they resolve).
-    The render-time substitution in reference_lists.py raises on this too,
-    but only mid-run; this hoists it to load time, before any API spend,
-    collecting every offender into one error.
+    too (`_validate_prompt_partials` has already guaranteed they resolve). An
+    override is checked on the same terms: reference substitution runs over
+    the whole composed prompt, so an override may cite a list, and a name that
+    resolves to nothing has to be found here. The render-time substitution in
+    reference_lists.py raises on this too, but only mid-run; this hoists it to
+    load time, before any API spend, collecting every offender into one error.
     """
     available = set(reference_lists)
     problems = []
-    for path in prompt_paths:
-        text = path.read_text(encoding="utf-8")
-        expanded = substitute_include_placeholders(
-            text, partials_dir, predicates=EXPAND_ALL_BRANCHES)
-        for name in sorted(referenced_names(expanded)):
+    sources = [
+        (path.relative_to(root),
+         substitute_include_placeholders(
+             path.read_text(encoding="utf-8"), partials_dir,
+             predicates=EXPAND_ALL_BRANCHES))
+        for path in prompt_paths
+    ]
+    sources += [
+        (override.relative_to(root), override.read_text(encoding="utf-8"))
+        for _, override in _override_paths(partials_dir)
+    ]
+    for where, text in sources:
+        for name in sorted(referenced_names(text)):
             if name not in available:
                 problems.append(
-                    f"prompt {path.relative_to(root)} cites unknown "
+                    f"prompt {where} cites unknown "
                     f"reference list '{name}' via {{reference:{name}}}; "
                     f"available: {sorted(available)}. Add a "
                     f"reference/{name}.yaml or fix the placeholder.")

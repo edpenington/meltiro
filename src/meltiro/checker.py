@@ -1,11 +1,12 @@
 """Narrow per-field checker LLM client + ThreadPoolExecutor fan-out.
 
 One call per field a tool call just wrote, in parallel up to a configurable
-concurrency. Each call gets a cached system prompt (the config bundle's checker
-prompt: role, the rendered reference lists, with no field catalogue in it) plus
-a small per-field user message (field identity, the field's definition and
-allowed values, identity context, evidence, value, and the field's note).
-Returns one of `{ok, challenge}` plus a one-sentence rationale.
+concurrency. Each call gets a cached system prompt (the checker's engine spine
+followed by the config bundle's checker prompt and the rendered reference
+lists, with no field catalogue in it) plus a small per-field user message
+(field identity, the field's definition and allowed values, identity context,
+evidence, value, and the field's note). Returns one of `{ok, challenge}` plus a
+one-sentence rationale.
 
 The verdict arrives as a tool call (`record_verdict`, defined in
 `meltiro.tools`), read off the response by block type. That is what makes the
@@ -119,8 +120,8 @@ CHECKER_TOOL_REPROMPT = (
 class CheckerConfig:
     """How the checker's provider CALL is made, and nothing about the pipeline.
 
-    Model, key, decoding knobs, the width of the quote context, and the paths
-    of the two prompt files this role sends. What it deliberately does not
+    Model, key, decoding knobs, the width of the quote context, and the path
+    of the prompt file this role sends. What it deliberately does not
     hold is the run's pipeline STRUCTURE (the per-field check budget, whether
     a reviewer runs): that is the instrument's
     (`meltiro.instrument.Instrument`). Both `user_prompt_template_text` and
@@ -159,12 +160,13 @@ class CheckerConfig:
     # the other decoding knobs it comes from the config bundle only, never
     # from the environment.
     context_chars: int = DEFAULT_CONTEXT_CHARS
-    # Prompt paths come from the config bundle
-    # (`ConfigBundle.checker_system_path` / `.checker_user_template_path`);
-    # the orchestrator sets them at construction time. No CWD-relative
-    # default; a real run must supply them.
+    # The checker's system prompt comes from the config bundle
+    # (`ConfigBundle.checker_system_path`); the orchestrator sets it at
+    # construction time. No CWD-relative default; a real run must supply it.
+    # It also locates `prompts/partials/`, which is where a bundle's overrides
+    # of the checker's engine sections and of the per-field scaffold are read
+    # from, so the two prompts this role sends resolve against one directory.
     system_prompt_path: str = None
-    user_prompt_template_path: str = None
     # The checker's own thinking / reasoning-effort spec, or None to say
     # nothing and leave the model doing whatever its default is. From the
     # config bundle only (the thinking fields of pipeline.yaml's
@@ -245,43 +247,40 @@ class CheckerConfig:
     def system_prompt_text(self):
         return Path(self.system_prompt_path).read_text(encoding="utf-8")
 
-    def user_prompt_template_text(self, *, predicates, mode=None):
-        """Return the checker user template with `{include:NAME}` partials
-        expanded, matching what the render path
-        (checker_prompts.build_checker_user_message) actually sends. The
-        fingerprint hashes this expanded text, so editing a partial cited by
-        the template moves checker_fp; hashing the raw file would let a
-        partial edit change what the checker sees without moving the
-        fingerprint.
+    @property
+    def partials_dir(self):
+        """The bundle's `prompts/partials/`, where its overrides of the
+        checker's engine sections live. Derived from the system prompt's path
+        rather than stored beside it, so the two cannot name different
+        bundles."""
+        return Path(self.system_prompt_path).parent / "partials"
 
-        `predicates` is the run's `{include_if:PREDICATE:NAME}` map, from
+    def user_prompt_template_text(self, *, predicates):
+        """Return the scaffold one per-field checker message is rendered from:
+        the engine section `checker_user`, or this bundle's override of it.
+        The same call the render path
+        (`checker_prompts.build_checker_user_message`) makes, so the text
+        hashed into `checker_fp` is the text a check is sent.
+
+        `predicates` is the run's structure map, from
         `Instrument.predicates()`. Required, and taken from the caller rather
-        than reconstructed here, so a `{include_if:review:...}` block in the
-        checker's own template resolves against the one pipeline the whole run
-        renders against.
-
-        `mode` defaults to the WIRE render, the text the checker is sent. The
-        fingerprint asks for HASH, where an un-overridden engine section the
-        template composes stays as its directive token: engine wording rides
-        in `engine_fp`, and an override the bundle wrote rides here.
+        than reconstructed here, so every prompt in the run resolves against
+        one pipeline.
         """
-        from meltiro.prompt_partials import (
-            WIRE, substitute_include_placeholders)
-        raw = Path(self.user_prompt_template_path).read_text(encoding="utf-8")
-        return substitute_include_placeholders(
-            raw, Path(self.user_prompt_template_path).parent / "partials",
-            predicates=predicates, mode=mode or WIRE)
+        from meltiro.checker_prompts import render_checker_user_template
+        return render_checker_user_template(
+            self.partials_dir, predicates=predicates)
 
     def fingerprint(self, template, reference_lists=None, *, predicates,
                     max_checks_per_field):
         """Fingerprint this checker config.
 
-        Hashes the SUBSTITUTED checker system prompt, the text the checker
-        LLM actually sees after `{reference:NAME}` placeholders are expanded,
-        not the raw file. Editing a reference list that appears in the checker
-        system prompt therefore moves the fingerprint (mirrors the extractor
-        path in prompt_builder.compute_prompt_config_hash). `reference_lists`
-        comes from the config bundle; the orchestrator passes it in.
+        Hashes the SUBSTITUTED checker prompt, with `{reference:NAME}`
+        placeholders expanded rather than left as tokens, so editing a
+        reference list the checker is shown moves the fingerprint (mirrors the
+        extractor path in prompt_builder.compute_prompt_config_hash).
+        `reference_lists` comes from the config bundle; the orchestrator
+        passes it in.
 
         `predicates` is the run's structure predicate map
         (`Instrument.predicates()`), and it is required for the same reason
@@ -299,25 +298,25 @@ class CheckerConfig:
         # Lazy import to avoid a module-level import cycle
         # (checker_prompts does not import checker, so this is only a
         # precaution against future coupling).
-        from meltiro.checker_prompts import build_checker_system_text
-        from meltiro.prompt_partials import HASH
-        # Both prompts are hashed in HASH mode: an engine section the bundle
-        # composes but does not override contributes its directive, so
-        # rewording the engine's checker briefing moves engine_fp and leaves
-        # every bundle's checker_fp where it was. An override is the bundle's
-        # own text and hashes as such.
-        system_text = build_checker_system_text(
+        from meltiro.checker_prompts import (
+            build_checker_config_text, checker_user_config_text)
+        # Both components carry the CONFIG's half of their prompt: the
+        # bundle's own text and its overrides of the checker's engine
+        # sections. Rewording an un-overridden section moves engine_fp and
+        # leaves every bundle's checker_fp where it was; an override is the
+        # bundle's own text and hashes as such.
+        system_text = build_checker_config_text(
             system_prompt_path=self.system_prompt_path,
             reference_lists=reference_lists,
             predicates=predicates,
             max_checks_per_field=max_checks_per_field,
-            mode=HASH,
         )
         info = model_info(self.checker_model)
         return checker_config_fingerprint(
             self.call_identity(),
             system_text,
-            self.user_prompt_template_text(predicates=predicates, mode=HASH),
+            checker_user_config_text(self.partials_dir,
+                                     predicates=predicates),
             # The schema the verdict must fit. It is engine-owned and fixed
             # for a release, so this component moves only when the shape of a
             # verdict itself changes — which is exactly when two runs stop

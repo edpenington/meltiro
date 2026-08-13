@@ -198,9 +198,13 @@ def checker_config_fingerprint(call_identity,
                                checker_context_chars=0):
     """Fingerprint a checker config.
 
-    Editing either prompt file or changing the model/decoding/catalogue
-    produces a new fingerprint, so rerunning under a new prompt won't
-    overwrite old verdicts. `call_identity` is the checker model's
+    The two prompt components are the CONFIG's half of each prompt the checker
+    sends: what the bundle wrote for the checker, and its overrides of the
+    checker's engine prompts (`checker_prompts.build_checker_config_text` and
+    `checker_user_config_text`). Editing either, or changing the
+    model/decoding/catalogue, produces a new fingerprint, so rerunning under a
+    new prompt won't overwrite old verdicts. `call_identity` is the checker
+    model's
     provider-call identity block (see the module docstring), so a resume that
     switches the checker's provider is refused. `structure_hash` folds in
     only the image-capability toggle. `reference_hash` carries the
@@ -248,10 +252,12 @@ def review_config_fingerprint(call_identity,
     The review model and review prompt appear in no other fingerprint, so
     editing the model, prompt, tool set, or review decoding params moves this
     one alone. `call_identity` is the review model's provider-call identity
-    block (see the module docstring). `system_prompt_text` is the RENDERED
-    review system prompt: reference placeholders already substituted, image
-    labels rendered empty, so two papers under one config share the
-    fingerprint. `reference_hash` is here because the reviewer drives the
+    block (see the module docstring). `system_prompt_text` is the CONFIG's
+    half of the review system prompt (`prompt_builder.build_config_prompt_text`):
+    reference placeholders already substituted, image labels rendered empty, so
+    two papers under one config share the fingerprint, and the engine's own
+    reviewer prompts outside it. `reference_hash` is here because the reviewer
+    drives the
     same `ToolDispatcher` the extractor does: an alias edit — rendered into
     no prompt — changes which values its tool calls may write.
     """
@@ -416,16 +422,14 @@ def instrument_fingerprint(prompts_hash, template_hash,
     description is part of the question — but it means `instrument_fp` is not
     a pure config identity, and two runs of one bundle under engine versions
     whose tool prose differs record different values. The engine's OTHER prose
-    — the framing around the bundle's prompts, an un-overridden
-    `{include:meltiro:NAME}` section — is not here and rides in
+    — the framing around the bundle's prompts, and every engine prompt section
+    the bundle leaves as the engine wrote it — is not here and rides in
     `engine_fingerprint`.
 
-    `prompts_hash` covers all four prompt files with
-    `{include:NAME}` partials expanded — the SOURCE text; an engine section
-    composed with `{include:meltiro:NAME}` and not overridden by the bundle
-    contributes its directive rather than its text, being the engine's prose
-    and covered by `engine_fingerprint`; reference-list content, aliases
-    included, rides in `reference_hash`. `structure_hash`
+    `prompts_hash` covers the three prompt files with `{include:NAME}`
+    partials expanded — the SOURCE text — plus every engine section the bundle
+    overrides, that being text the config author wrote; reference-list
+    content, aliases included, rides in `reference_hash`. `structure_hash`
     here is `instrument_structure_hash`, not `structure_hash`.
 
     `checker_context_chars` is the checker's quote-context width, or None

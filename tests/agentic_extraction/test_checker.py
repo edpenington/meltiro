@@ -1247,12 +1247,9 @@ class TestCheckerConfig:
                                  monkeypatch):
         sys_path = tmp_path / "sys.md"
         sys_path.write_text("you are a checker", encoding="utf-8")
-        user_path = tmp_path / "user.md"
-        user_path.write_text("template", encoding="utf-8")
         cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
-            user_prompt_template_path=str(user_path),
         )
         a = cfg.fingerprint(synthetic_template, predicates=PREDICATES,
                             max_checks_per_field=2)
@@ -1264,14 +1261,11 @@ class TestCheckerConfig:
     def test_fingerprint_changes_with_prompt(
             self, synthetic_template, tmp_path):
         sys_path = tmp_path / "sys.md"
-        user_path = tmp_path / "user.md"
-        user_path.write_text("template", encoding="utf-8")
 
         sys_path.write_text("v1", encoding="utf-8")
         cfg1 = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
-            user_prompt_template_path=str(user_path),
         )
         fp1 = cfg1.fingerprint(synthetic_template, predicates=PREDICATES,
                                max_checks_per_field=2)
@@ -1280,7 +1274,6 @@ class TestCheckerConfig:
         cfg2 = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
-            user_prompt_template_path=str(user_path),
         )
         fp2 = cfg2.fingerprint(synthetic_template, predicates=PREDICATES,
                                max_checks_per_field=2)
@@ -1296,12 +1289,9 @@ class TestCheckerConfig:
         sys_path.write_text(
             "You are a checker. Canonical tools:\n{reference:gauge_list}",
             encoding="utf-8")
-        user_path = tmp_path / "user.md"
-        user_path.write_text("template", encoding="utf-8")
         cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
-            user_prompt_template_path=str(user_path),
         )
         fp_a = cfg.fingerprint(
             synthetic_template, {"gauge_list": [{"tool_name": "WDS-9"}]},
@@ -1318,12 +1308,9 @@ class TestCheckerConfig:
         # move checker_fp.
         sys_path = tmp_path / "sys.md"
         sys_path.write_text("you are a checker", encoding="utf-8")
-        user_path = tmp_path / "user.md"
-        user_path.write_text("template", encoding="utf-8")
         cfg = CheckerConfig(max_tokens=1024, 
             checker_model="claude-sonnet-4-6",
             system_prompt_path=str(sys_path),
-            user_prompt_template_path=str(user_path),
         )
         fp_before = cfg.fingerprint(synthetic_template,
                                     predicates=PREDICATES,

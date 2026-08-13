@@ -94,7 +94,7 @@ def checker_trigger_orch(template, extraction_record, *,
     orch.extraction_record = extraction_record
     orch.image_labels = set()
     orch.bundle = SimpleNamespace(figures={})
-    orch.config = SimpleNamespace(checker_user_template_path="/unused")
+    orch.config = SimpleNamespace(partials_dir="/unused")
     orch.checker_config = SimpleNamespace(
         checker_model="claude-sonnet-4-6", context_chars=0)
     # No paper text and no context width: these tests exercise the trigger,

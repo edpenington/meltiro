@@ -46,6 +46,8 @@ PARTIAL = f"## When a field is challenged\n\n{BLOCK}\n"
 REVIEWER_BLOCK = "A reviewer reads this record after the extractor stops."
 REVIEWER_PARTIAL = f"## After the extractor\n\n{REVIEWER_BLOCK}\n"
 
+SCAFFOLD_BLOCK = "## This review's own per-field scaffold"
+
 
 @pytest.fixture
 def bundle(tmp_path, config_dir):
@@ -282,19 +284,26 @@ class TestTheRunHashesWhatItRendered:
 
 @pytest.fixture
 def checker_bundle(tmp_path, config_dir):
-    """A writable copy of the config fixture whose checker SYSTEM prompt and
-    per-field TEMPLATE both cite a reviewer-conditional block."""
+    """A writable copy of the config fixture whose checker SYSTEM prompt cites
+    a reviewer-conditional block, and which overrides the per-field scaffold
+    so a real check's message is traceable to this bundle."""
     import shutil
     root = tmp_path / "cfg-checker"
     shutil.copytree(config_dir, root)
     (root / "prompts" / "partials" / "after_the_extractor.md").write_text(
         REVIEWER_PARTIAL, encoding="utf-8")
-    for name in ("checker_system.md", "checker_user_template.md"):
-        path = root / "prompts" / name
-        path.write_text(
-            path.read_text(encoding="utf-8").rstrip("\n")
-            + "\n\n{include_if:review:after_the_extractor}\n",
-            encoding="utf-8")
+    path = root / "prompts" / "checker_system.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").rstrip("\n")
+        + "\n\n{include_if:review:after_the_extractor}\n",
+        encoding="utf-8")
+    override_dir = root / "prompts" / "partials" / "meltiro"
+    override_dir.mkdir(parents=True, exist_ok=True)
+    (override_dir / "checker_user.md").write_text(
+        SCAFFOLD_BLOCK + "\n\n{field_path}: {value}\n{evidence_block}\n"
+        "{field_description}{extraction_instruction_block}"
+        "{allowed_values_block}{identity_context}{notes_block}\n",
+        encoding="utf-8")
     return root
 
 
@@ -310,10 +319,10 @@ def _checker_config(root):
     # A real registry id: checker_fp folds in the model's provider and
     # base_url, so an unregistered id fails model resolution.
     config = load_config_bundle(root)
-    return CheckerConfig(max_tokens=1024, 
+    return CheckerConfig(
+        max_tokens=1024,
         checker_model="claude-sonnet-4-6",
-        system_prompt_path=str(config.checker_system_path),
-        user_prompt_template_path=str(config.checker_user_template_path))
+        system_prompt_path=str(config.checker_system_path))
 
 
 class TestTheCheckerRendersAgainstTheRunsPipeline:
@@ -321,12 +330,13 @@ class TestTheCheckerRendersAgainstTheRunsPipeline:
     structure toggles of its own.
 
     Three paths read the pipeline's shape on the checker's behalf: the cached
-    system prompt, the per-field template rendered for every call, and
-    `checker_fp` over the pair. All three resolve their conditional blocks
-    through `Instrument.predicates()`, the one place the toggles live, so
-    there is no second value for them to fall out of step with. These pin
-    that: a reviewer-keyed block in the checker's own prompts follows the
-    run's reviewer, and the fingerprint follows the prompts.
+    system prompt, the per-field scaffold rendered for every call, and
+    `checker_fp` over the pair. All three resolve through
+    `Instrument.predicates()` and the bundle the run loaded, the one place
+    each lives, so there is no second value for them to fall out of step
+    with. These pin that: a reviewer-keyed block in the checker's own prompt
+    follows the run's reviewer, the message a real check is sent comes off
+    this bundle's own scaffold, and the fingerprint follows both.
 
     A stale checker prompt is the failure this shape exists to prevent, and
     it is silent: the checker would still answer, still return verdicts, and
@@ -340,29 +350,25 @@ class TestTheCheckerRendersAgainstTheRunsPipeline:
         assert REVIEWER_BLOCK in on.render_checker_system_text()
         assert REVIEWER_BLOCK not in off.render_checker_system_text()
 
-    def test_the_per_field_template_follows_the_reviewer(self,
-                                                         synthetic_template,
-                                                         checker_bundle):
+    def test_a_real_check_is_sent_this_bundles_scaffold(self,
+                                                        synthetic_template,
+                                                        checker_bundle):
         # The message a real check is sent, built by the orchestrator: the
-        # third render path, and the one furthest from the fingerprint.
-        template_path = checker_bundle / "prompts" / "checker_user_template.md"
-
-        def rendered(final_review):
-            record = ExtractionRecord()
-            record.study["primary_aim"] = {
-                "value": "An aim", "evidence": "<q>quoted</q>", "notes": None}
-            orch = checker_trigger_orch(
-                synthetic_template, record, final_review=final_review)
-            orch.config = SimpleNamespace(
-                checker_user_template_path=str(template_path))
-            calls, _ = orch._build_checker_calls(["study.primary_aim"])
-            return "".join(
-                block.get("text", "")
-                for block in calls[0]["user_message_blocks"]
-                if isinstance(block, dict))
-
-        assert REVIEWER_BLOCK in rendered(True)
-        assert REVIEWER_BLOCK not in rendered(False)
+        # third render path, and the one furthest from the fingerprint. The
+        # bundle's override reaches it through `ConfigBundle.partials_dir`.
+        config = load_config_bundle(checker_bundle)
+        record = ExtractionRecord()
+        record.study["primary_aim"] = {
+            "value": "An aim", "evidence": "<q>quoted</q>", "notes": None}
+        orch = checker_trigger_orch(synthetic_template, record)
+        orch.config = SimpleNamespace(partials_dir=config.partials_dir)
+        calls, _ = orch._build_checker_calls(["study.primary_aim"])
+        rendered = "".join(
+            block.get("text", "")
+            for block in calls[0]["user_message_blocks"]
+            if isinstance(block, dict))
+        assert SCAFFOLD_BLOCK in rendered
+        assert "study.primary_aim: \"An aim\"" in rendered
 
     def test_checker_fp_follows_the_reviewer(self, checker_bundle):
         cfg = _checker_config(checker_bundle)

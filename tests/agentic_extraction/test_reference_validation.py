@@ -385,7 +385,7 @@ class TestToolSchemaReference:
 
 
 class TestCheckerBriefingReference:
-    def _text(self, spec, value, checker_user_template_path):
+    def _text(self, spec, value, checker_partials_dir):
         from meltiro.checker_prompts import build_checker_user_message
         blocks = build_checker_user_message(
             field_path="study.gauges_collected",
@@ -393,20 +393,20 @@ class TestCheckerBriefingReference:
             envelope={"value": value, "evidence": "<q>WDS-9 and SRI-7</q>"},
             identity_context="Summary: ...",
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
         )
         return "\n".join(b.get("text", "") for b in blocks)
 
-    def test_string_list_reference_briefing(self, checker_user_template_path):
+    def test_string_list_reference_briefing(self, checker_partials_dir):
         text = self._text(_list_reference_spec(), ["WDS-9", "SRI-7"],
-                          checker_user_template_path)
+                          checker_partials_dir)
         assert "list of names from the gauge_list reference list" in text
         assert "validator-guaranteed" in text
         # The stored list is rendered as JSON.
         assert '["WDS-9", "SRI-7"]' in text
 
-    def test_single_value_reference_briefing(self, checker_user_template_path):
+    def test_single_value_reference_briefing(self, checker_partials_dir):
         text = self._text(_reference_spec(), "WDS-9",
-                          checker_user_template_path)
+                          checker_partials_dir)
         assert "exact name from the gauge_list reference list" in text
         assert '"WDS-9"' in text

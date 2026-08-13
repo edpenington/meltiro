@@ -1,9 +1,11 @@
 """Build the extractor's and reviewer's system + user messages.
 
-The system message is the LARGE cacheable block: review context, workflow
-description, evidence convention, image-label list, rendered reference lists.
-The field catalogue is NOT in it; it lives in the tool `input_schema`s, which
-are built from the extraction template (see `meltiro.tools`).
+The system message is the LARGE cacheable block: the role's engine spine
+(`meltiro.prompt_partials`) followed by the config bundle's own prompt file
+for that role, with the image-label list and the rendered reference lists
+substituted into both halves. The field catalogue is NOT in it; it lives in
+the tool `input_schema`s, which are built from the extraction template (see
+`meltiro.tools`).
 The initial user message is also cached: paper text + every cropped
 image. Both get `cache_control: ephemeral` markers so turns 2..N pay the
 0.1x cache-read rate on the bulk of the prompt.
@@ -34,8 +36,12 @@ from pathlib import Path
 
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
-    HASH,
-    WIRE,
+    EXTRACTOR_SYSTEM,
+    REVIEW_SYSTEM,
+    compose_engine_spine,
+    config_prompt_preimage,
+    engine_override_pairs,
+    join_blocks,
     stage_predicates,
     substitute_include_placeholders,
 )
@@ -133,23 +139,69 @@ def _render_image_labels(image_labels, captions=None):
     return "\n".join(lines)
 
 
+def _partials_dir(system_prompt_path):
+    return Path(system_prompt_path).parent / "partials"
+
+
+def _fill_slots(text, system_prompt_path, *, reference_lists, image_labels,
+                image_captions, max_checks_per_field):
+    """Substitute everything the engine puts into a rendered prompt.
+
+    Applied to the engine spine and to the bundle's appended text by the same
+    call, so a slot means the same thing whichever half wrote it: an override
+    may render the image-label list exactly as the section it replaces did.
+    """
+    text = substitute_reference_placeholders(
+        text, reference_lists,
+        path=bundle_root_for_prompt(system_prompt_path))
+    text = text.replace(
+        "{image_labels_list}",
+        _render_image_labels(image_labels, image_captions))
+    return text.replace("{max_checks_per_field}", str(max_checks_per_field))
+
+
+def render_bundle_prompt_text(system_prompt_path, *, predicates,
+                              reference_lists=None, image_labels=(),
+                              image_captions=None, max_checks_per_field=2):
+    """Render the config bundle's own prompt file for a role.
+
+    The half a review writes: its prompt file with `{include:NAME}` partials
+    expanded, `{reference:NAME}` lists inlined, and the engine's slots filled.
+    It is appended after the engine spine on the wire, and it is the `prompt`
+    component of that role's config preimage, so the text a model reads and
+    the text a fingerprint covers come off one function.
+    """
+    text = substitute_include_placeholders(
+        _load_text(system_prompt_path), _partials_dir(system_prompt_path),
+        predicates=predicates)
+    return _fill_slots(
+        text, system_prompt_path, reference_lists=reference_lists,
+        image_labels=image_labels, image_captions=image_captions,
+        max_checks_per_field=max_checks_per_field)
+
+
+def _render_spine(role, system_prompt_path, *, predicates, reference_lists,
+                  image_labels, image_captions, max_checks_per_field):
+    text = compose_engine_spine(
+        role, _partials_dir(system_prompt_path), predicates=predicates)
+    return _fill_slots(
+        text, system_prompt_path, reference_lists=reference_lists,
+        image_labels=image_labels, image_captions=image_captions,
+        max_checks_per_field=max_checks_per_field)
+
+
 def build_system_message(image_labels, *,
                          system_prompt_path,
                          max_checks_per_field=2,
                          final_review=True,
                          reference_lists=None,
-                         image_captions=None,
-                         mode=WIRE):
+                         image_captions=None):
     """Build the extractor's system message text.
 
-    `system_prompt_path` is REQUIRED; it comes from the config bundle
-    (`ConfigBundle.extractor_system_path`).
-
-    `mode` picks the render: `WIRE` (the default) expands every include,
-    including the engine sections a prompt composes with
-    `{include:meltiro:NAME}`; `HASH` leaves an un-overridden engine section as
-    its directive token, which is what keeps engine prose out of `prompt_hash`
-    and so out of `config_fp` (see `meltiro.prompt_partials`).
+    The extractor's engine spine first, then the config bundle's prompt file
+    appended after it. `system_prompt_path` is REQUIRED; it comes from the
+    config bundle (`ConfigBundle.extractor_system_path`), and it also locates
+    the `partials/` directory both halves resolve against.
 
     Every `{reference:NAME}` placeholder is substituted with the config
     bundle's rendered reference list; an unresolvable one fails loudly.
@@ -166,65 +218,75 @@ def build_system_message(image_labels, *,
     Returns the rendered string. The orchestrator wraps it in a
     cache_control text block before sending.
     """
-    prompt_template = _load_text(system_prompt_path)
-    rendered = prompt_template
-    # Expand `{include:NAME}` partials BEFORE reference substitution, so a
-    # partial may itself carry `{reference:...}` placeholders.
-    rendered = substitute_include_placeholders(
-        rendered, Path(system_prompt_path).parent / "partials",
-        predicates=stage_predicates(max_checks_per_field, final_review),
-        mode=mode)
-    rendered = substitute_reference_placeholders(
-        rendered, reference_lists,
-        path=bundle_root_for_prompt(system_prompt_path))
-    rendered = rendered.replace(
-        "{image_labels_list}",
-        _render_image_labels(image_labels, image_captions))
-    rendered = rendered.replace("{max_checks_per_field}",
-                                str(max_checks_per_field))
-    return rendered
+    predicates = stage_predicates(max_checks_per_field, final_review)
+    slots = dict(reference_lists=reference_lists, image_labels=image_labels,
+                 image_captions=image_captions,
+                 max_checks_per_field=max_checks_per_field)
+    return join_blocks(
+        _render_spine(EXTRACTOR_SYSTEM, system_prompt_path,
+                      predicates=predicates, **slots),
+        render_bundle_prompt_text(system_prompt_path, predicates=predicates,
+                                  **slots),
+    )
+
+
+def build_config_prompt_text(role, *, system_prompt_path,
+                             max_checks_per_field, reference_lists,
+                             final_review=True):
+    """The config-owned identity of one role's prompt, as a canonical string.
+
+    Two components (see `prompt_partials.config_prompt_preimage`): the
+    bundle's appended text as it renders, and the bundle's overrides of the
+    engine sections this run composes for `role`.
+
+    Rendered with an empty `image_labels` list, so the per-paper figure/table
+    label set (and the per-paper exhibit captions beside it) reaches no hash
+    and two extractions of different papers under one config share the value.
+    Reference-list CONTENT does reach it, inlined into the bundle's own text:
+    editing a list moves it. Values the engine substitutes into text of the
+    author's own reach it too — a bundle that writes `{max_checks_per_field}`
+    into its prompt hashes the number.
+
+    Engine text reaches it never. Whatever a composed section says, and
+    whatever the engine substitutes into it, is outside the preimage: the
+    check budget stated in `extractor_checker_feedback` moves this by exactly
+    nothing. That is the boundary, not a gap in it. The budget reaches a run's
+    identity on the structure axis instead — `structure_hash`, folded into
+    `config_fp` beside this value and into `instrument_fp` — so two runs
+    differing only in the budget carry different fingerprints while the prompt
+    component they share correctly reports the same authored text.
+    """
+    predicates = stage_predicates(max_checks_per_field, final_review)
+    return config_prompt_preimage(
+        render_bundle_prompt_text(
+            system_prompt_path, predicates=predicates,
+            reference_lists=reference_lists, image_labels=[],
+            max_checks_per_field=max_checks_per_field),
+        engine_override_pairs(role, _partials_dir(system_prompt_path),
+                              predicates=predicates),
+    )
 
 
 def compute_prompt_config_hash(*, system_prompt_path,
                                 max_checks_per_field, reference_lists,
                                 final_review=True):
-    """Paper-independent hash of the system prompt CONFIG.
+    """Paper-independent hash of the extractor prompt's CONFIG.
 
-    What it covers is the HAND-AUTHORED text of the extractor's prompt as it
-    renders: the prompt file, the bundle's own partials, any engine section
-    the bundle overrides, the reference lists inlined into it, and the values
-    substituted into text of the author's own — a bundle that writes
-    `{max_checks_per_field}` into its prompt hashes the number.
-
-    What it leaves out is engine text and everything interpolated inside it.
-    Rendered in `HASH` mode, an un-overridden `{include:meltiro:NAME}`
-    contributes its directive TOKEN, so whatever that section says, and
-    whatever the engine substitutes into it, is outside the preimage: the
-    check budget stated in `extractor_workflow` moves this hash by exactly
-    nothing. That is the boundary, not a gap in it. The budget reaches a run's
-    identity on the structure axis instead — `structure_hash`, folded into
-    `config_fp` beside this value and into `instrument_fp` — so two runs
-    differing only in the budget carry different fingerprints while the prompt
-    hash they share correctly reports the same authored text.
-
-    Renders with an empty `image_labels` list, so the per-paper figure/table
-    label set (and the per-paper exhibit captions beside it) reaches no hash
-    and two extractions of different papers under one config share this value.
-    Reference-list CONTENT does reach it, inlined by the render: editing a
-    list moves this hash and hence `config_fp`. The tool-call cap reaches it
-    never: it has no placeholder in any prompt (see `build_system_message`),
-    so raising it and resuming is not refused as config drift.
+    SHA-256 of `build_config_prompt_text` for the extractor role: what the
+    config author wrote for this role and nothing else. The tool-call cap
+    reaches it never — it has no placeholder in any prompt (see
+    `build_system_message`), so raising it and resuming is not refused as
+    config drift.
 
     Used as the `prompt_hash` input to `config_fp`, so a consumer grouping
     runs by that fingerprint groups by config, not by paper.
     """
-    text = build_system_message(
-        image_labels=[],
+    text = build_config_prompt_text(
+        EXTRACTOR_SYSTEM,
         system_prompt_path=system_prompt_path,
         max_checks_per_field=max_checks_per_field,
         final_review=final_review,
         reference_lists=reference_lists,
-        mode=HASH,
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -302,42 +364,31 @@ def build_review_system_message(image_labels, *,
                                  max_checks_per_field=2,
                                  final_review=True,
                                  reference_lists=None,
-                                 image_captions=None,
-                                 mode=WIRE):
+                                 image_captions=None):
     """Build the FINAL REVIEW system message text.
 
-    `system_prompt_path` is REQUIRED; it comes from the config bundle
-    (`ConfigBundle.review_system_path`).
+    The reviewer's engine spine first, then the config bundle's review prompt
+    file appended after it. `system_prompt_path` is REQUIRED; it comes from
+    the config bundle (`ConfigBundle.review_system_path`).
 
-    The review prompt is separate from the extractor's: it frames the model
-    as the reviewer of an already-completed extraction. The same image labels
-    are rendered in, with the exhibit captions beside them exactly as the
-    extractor saw them; the field catalogue reaches it through the tool
-    `input_schema`s, as it does the extractor. `{reference:NAME}`
-    placeholders are substituted; the tool-call cap placeholders are rejected
-    at config-load time (see `build_system_message`).
-
-    `mode` picks the render, on the same terms as `build_system_message`: the
-    reviewer is sent the `WIRE` text, and `review_fp` is taken over the `HASH`
-    one.
+    The reviewer's spine is its own: it frames the model as the reader of an
+    already-completed extraction, where the extractor's frames the writer of
+    one. The same image labels are rendered in, with the exhibit captions
+    beside them exactly as the extractor saw them; the field catalogue reaches
+    it through the tool `input_schema`s, as it does the extractor.
+    `{reference:NAME}` placeholders are substituted; the tool-call cap
+    placeholders are rejected at config-load time (see `build_system_message`).
     """
-    prompt_template = _load_text(system_prompt_path)
-    rendered = prompt_template
-    # Expand `{include:NAME}` partials BEFORE reference substitution, so a
-    # partial may itself carry `{reference:...}` placeholders.
-    rendered = substitute_include_placeholders(
-        rendered, Path(system_prompt_path).parent / "partials",
-        predicates=stage_predicates(max_checks_per_field, final_review),
-        mode=mode)
-    rendered = substitute_reference_placeholders(
-        rendered, reference_lists,
-        path=bundle_root_for_prompt(system_prompt_path))
-    rendered = rendered.replace(
-        "{image_labels_list}",
-        _render_image_labels(image_labels, image_captions))
-    rendered = rendered.replace("{max_checks_per_field}",
-                                str(max_checks_per_field))
-    return rendered
+    predicates = stage_predicates(max_checks_per_field, final_review)
+    slots = dict(reference_lists=reference_lists, image_labels=image_labels,
+                 image_captions=image_captions,
+                 max_checks_per_field=max_checks_per_field)
+    return join_blocks(
+        _render_spine(REVIEW_SYSTEM, system_prompt_path,
+                      predicates=predicates, **slots),
+        render_bundle_prompt_text(system_prompt_path, predicates=predicates,
+                                  **slots),
+    )
 
 
 def build_review_user_blocks(study_id, paper_text, figures,

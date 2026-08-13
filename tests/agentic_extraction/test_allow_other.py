@@ -139,7 +139,7 @@ class TestValidator:
 
 
 class TestCheckerBriefing:
-    def _text(self, spec, value, checker_user_template_path):
+    def _text(self, spec, value, checker_partials_dir):
         blocks = build_checker_user_message(
             field_path="study.x",
             field_spec=spec,
@@ -147,14 +147,14 @@ class TestCheckerBriefing:
                       "evidence": "<q>bonded-collar variant</q>"},
             identity_context="Summary: ...",
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
         )
         return "\n".join(b.get("text", "") for b in blocks)
 
     def test_allow_other_free_text_asks_whether_option_fits(
-            self, checker_user_template_path):
+            self, checker_partials_dir):
         text = self._text(_open(["Cost", "Service life"]),
-                          "bonded-collar variant", checker_user_template_path)
+                          "bonded-collar variant", checker_partials_dir)
         assert "Typical values" in text
         assert "more appropriate" in text
         assert "Cost" in text
@@ -162,17 +162,17 @@ class TestCheckerBriefing:
         assert "Other (specify)" in text
 
     def test_allow_other_listed_value_briefs_hard_choice(
-            self, checker_user_template_path):
+            self, checker_partials_dir):
         text = self._text(_open(["Cost", "Service life"]),
-                          "Cost", checker_user_template_path)
+                          "Cost", checker_partials_dir)
         assert "hard choice" in text
         assert "Allowed values" in text
         # ... and in the listed-value branch.
         assert "Other (specify)" in text
 
     def test_hard_enum_briefs_allowed_values(
-            self, checker_user_template_path):
+            self, checker_partials_dir):
         text = self._text(_hard(["Bench test", "Field trial"]), "Field trial",
-                          checker_user_template_path)
+                          checker_partials_dir)
         assert "Allowed values" in text
         assert "Bench test" in text

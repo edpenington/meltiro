@@ -157,7 +157,7 @@ def _no_dotenv(monkeypatch):
 EXTRACTOR_SYSTEM_PATH = CONFIG_DIR / "prompts" / "extractor_system.md"
 REVIEW_SYSTEM_PATH = CONFIG_DIR / "prompts" / "review_system.md"
 CHECKER_SYSTEM_PATH = CONFIG_DIR / "prompts" / "checker_system.md"
-CHECKER_USER_TEMPLATE_PATH = CONFIG_DIR / "prompts" / "checker_user_template.md"
+CHECKER_PARTIALS_DIR = CONFIG_DIR / "prompts" / "partials"
 TEMPLATE_PATH = CONFIG_DIR / "extraction_template.yaml"
 REFERENCE_DIR = CONFIG_DIR / "reference"
 
@@ -213,5 +213,11 @@ def checker_system_path():
 
 
 @pytest.fixture
-def checker_user_template_path():
-    return CHECKER_USER_TEMPLATE_PATH
+def checker_partials_dir():
+    """The fixture bundle's `prompts/partials/`.
+
+    Where a checker call looks for a bundle's override of the engine's
+    per-field scaffold; this bundle ships none, so the engine's own wording is
+    what a test renders.
+    """
+    return CHECKER_PARTIALS_DIR

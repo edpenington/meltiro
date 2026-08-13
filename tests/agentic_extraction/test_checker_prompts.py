@@ -141,7 +141,7 @@ class TestRecordContext:
 
 class TestUserMessage:
     def test_study_field_text_sourced(self, synthetic_template,
-                                      checker_user_template_path):
+                                      checker_partials_dir):
         spec = _spec_from_template(
             synthetic_template, "study_fields", "primary_aim")
         envelope = {
@@ -155,7 +155,7 @@ class TestUserMessage:
             identity_context=(
                 "Abstract: A study of WDS-9 in brackets under load."),
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
         )
         assert len(blocks) == 1
         text = blocks[0]["text"]
@@ -165,7 +165,7 @@ class TestUserMessage:
         assert "Assess WDS-9 in brackets under load" in text
 
     def test_relationship_field_with_record_context(self, synthetic_template,
-                                                     checker_user_template_path):
+                                                     checker_partials_dir):
         spec = _spec_from_template(
             synthetic_template, "record_fields", "effect_size")
         envelope = {
@@ -178,14 +178,14 @@ class TestUserMessage:
             envelope=envelope,
             identity_context="WDS-9 | Unplanned removal | Failure state",
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
         )
         text = blocks[0]["text"]
         assert "WDS-9 | Unplanned removal | Failure state" in text
         assert "1.34" in text
 
     def test_multi_quote_evidence(self, synthetic_template,
-                                  checker_user_template_path):
+                                  checker_partials_dir):
         spec = _spec_from_template(
             synthetic_template, "study_fields", "primary_aim")
         envelope = {
@@ -200,7 +200,7 @@ class TestUserMessage:
             envelope=envelope,
             identity_context="ctx",
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
         )
         text = blocks[0]["text"]
         assert "first quote" in text
@@ -208,7 +208,7 @@ class TestUserMessage:
         assert "third quote" in text
 
     def test_image_sourced_attaches_image(self, synthetic_template, tmp_path,
-                                          checker_user_template_path):
+                                          checker_partials_dir):
         # Set up a fake figure file and pass it via the bundle figures map.
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
         table_png = tmp_path / "table_02.png"
@@ -226,7 +226,7 @@ class TestUserMessage:
             envelope=envelope,
             identity_context="WDS-9 | Unplanned removal",
             image_labels={"table_02"},
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
             figures={"table_02": table_png},
         )
         # Two prefixed blocks (label + image) before the text.
@@ -238,7 +238,7 @@ class TestUserMessage:
         assert "treat it AS the evidence" in text
 
     def test_a_recheck_sees_a_genuinely_fresh_context(
-            self, synthetic_template, checker_user_template_path):
+            self, synthetic_template, checker_partials_dir):
         # A field checked a second time after a revision is checked from
         # scratch: nothing about the earlier check reaches the new message,
         # so the checker judges the new value on its own merits rather than
@@ -252,7 +252,7 @@ class TestUserMessage:
             envelope={"value": "X", "evidence": "<q>quote</q>", "notes": None},
             identity_context="ctx",
             image_labels=set(),
-            user_prompt_path=checker_user_template_path,
+            partials_dir=checker_partials_dir,
         )
         text = blocks[0]["text"]
         for absent in ("Prior", "prior", "round", "challenge", "previous",
@@ -278,14 +278,14 @@ class TestFieldNoteBlock:
             envelope=envelope,
             identity_context="ctx",
             image_labels=set(),
-            user_prompt_path=path,
+            partials_dir=path,
             **kwargs,
         )
         return blocks[0]["text"]
 
     def test_a_note_is_rendered_under_its_own_heading(
-            self, synthetic_template, checker_user_template_path):
-        text = self._text(synthetic_template, checker_user_template_path, {
+            self, synthetic_template, checker_partials_dir):
+        text = self._text(synthetic_template, checker_partials_dir, {
             "value": "X",
             "evidence": "<q>quote</q>",
             "notes": "read off the third column of table 2",
@@ -296,44 +296,44 @@ class TestFieldNoteBlock:
         assert "not evidence" in text
 
     def test_no_note_leaves_no_trace(self, synthetic_template,
-                                     checker_user_template_path):
-        text = self._text(synthetic_template, checker_user_template_path, {
+                                     checker_partials_dir):
+        text = self._text(synthetic_template, checker_partials_dir, {
             "value": "X", "evidence": "<q>quote</q>", "notes": None,
         })
         assert "Extractor's note" not in text
         assert "{notes_block}" not in text
 
     def test_an_absent_notes_key_leaves_no_trace(
-            self, synthetic_template, checker_user_template_path):
-        text = self._text(synthetic_template, checker_user_template_path, {
+            self, synthetic_template, checker_partials_dir):
+        text = self._text(synthetic_template, checker_partials_dir, {
             "value": "X", "evidence": "<q>quote</q>",
         })
         assert "Extractor's note" not in text
         assert "{notes_block}" not in text
 
     def test_a_whitespace_only_note_is_no_note(
-            self, synthetic_template, checker_user_template_path):
-        text = self._text(synthetic_template, checker_user_template_path, {
+            self, synthetic_template, checker_partials_dir):
+        text = self._text(synthetic_template, checker_partials_dir, {
             "value": "X", "evidence": "<q>quote</q>", "notes": "   \n  ",
         })
         assert "Extractor's note" not in text
 
     def test_the_empty_branch_leaves_the_message_ending_at_the_value(
-            self, synthetic_template, checker_user_template_path):
+            self, synthetic_template, checker_partials_dir):
         # The shipped template puts the slot on its own line and it is the last
         # line, so a field with no note produces a message that simply ends at
         # the value, with no empty heading trailing it.
         text = self._text(
-            synthetic_template, checker_user_template_path,
+            synthetic_template, checker_partials_dir,
             {"value": "X", "evidence": "<q>quote</q>", "notes": None})
         assert text.endswith('## Value claimed by the extractor\n\n"X"\n')
 
     def test_evidence_prose_is_still_withheld(
-            self, synthetic_template, checker_user_template_path):
+            self, synthetic_template, checker_partials_dir):
         # The note is the sanctioned channel for reasoning. Prose smuggled
         # inside the evidence string stays withheld, so the two rules do not
         # contradict: reasoning reaches the checker via the note or not at all.
-        text = self._text(synthetic_template, checker_user_template_path, {
+        text = self._text(synthetic_template, checker_partials_dir, {
             "value": "X",
             "evidence": "<q>quote</q> this prose is my own argument",
             "notes": None,

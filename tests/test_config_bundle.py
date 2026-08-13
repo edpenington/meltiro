@@ -59,8 +59,6 @@ class TestHappyPath:
         assert cb.extractor_system_path.name == "extractor_system.md"
         assert cb.review_system_path.name == "review_system.md"
         assert cb.checker_system_path.name == "checker_system.md"
-        assert cb.checker_user_template_path.name == \
-            "checker_user_template.md"
         # pipeline.yaml parsed to a mapping.
         assert isinstance(cb.pipeline, dict)
         assert cb.pipeline.get("max_tool_calls") == 100
@@ -439,22 +437,21 @@ class TestCapPlaceholders:
         assert "{max_review_tool_calls}" in msg
         assert "review_system.md" in msg
 
-    def test_cap_placeholder_in_checker_user_template_rejected(
+    def test_cap_placeholder_in_an_engine_override_rejected(
             self, good_config):
-        # The guard scans all four prompt surfaces, and the checker user
-        # template is one of them; pin that surface specifically so a cap
-        # placeholder placed there is caught and named, not just the extractor,
-        # review, and checker system prompts covered above.
-        prompt = good_config / "prompts" / "checker_user_template.md"
-        prompt.write_text(
-            prompt.read_text(encoding="utf-8")
-            + "\nCap: {max_tool_calls}.\n",
-            encoding="utf-8")
+        # An override is prompt text the bundle wrote, and it reaches a model
+        # without passing through any prompt file, so the guard reads it
+        # directly. Pin that surface specifically: a cap placeholder there
+        # would otherwise be the one place it could still be interpolated.
+        override = good_config / "prompts" / "partials" / "meltiro"
+        override.mkdir(parents=True, exist_ok=True)
+        (override / "recording_notes.md").write_text(
+            "Cap: {max_tool_calls}.\n", encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(good_config)
         msg = str(excinfo.value)
         assert "{max_tool_calls}" in msg
-        assert "checker_user_template.md" in msg
+        assert "recording_notes.md" in msg
 
     def test_cap_placeholder_inside_partial_rejected(self, good_config):
         # A placeholder hiding in an included partial is caught too: the check
@@ -473,17 +470,19 @@ class TestCapPlaceholders:
 
 
 class TestCheckerUserPlaceholderAllowlist:
-    """Substitution into the checker user template is a plain `str.replace`
-    per known slot, so an unknown placeholder is not an error at render time:
-    it survives into the prompt as literal text and the checker reads
+    """Substitution into the per-field scaffold is a plain `str.replace` per
+    known slot, so an unknown placeholder is not an error at render time: it
+    survives into the prompt as literal text and the checker reads
     `{field_pat}` where the field path should be. That silent failure is
-    hoisted to config-load time."""
+    hoisted to config-load time, over the one copy of that scaffold a bundle
+    can write: its override of the engine's `checker_user` section."""
 
     def _rewrite(self, config, text):
-        path = config / "prompts" / "checker_user_template.md"
-        path.write_text(text, encoding="utf-8")
+        path = config / "prompts" / "partials" / "meltiro"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "checker_user.md").write_text(text, encoding="utf-8")
 
-    def test_shipped_templates_cite_only_known_slots(self, config_dir):
+    def test_the_shipped_bundle_cites_only_known_slots(self, config_dir):
         load_config_bundle(config_dir)  # must not raise
 
     def test_a_misspelt_slot_is_rejected(self, good_config):
@@ -492,7 +491,7 @@ class TestCheckerUserPlaceholderAllowlist:
             load_config_bundle(good_config)
         msg = str(excinfo.value)
         assert "{field_pat}" in msg
-        assert "checker_user_template.md" in msg
+        assert "checker_user.md" in msg
         assert "literal prompt text" in msg
 
     def test_every_unknown_slot_is_reported(self, good_config):
@@ -510,13 +509,10 @@ class TestCheckerUserPlaceholderAllowlist:
         self._rewrite(good_config, "{value}\n{notes_block}\n")
         load_config_bundle(good_config)  # must not raise
 
-    def test_include_and_reference_forms_are_allowed(self, good_config):
-        partials = good_config / "prompts" / "partials"
-        partials.mkdir(parents=True, exist_ok=True)
-        (partials / "extra.md").write_text("housekeeping", encoding="utf-8")
-        self._rewrite(
-            good_config,
-            "{value}\n{include:extra}\n{reference:gauge_list}\n")
+    def test_the_reference_form_is_allowed(self, good_config):
+        # A colon-carrying placeholder is a different grammar with its own
+        # pass, so it is not read as a slot.
+        self._rewrite(good_config, "{value}\n{reference:gauge_list}\n")
         load_config_bundle(good_config)  # must not raise
 
     def test_prose_braces_and_json_examples_are_not_caught(self, good_config):
@@ -528,13 +524,18 @@ class TestCheckerUserPlaceholderAllowlist:
             "Not a slot: {NAME} {Field_Path} {two words} {} {a-b}\n"))
         load_config_bundle(good_config)  # must not raise
 
-    def test_an_unknown_slot_inside_a_partial_is_caught(self, good_config):
-        # Includes are expanded before the scan, as they are for the cap and
+    def test_an_unknown_slot_inside_a_checker_partial_is_caught(
+            self, good_config):
+        # The checker's own prompt file is the other surface, and includes are
+        # expanded before the scan there, as they are for the cap and
         # reference checks.
         partials = good_config / "prompts" / "partials"
         partials.mkdir(parents=True, exist_ok=True)
         (partials / "tail.md").write_text("{feild_path}", encoding="utf-8")
-        self._rewrite(good_config, "{value}\n{include:tail}\n")
+        prompt = good_config / "prompts" / "checker_system.md"
+        prompt.write_text(
+            prompt.read_text(encoding="utf-8") + "\n{include:tail}\n",
+            encoding="utf-8")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(good_config)
         assert "{feild_path}" in str(excinfo.value)

@@ -48,9 +48,9 @@ from meltiro.fingerprint import (
     review_config_fingerprint as _review_fp,
     tool_set_hash as compute_tool_set_hash)
 from meltiro.prompt_builder import (
-    build_review_system_message, build_system_message,
-    compute_prompt_config_hash)
-from meltiro.prompt_partials import HASH, WIRE, stage_predicates
+    build_config_prompt_text, build_review_system_message,
+    build_system_message, compute_prompt_config_hash)
+from meltiro.prompt_partials import REVIEW_SYSTEM, stage_predicates
 from meltiro.tools import all_tool_definitions, canonical_tool_set_json
 
 
@@ -228,16 +228,13 @@ class Instrument:
     # The reviewer's instrument
     # ----------------------------------------------------------------------
 
-    def render_review_system_text(self, image_labels, image_captions=None,
-                                  mode=WIRE):
+    def render_review_system_text(self, image_labels, image_captions=None):
         """The reviewer's rendered system message, for `image_labels`.
 
         The single place it is built, so the copy captured into
         `diagnostics/instrument/` at session creation and the copy sent to the
         reviewer later in the run are the same string by construction rather
-        than by two call sites agreeing. `mode` decides only whether an
-        un-overridden engine section expands: the reviewer is sent the `WIRE`
-        text, `review_fp` is taken over the `HASH` one.
+        than by two call sites agreeing.
         """
         return build_review_system_message(
             image_labels,
@@ -246,7 +243,22 @@ class Instrument:
             final_review=self.final_review,
             reference_lists=self.reference_lists,
             image_captions=image_captions,
-            mode=mode,
+        )
+
+    def review_config_prompt_text(self):
+        """The config-owned identity of the reviewer's system prompt.
+
+        Mirrors `extractor_prompt_hash`: paper-independent (no image labels
+        reach it) and engine-free, so an engine release that rewords a
+        reviewer section leaves `review_fp` where it was and a bundle's own
+        edit moves it.
+        """
+        return build_config_prompt_text(
+            REVIEW_SYSTEM,
+            system_prompt_path=self.config.review_system_path,
+            max_checks_per_field=self.max_checks_per_field,
+            final_review=self.final_review,
+            reference_lists=self.reference_lists,
         )
 
     def review_fingerprint(self, call_identity, *, review_model, tool_hash):
@@ -254,10 +266,10 @@ class Instrument:
         off (the review model is then not required, so it is not resolved
         through the registry; a null review_fp is recorded instead).
 
-        The review system prompt is rendered with an EMPTY image-label list
-        and in `HASH` mode (mirroring `extractor_prompt_hash`) so two papers
-        under one config share the fingerprint and an engine section the
-        prompt composes rides in `engine_fp` rather than here; reference-list
+        The review system prompt component is the CONFIG's half, rendered with
+        an EMPTY image-label list (mirroring `extractor_prompt_hash`) so two
+        papers under one config share the fingerprint and the engine's own
+        sections ride in `engine_fp` rather than here; reference-list
         substitution still applies, so editing a canonical name moves it. The
         reference-list CONTENT hash rides beside it for the part no prompt
         carries: aliases are rendered nowhere, yet they change what the
@@ -273,8 +285,7 @@ class Instrument:
         """
         if not self.final_review:
             return None
-        review_system_text = self.render_review_system_text(
-            image_labels=[], mode=HASH)
+        review_system_text = self.review_config_prompt_text()
         review_structure = structure_hash(
             self.max_checks_per_field,
             supports_images=model_supports_images(review_model),

@@ -262,7 +262,7 @@ def _live_orch(tmp_path, template, paper_text, image_labels, *,
     orch.image_labels = image_labels
     orch.paper_text = paper_text
     orch.bundle = SimpleNamespace(figures={})
-    orch.config = SimpleNamespace(checker_user_template_path="/unused",
+    orch.config = SimpleNamespace(partials_dir="/unused",
                                   checker_system_path="/unused")
     orch.checker_config = SimpleNamespace(checker_model="claude-sonnet-4-6",
                                           concurrency=4, context_chars=0)

@@ -74,11 +74,11 @@ own prompt and its own context, and they may be assigned different models
    it went; and `abandon_extraction`, for when it judges that no honest
    extraction can be produced from the provided inputs
 
-2. **Checker** (per field submission) — a narrow call with deliberately
-   restricted context, re-asked at most once as a correction if it records no
-   verdict, run inside the tool call rather than as a stage of its own. Any
-   field that carries evidence is eligible, whether or not the template
-   requires evidence for it. The Checker sees the field definition, a short
+2. **Checker** (per field submission) — an agent with a deliberately narrow
+   context, who can only return a single verdict: whether the evidence provided
+   supports the value suggested (`ok`) or not (`challenge`). Any field that
+   carries evidence is sent to the checker, whether or not the field requires
+   evidence. The Checker sees the field definition, a short
    identity context for the paper (and the record, if it's a record-level
    field), the extracted value, and the recorded evidence with its surrounding
    text — and is asked only whether the evidence supports the value. A
@@ -269,28 +269,25 @@ paper-bundle/
 ```
 
 - `schema_version` (must be `1`), `id`, `title` and `exhibits` are required.
-  `id` is an opaque identifier you choose — letters, digits, `.`, `_`, `-`,
-  with at least one alphanumeric so `.` and `..` are rejected — and it names
-  the output directory.
+  `id` is an opaque identifier you choose — letters, digits, `.`, `_`, `-` — and
+  it names the output directory.
 - `exhibits` declares every table and figure supplied as a cropped image:
   exactly a `label` (the `figures/<label>.png` stem) and the caption the paper
   prints. It may be `[]` for a paper that genuinely has neither. It is required
   so an author either enumerates the exhibits or says explicitly that there are
   none; a bundle quietly shipping no crops for a paper full of tables is the
   failure this key exists to prevent.
-- Two cross-checks bind declaration to directory, both hard errors: every
-  declared label must have its PNG, and every PNG must be declared. **No check
-  can see crop quality.** A crop that clips its header row, or catches the
-  wrong table, passes everything here. Looking at the crops stays a human job.
-  Nor can any check know the paper contains a table nobody cropped — that
-  question goes to the Extractor, which reads the paper.
+- Declaration and directory must agree exactly: every declared label has its
+  PNG, and every PNG is declared. **No check can see crop quality.** A crop that
+  clips its header row, or catches the wrong table, passes everything here.
+  Looking at the crops stays a human job. Nor can any check know the paper
+  contains a table nobody cropped — that question goes to the Extractor, which
+  reads the paper.
 - `summary` is optional and overrides what the Checker is shown as the paper's
   short identity. Without it the Checker uses the extracted field the template
-  marks `role: summary`. If neither is available at check time the Checker
-  degrades to title plus DOI and records a warning.
-- Unknown manifest keys are rejected. Extra *files* in the bundle directory are
-  ignored, so a bundle may carry its own paperwork alongside the contract
-  files; inside `figures/`, a non-PNG or a subdirectory is an error.
+  marks `role: summary`, and failing that, title plus DOI.
+- Extra *files* in the bundle directory are ignored, so a bundle may carry its
+  own paperwork alongside the contract files.
 
 Evidence is checked verbatim against `text.md`, markdown syntax included, so a
 converter should keep inline emphasis out of running text where it can. A
@@ -311,69 +308,63 @@ config-bundle/
     ├── extractor_system.md
     ├── review_system.md
     ├── checker_system.md
-    ├── checker_user_template.md
     └── partials/             # optional shared blocks
-        └── meltiro/          # optional overrides of engine sections
+        └── meltiro/          # optional overrides of engine prompts
 ```
 
-Prompts may cite a shared block with `{include:NAME}`, or one that follows a
-stage with `{include_if:checker:NAME}` / `{include_if:review:NAME}` — the block
-is rendered only when that stage is enabled for the run, so a prompt never
-briefs a model on a stage that will not run. A cited partial must exist whether
-or not its branch is taken. Prompts may also cite a reference list with
-`{reference:NAME}`.
+Prompts may cite a shared block of their own with `{include:NAME}`, or one that
+follows a stage with `{include_if:checker:NAME}` / `{include_if:review:NAME}` —
+the block is rendered only when that stage is enabled for the run, so a prompt
+never briefs a model on a stage that will not run. Prompts may also cite a
+reference list with `{reference:NAME}`.
 
-### The engine's own sections
+### Engine prompts
 
-How the engine behaves is not a methodological choice, so a review does not
-have to describe it. *meltiro* ships that description as prose, one named file
-per section, and a prompt composes it with `{include:meltiro:NAME}`:
+In addition to the context provided as part of a specific review, each agent
+receives prompts from the engine that enable their core functionality. These
+prompts can be overwritten as part of config.
+
+Each role's system message opens with its engine prompts, in the order below,
+and your prompt file for that role is appended after them. Your file supplies
+the review: its scope and criteria, what counts as one record, what each field
+means. Two sections are conditional on the run's structure, and are left out
+entirely when their stage is switched off. `checker_user` is the one that is
+not a system prompt: it is the scaffold each per-field checker message is
+rendered from, and the Checker's own system message is the three above it.
 
 | Section | Role | What it states |
 |---|---|---|
-| `extractor_workflow` | Extractor | the initial-check-first gate, the `ok` / `partial` / `validation_failed` result shape and `failed_fields`, challenges arriving in tool results, the per-field check budget, `mark_complete`, `abandon_extraction`, the finite call budget, the view tools |
+| `extractor_role` | Extractor | what the extractor is and what it produces |
+| `extractor_workflow` | Extractor | the initial-check-first gate, the extraction calls, and the `ok` / `partial` / `validation_failed` result shape |
+| `extractor_checker_feedback` | Extractor | challenges arriving in tool results, revising or overruling one, the per-field check budget — only when the Checker runs |
+| `extractor_completion` | Extractor | `mark_complete` and its required quality check |
+| `extractor_review_handoff` | Extractor | the handoff to the Reviewer — only when the Reviewer runs |
+| `extractor_tool_budget` | Extractor | the finite call budget, `abandon_extraction`, the view tools |
 | `recording_evidence` | Extractor | the `<q>` / `<img>` evidence grammar: normalisation, elision, insertion brackets, and the image-label list |
 | `recording_notes` | Extractor | field notes versus scope notes, and who is shown which |
 | `recording_conventions` | Extractor | record-id assignment, strict versus open lists, reference-list fields, warnings versus errors |
+| `checker_role` | Checker | what the checker is and what it judges |
 | `checker_briefing` | Checker | the checker's one-field isolation, the quote window and its table expansion, the allowed-values briefing, no memory across checks |
+| `checker_verdict` | Checker | the `record_verdict` call, the two-word verdict vocabulary, and where a verdict goes |
+| `checker_user` | Checker | the scaffold of the per-field message: field, context, evidence, value |
+| `reviewer_role` | Reviewer | what the reviewer is and what it decides |
+| `reviewer_record` | Reviewer | how to read the extraction record it is given, the evidence grammar as a reader, the image-label list |
+| `reviewer_workflow` | Reviewer | the three shortcomings to look for, the view tools, the two terminating tools, the call budget |
 
-The Review prompt composes no engine section, and none is written for it: the
-reviewer edits the assembled record under the same tool schemas the Extractor
-wrote it with, so what it needs to know arrives in those schemas and in your
-bundle's own prose about the review.
+A review **overrides** a section by shipping `prompts/partials/meltiro/NAME.md`.
+Non-empty text replaces that section where it sits; text that is empty removes
+the section, which is the only way to keep one out of a model's context. The
+filename is the whole of the wiring, so that directory is enumerated at load: a
+file named for no section (`recording_note.md`, `Recording_Notes.md`,
+`house_style.md`) is a load error rather than a file that quietly overrides
+nothing.
 
-These compose with predicates like any other block
-(`{include_if:checker:meltiro:checker_briefing}`), and a name outside the list
-above is a load error naming the ones that exist. Your prompt supplies
-everything around them: the role framing, the review's scope and criteria, what
-counts as one record, what each field means.
-
-A section fills the slots its own role's prompt supplies, so composing one into
-a prompt that supplies fewer is a load error naming the variable left over. The
-Checker's system prompt supplies one slot, `{max_checks_per_field}`; the
-Extractor's and Reviewer's also supply `{image_labels_list}`. Composing
-`recording_evidence`, which renders that list, into the Checker's prompt is
-refused by name rather than sent as a literal token.
-
-A review may **override** any section by shipping
-`prompts/partials/meltiro/NAME.md`; that text then wins wherever the section is
-cited, and the engine's copy is not consulted. The filename is the whole of the
-wiring, so that directory is enumerated at load: a file named for no section
-(`recording_note.md`, `Recording_Notes.md`, `house_style.md`) is a load error
-rather than a file that quietly overrides nothing. Overriding moves the config
-fingerprints (`prompts_hash`, `instrument_fp`, and the stage fingerprint of
-whichever prompt cites it), because the text is now yours: an un-overridden
-section rides in `engine_fp` instead, so an engine release that rewords one
-leaves every bundle's config fingerprints exactly where they were. Two bundles
-composing the same section, one on the default and one overriding it with
-byte-identical text, read identically to a model and fingerprint differently —
-one is pinned to the engine's wording, the other to its own.
-
-A role's system prompt that composes no section of its own role loads with a
-warning on stderr: the engine's behaviour is then described to that model only
-by whatever the prompt says itself, and a prompt that describes it wrongly is
-obeyed, not corrected. A stage that is off is passed over — with
-`max_checks_per_field: 0` there is no Checker call to underbrief.
+Overriding moves the config fingerprints (`prompts_hash`, `instrument_fp`, and
+that role's stage fingerprint), because the text is now yours — an empty
+override moves them too, since leaving a section out is a decision about what
+the model is asked. A section you have not overridden rides in `engine_fp`
+instead, so an engine release that rewords one leaves every bundle's config
+fingerprints exactly where they were.
 
 `pipeline.yaml` takes exactly these keys; anything else is a load error.
 
@@ -418,24 +409,14 @@ A role with no block specifies nothing: each model's own defaults apply, and
 the run records that the role pinned none of them.
 
 The whole bundle is validated before anything reaches a provider, in two layers
-a library consumer needs to tell apart:
-
-- `load_config_bundle` checks what the bundle settles on its own — a missing
-  required file, an unknown key, an unresolvable `{include:…}` or
-  `{reference:…}`, a banned placeholder — and raises `ConfigBundleError`.
-- The **CLI** checks what only the model registry and the numeric domains can
-  settle, as `extract` starts and still before any spend: an unknown or retired
-  model, a missing output-token cap for a role that will call, a cap or checker
-  concurrency that is not a positive integer, a malformed `rates:` block, and
-  each enabled role's whole call resolved against the registry — an unknown key
-  in its decoding block, a value outside the band that model's registry entry
-  documents for a control it accepts, a thinking mode, effort level or display
-  its entry does not declare, and a cap too small for a call that will reason to
-  answer within. Each exits non-zero with the offending key named. The
-  call-level half of that is not the CLI's alone: `Orchestrator.__init__` makes
-  the same resolution, so a run started from Python is refused on the same
-  terms, and the CLI's gate is what turns the refusal into one line and an
-  exit code.
+a library consumer needs to tell apart. `load_config_bundle` checks what the
+bundle settles on its own — its files, its keys, and every placeholder in its
+prompts — and raises `ConfigBundleError`. The **CLI** checks what only the model
+registry and the numeric domains can settle, as `extract` starts and still
+before any spend: each enabled role's whole call resolved against the registry,
+and every cap and count in range. `Orchestrator.__init__` makes the same
+resolution, so a run started from Python is refused on the same terms; the
+CLI's gate is what turns the refusal into one line and an exit code.
 
 One thing is reported rather than refused: a sampling control a model declares
 it refuses OUTRIGHT is never sent, whatever value the block gives it, so there
@@ -621,14 +602,14 @@ and `bundle_fp` move. Swap a crop for a better one and `figures_fp` and
 `bundle_fp` move. So `run_fp` says what was asked and `bundle_fp` says what it
 was asked of, and either can be compared while the other varies.
 
-*meltiro*'s own prose — the framing the engine writes around your prompts, the
-engine sections your prompts compose, and every tool result and validation
-error it returns to a model — is covered by `engine_fp` and by nothing else. No
-config fingerprint takes it as a preimage, deliberately, so a consumer can pin
-those across releases; and it lives in the package's own files, the modules and
+*meltiro*'s own prose — the engine prompts each role opens with, the framing the
+engine writes around your prompts, and every tool result and validation error it
+returns to a model — is covered by `engine_fp` and by nothing else. No config
+fingerprint takes it as a preimage, deliberately, so a consumer can pin those
+across releases; and it lives in the package's own files, the modules and
 `engine_prompts/*.md`, which is exactly what `engine_fp` hashes. An edit to any
 of that wording therefore moves `engine_fp` and every `run_fp` built on it,
-whether or not it was ever committed. An engine section you have overridden is
+whether or not it was ever committed. An engine prompt you have overridden is
 your text, not the engine's, and rides in the config fingerprints instead. Runs
 from different *meltiro* versions are still compared deliberately, never
 assumed equivalent.

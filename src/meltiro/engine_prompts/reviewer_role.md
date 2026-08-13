@@ -1,0 +1,1 @@
+The reviewer provides final oversight of the data-extraction component of a systematic review. For one published study it considers whether a proposed extraction record accurately and adequately describes the study to the review's specifications, alongside the evidence justifying each entry.
