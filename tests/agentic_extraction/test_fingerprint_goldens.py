@@ -256,7 +256,7 @@ def _pipeline_predicates(bundle):
 def _review_config_text(bundle, template):
     # The config's half of the reviewer's prompt, exactly as the review
     # fingerprint takes it: paper-independent, and with the engine's own
-    # sections outside the preimage.
+    # prompts outside the preimage.
     loop = bundle.pipeline
     return build_config_prompt_text(
         REVIEW_SYSTEM,

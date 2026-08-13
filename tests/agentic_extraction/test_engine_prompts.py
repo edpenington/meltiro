@@ -32,6 +32,7 @@ falls on the engine's side of both hashing boundaries above.
 import shutil
 
 import pytest
+import yaml
 
 from meltiro import checker_prompts, prompt_builder, prompt_partials
 from meltiro.checker import CheckerConfig
@@ -66,7 +67,9 @@ from meltiro.prompt_partials import (
     CHECKER_USER,
     ENGINE_ROLE_PROMPTS,
     EXPAND_ALL_BRANCHES,
+    EXTRACTOR_SYSTEM,
     REVIEW_SYSTEM,
+    compose_engine_prompt,
     composed_engine_names,
     engine_citations,
     engine_prompt_names,
@@ -104,6 +107,14 @@ def _write_override(bundle_dir, name, text):
     return override_dir / f"{name}.md"
 
 
+def _set_max_checks(bundle_dir, value):
+    """Rewrite the bundle's own check budget: the toggle `checker` reads."""
+    path = bundle_dir / "pipeline.yaml"
+    pipeline = yaml.safe_load(path.read_text(encoding="utf-8"))
+    pipeline["max_checks_per_field"] = value
+    path.write_text(yaml.safe_dump(pipeline), encoding="utf-8")
+
+
 def _engine_text(name):
     return (prompt_partials.ENGINE_PROMPTS_DIR / f"{name}.md").read_text(
         encoding="utf-8").strip()
@@ -113,6 +124,20 @@ def _paragraphs(name):
     """The blocks of engine prompt `name` that reach a model as written."""
     return [p for p in _engine_text(name).split("\n\n")
             if p.strip() and not any(t in p for t in UNRENDERED)]
+
+
+@pytest.fixture
+def engine_dir(tmp_path, monkeypatch):
+    """A writable copy of the engine's own prompt directory, swapped in.
+
+    Lets a test edit an engine prompt without touching the installed package.
+    `engine_prompt_names` and every resolution read the directory at call
+    time, so the substitution is complete.
+    """
+    dest = tmp_path / "engine_prompts"
+    shutil.copytree(prompt_partials.ENGINE_PROMPTS_DIR, dest)
+    monkeypatch.setattr(prompt_partials, "ENGINE_PROMPTS_DIR", dest)
+    return dest
 
 
 def _extractor(bundle, **kwargs):
@@ -556,12 +581,54 @@ class TestTheOverrideDirectoryIsEnumerated:
         assert "recording_notes.md" in message
         assert "extractor" in message
 
+    def test_an_entry_that_is_not_a_file_is_refused(self, tmp_path,
+                                                    config_dir):
+        # The name matches a prompt the engine ships, so the spelling check
+        # alone would pass it — and an override is read with `is_file()`, so
+        # the run would render the engine's own words with a directory sitting
+        # in the author's bundle under the name of the file replacing them.
+        # That is the silent no-op the enumeration exists to prevent, reached
+        # by the one route the name check does not cover.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        (bundle_dir / "prompts" / "partials" / "meltiro"
+         / "extractor.md").mkdir(parents=True)
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(bundle_dir)
+        message = str(excinfo.value)
+        assert "extractor.md is not a file" in message
+        assert "'extractor'" in message
+
     def test_an_override_may_not_nest_an_include(self, tmp_path, config_dir):
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         _write_override(bundle_dir, "reviewer",
                         "ours, plus {include:review_context}")
         with pytest.raises(ConfigBundleError) as excinfo:
             load_config_bundle(bundle_dir)
+        assert "nest" in str(excinfo.value).lower()
+
+    def test_a_partial_override_may_not_nest_one_with_its_stage_off(
+            self, tmp_path, config_dir):
+        # The engine-side twin of the bundle-side rule
+        # (`test_conditional_includes.py`): a defect a disabled stage hides is
+        # a defect that surfaces on the day someone turns the stage back on,
+        # in a bundle that has been loading cleanly for months. So the
+        # override is read and checked whatever the toggles say — at load, and
+        # again on the branch composition does not take.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        _set_max_checks(bundle_dir, 0)
+        _write_override(bundle_dir, "extractor_checker_feedback",
+                        "ours, plus {include:review_context}")
+
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(bundle_dir)
+        message = str(excinfo.value)
+        assert "extractor_checker_feedback" in message
+        assert "nest" in message.lower()
+
+        with pytest.raises(ConfigBundleError) as excinfo:
+            compose_engine_prompt(
+                EXTRACTOR_SYSTEM, bundle_dir / "prompts" / "partials",
+                predicates=stage_predicates(0, True))
         assert "nest" in str(excinfo.value).lower()
 
     def test_a_role_override_may_not_cite_the_engines_own_partial(
@@ -781,6 +848,81 @@ class TestAnOverrideMovesItsRolesFingerprint:
 
         assert _extractor(plain) == _extractor(copied)
         assert plain.prompts_hash != copied.prompts_hash
+
+
+class TestAnOverrideCountsWhenItsTextReachedAModel:
+    """The rule the config preimage is built on, in both directions.
+
+    An override is the author's own words and belongs to the config's identity
+    for exactly as long as those words were sent. A file this run composed
+    nowhere was no part of the question it asked, and a fingerprint that moved
+    for one would report two runs putting a single question as two.
+
+    A partial goes silent two ways, and the pair below is the second of them:
+    its stage is off (pinned above, under conditional composition), or the
+    bundle overrode the ROLE prompt that cites it, which replaces that role's
+    whole engine half and takes the citation with it.
+    """
+
+    PARTIAL_OVERRIDE = "A challenge is advisory: revise, or let it stand."
+
+    def _pair(self, tmp_path, config_dir, *, role_override):
+        """Two bundles differing only in an override of the cited partial.
+
+        `role_override` is written to BOTH when it is given, so the partial's
+        override is the whole of the difference between them either way.
+        """
+        plain = _copy_bundle(tmp_path / "plain", config_dir)
+        overriding = _copy_bundle(tmp_path / "overriding", config_dir)
+        if role_override is not None:
+            for bundle_dir in (plain, overriding):
+                _write_override(bundle_dir, "extractor", role_override)
+        _write_override(overriding, "extractor_checker_feedback",
+                        self.PARTIAL_OVERRIDE)
+        return plain, overriding
+
+    def _measure(self, bundle_dir):
+        """What the extractor read, and every value that claims to identify it.
+
+        The checker is on throughout (`pipeline.yaml` says
+        `max_checks_per_field: 2`), so no toggle is silencing anything here.
+        """
+        bundle = load_config_bundle(bundle_dir)
+        return {
+            "engine half": _engine_half(bundle),
+            "prompts_hash": bundle.prompts_hash,
+            "instrument_fp": bundle.instrument_fp,
+            "config preimage": build_config_prompt_text(
+                EXTRACTOR_SYSTEM,
+                system_prompt_path=bundle.extractor_system_path,
+                max_checks_per_field=2,
+                reference_lists=bundle.reference_lists),
+        }
+
+    def test_a_partial_a_role_override_silenced_is_not_this_runs_question(
+            self, tmp_path, config_dir):
+        # The role override is the whole engine half, so `extractor.md`'s
+        # citation is never read and the partial's own override is a file
+        # nothing composes. The two bundles send one model one message, and
+        # every number that names that message agrees.
+        plain, overriding = self._pair(
+            tmp_path, config_dir,
+            role_override="<brief>this review's own extraction brief</brief>")
+        measured = self._measure(overriding)
+        assert self.PARTIAL_OVERRIDE not in measured["engine half"]
+        assert measured == self._measure(plain)
+
+    def test_the_same_override_counts_where_the_role_is_the_engines(
+            self, tmp_path, config_dir):
+        # The other half of the pair, and what makes the first a rule rather
+        # than a hole: leave the role prompt to the engine and the citation is
+        # read, so the same file reaches the model and moves everything.
+        plain, overriding = self._pair(tmp_path, config_dir,
+                                       role_override=None)
+        before, after = self._measure(plain), self._measure(overriding)
+        assert self.PARTIAL_OVERRIDE in after["engine half"]
+        for name in before:
+            assert before[name] != after[name], name
 
 
 # ---------------------------------------------------------------------------
@@ -1019,6 +1161,44 @@ class TestTheBundleComposesNothingOfTheEngines:
         assert "{include:meltiro:extractor}" in message
 
 
+class TestABrokenDirectiveIsQuotedAsTheFileSpellsIt:
+    """An engine prompt is the one file whose directives the engine writes.
+
+    Its errors are engine bugs, and the message is read while looking at the
+    file: the fix is to find the placeholder and correct it. A message quoting
+    a shortened form — the cited name with its `meltiro:` qualifier dropped —
+    sends the reader searching for a string no file contains, and the search
+    comes back empty on a file that really is broken.
+    """
+
+    DIRECTIVE = "{include_if:chekcer:meltiro:extractor_checker_feedback}"
+
+    @pytest.fixture
+    def misspelt(self, engine_dir):
+        path = engine_dir / "extractor.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "{include_if:checker:", "{include_if:chekcer:"),
+            encoding="utf-8")
+        return path
+
+    def test_the_load_quotes_it_whole(self, misspelt, config_dir):
+        # The load asks what each role composes, so it evaluates the predicate
+        # before any prompt is rendered.
+        with pytest.raises(ConfigBundleError) as excinfo:
+            load_config_bundle(config_dir)
+        assert self.DIRECTIVE in str(excinfo.value)
+
+    def test_so_does_composing_the_prompt(self, misspelt, config_dir):
+        # And the composition evaluates it again to choose its branch, so the
+        # two messages have to agree with each other and with the file.
+        with pytest.raises(ConfigBundleError) as excinfo:
+            compose_engine_prompt(
+                EXTRACTOR_SYSTEM, config_dir / "prompts" / "partials",
+                predicates=PREDICATES)
+        assert self.DIRECTIVE in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # The fingerprint boundary
 # ---------------------------------------------------------------------------
@@ -1026,18 +1206,9 @@ class TestTheBundleComposesNothingOfTheEngines:
 class TestEditingAnEnginePrompt:
     """An engine edit moves the ENGINE axis and leaves the config axes alone.
 
-    The engine's copy is swapped for a writable one so the edit can be made
-    without touching the installed package; `engine_prompt_names` and the
-    resolution both read the directory at call time, so the substitution is
-    complete.
+    The edit is made against `engine_dir`, so it is a real one and the
+    installed package is left alone.
     """
-
-    @pytest.fixture
-    def engine_dir(self, tmp_path, monkeypatch):
-        dest = tmp_path / "engine_prompts"
-        shutil.copytree(prompt_partials.ENGINE_PROMPTS_DIR, dest)
-        monkeypatch.setattr(prompt_partials, "ENGINE_PROMPTS_DIR", dest)
-        return dest
 
     @pytest.fixture
     def bundle_dir(self, tmp_path, config_dir):

@@ -53,7 +53,10 @@ nothing.
 HASHING follows ownership. An override is hand-authored, so it belongs to the
 config's identity and rides in the config fingerprints, empty overrides
 included: excluding an engine prompt is a methodological choice and has to
-move them. An un-overridden engine prompt reaches no config preimage
+move them. It rides in them when its text reached a model this run, and an
+override that reached none moves nothing: a partial whose stage is off, or one
+whose role prompt the bundle overrode whole, is a file this run never composed.
+An un-overridden engine prompt reaches no config preimage
 (`config_prompt_preimage`); it moves `engine_fp` instead, through the source
 digest that hashes `engine_prompts/*.md` beside the package's modules (see
 `run_log.source_hash`). Which files compose at all is decided by the engine
@@ -236,18 +239,23 @@ def composed_engine_names(role, *, predicates):
     """Every engine prompt name `role` composes, in the order it reads them.
 
     The role's own file, then each partial it cites whose stage is on. Read
-    off the SHIPPED files, so which names compose is the engine's answer alone
-    and a bundle's overrides cannot change it — the same question the run's
-    structure toggles answer, and the reason a silenced partial's override is
-    not part of what this run asks (see `engine_override_pairs`).
+    off the SHIPPED files, so this is the engine's own answer about the shape
+    of a role's briefing — what a caller asking what the engine composes for a
+    role needs, whatever any bundle then says about the text
+    (`config_bundle._validate_checker_placeholders` picks each override's slot
+    allowlist by it, and the engine's own tests read it to show no shipped file
+    is unread).
+
+    Which of these names a bundle's override actually reaches is the narrower
+    question, and `engine_override_pairs` is where it is asked: a bundle that
+    overrides the ROLE prompt supplies that whole half itself, and the partial
+    cited by the file it replaced composes nowhere.
     """
     name = role_prompt_name(role)
     names = [name]
     for predicate, cited in engine_citations(_shipped_text(name)):
-        section = _unqualified(cited)
-        if predicate is None or _predicate_value(
-                predicate, section, predicates):
-            names.append(section)
+        if predicate is None or _predicate_value(predicate, cited, predicates):
+            names.append(_unqualified(cited))
     return names
 
 
@@ -331,9 +339,9 @@ def engine_override_entries(partials_dir):
     """Every entry name shipped in `prompts/partials/meltiro/`, sorted.
 
     A LISTING, not a probe: a case-insensitive filesystem answers
-    `Path("recording_notes.md").is_file()` for a file named
-    `Recording_Notes.md` and a case-sensitive one does not, so a check built on
-    probes reaches different verdicts on macOS and Linux for the same bundle.
+    `Path("extractor.md").is_file()` for a file named `Extractor.md` and a
+    case-sensitive one does not, so a check built on probes reaches different
+    verdicts on macOS and Linux for the same bundle.
     Each listed name is the name the filesystem actually holds, so the
     load-time enumeration in `config_bundle` compares like with like
     everywhere. Every entry is returned, directories and non-markdown included:
@@ -391,7 +399,9 @@ def compose_engine_prompt(role, partials_dir, *, predicates):
 
     An overridden role prompt renders literally, conditional citation and all:
     the bundle supplied the whole of that role's engine half, so there is
-    nothing of the engine's left to compose into it.
+    nothing of the engine's left to compose into it — and nothing for an
+    override of the partial it silenced to change, here or in the fingerprints
+    (`engine_override_pairs`).
 
     Slots (`{image_labels_list}`, `{max_checks_per_field}`) are left for the
     caller to fill, so this half and the bundle's appended text are filled by
@@ -405,6 +415,22 @@ def compose_engine_prompt(role, partials_dir, *, predicates):
         text, name, partials_dir, predicates=predicates)
 
 
+def _composing_engine_names(role, partials_dir, *, predicates):
+    """The engine prompt names whose text reaches a model for `role` this run.
+
+    `composed_engine_names` is the same question of the shipped files, and the
+    two agree wherever the bundle leaves the role prompt alone. Where it does
+    not, an override of a ROLE prompt is that role's whole engine half,
+    rendered literally: `compose_engine_prompt` returns it without reading the
+    citation the shipped file carries, so the partial that citation names
+    composes nowhere and the set is the role's own name alone.
+    """
+    name = role_prompt_name(role)
+    if engine_override_path(name, partials_dir).is_file():
+        return [name]
+    return composed_engine_names(role, predicates=predicates)
+
+
 def engine_override_pairs(role, partials_dir, *, predicates):
     """The bundle's overrides of `role`'s engine half, as sorted `[name,
     text]` pairs.
@@ -415,12 +441,18 @@ def engine_override_pairs(role, partials_dir, *, predicates):
     model is asked, so it has to move the fingerprints exactly as rewriting it
     would.
 
-    A partial whose stage is off is skipped whether or not the bundle
-    overrides it: it reaches no model this run, and the toggle that silenced
-    it already rides in `structure_hash`.
+    An override counts exactly when its text reached a model this run, so an
+    override of a partial that composed nowhere is skipped. There are two ways
+    a partial composes nowhere and both are here: its stage is off, and the
+    toggle that silenced it already rides in `structure_hash`; or the bundle
+    overrode the role prompt that cites it, and that override is the whole of
+    what the role read. A file no model was shown moved no word of what this
+    run asked, and a fingerprint that moved for it would report two runs
+    putting one question as two.
     """
     pairs = []
-    for name in composed_engine_names(role, predicates=predicates):
+    for name in _composing_engine_names(role, partials_dir,
+                                        predicates=predicates):
         override = engine_override_path(name, partials_dir)
         if override.is_file():
             pairs.append([name, override.read_text(encoding="utf-8").strip()])
@@ -511,6 +543,14 @@ def _read_partial(name, partials_dir, placeholder):
 
 
 def _predicate_value(predicate, name, predicates):
+    """Whether `predicate` is on, or a loud error naming the directive.
+
+    `name` is the cited name AS THE FILE SPELLS IT, `meltiro:` qualifier and
+    all, because the messages below quote the whole directive back and an
+    author fixing a typo searches their file for what they wrote. A caller
+    that has already unqualified the name would send them looking for a
+    placeholder no file contains.
+    """
     if predicate not in PREDICATE_NAMES:
         raise ConfigBundleError(
             [f"prompt cites unknown include predicate '{predicate}' via "
@@ -559,7 +599,7 @@ def _expand_engine_citations(text, where, partials_dir, *, predicates):
     def _conditional(match, *, standalone):
         predicate, name = match.group(1), match.group(2)
         content = resolve(name, f"{{include_if:{predicate}:{name}}}")
-        if not _predicate_value(predicate, _unqualified(name), predicates):
+        if not _predicate_value(predicate, name, predicates):
             return ""
         if standalone:
             return f"{content}\n\n" if content else ""

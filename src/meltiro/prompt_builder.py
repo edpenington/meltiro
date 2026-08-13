@@ -395,10 +395,11 @@ def build_review_system_message(image_labels, *,
     The reviewer's engine prompt is its own: it frames the model as the reader
     of an already-completed extraction, where the extractor's frames the
     writer of one. The same image labels are rendered in, with the exhibit
-    captions beside them exactly as the extractor saw them; the field catalogue reaches
-    it through the tool `input_schema`s, as it does the extractor.
-    `{reference:NAME}` placeholders are substituted; the tool-call cap
-    placeholders are rejected at config-load time (see `build_system_message`).
+    captions beside them exactly as the extractor saw them; the field
+    catalogue reaches it through the tool `input_schema`s, as it does the
+    extractor. `{reference:NAME}` placeholders are substituted; the tool-call
+    cap placeholders are rejected at config-load time (see
+    `build_system_message`).
     """
     predicates = stage_predicates(max_checks_per_field, final_review)
     slots = dict(reference_lists=reference_lists, image_labels=image_labels,

@@ -254,9 +254,9 @@ class Instrument:
         """The config-owned identity of the reviewer's system prompt.
 
         Mirrors `extractor_prompt_hash`: paper-independent (no image labels
-        reach it) and engine-free, so an engine release that rewords a
-        reviewer section leaves `review_fp` where it was and a bundle's own
-        edit moves it.
+        reach it) and engine-free, so an engine release that rewords the
+        reviewer's engine prompt leaves `review_fp` where it was and a
+        bundle's own edit moves it.
         """
         return build_config_prompt_text(
             REVIEW_SYSTEM,
@@ -274,7 +274,7 @@ class Instrument:
         The review system prompt component is the CONFIG's half, rendered with
         an EMPTY image-label list (mirroring `extractor_prompt_hash`) so two
         papers under one config share the fingerprint and the engine's own
-        sections ride in `engine_fp` rather than here; reference-list
+        prompts ride in `engine_fp` rather than here; reference-list
         substitution still applies, so editing a canonical name moves it. The
         reference-list CONTENT hash rides beside it for the part no prompt
         carries: aliases are rendered nowhere, yet they change what the
@@ -323,7 +323,7 @@ class Instrument:
     def render_checker_user_scaffold(self):
         """The per-field scaffold every check of this run is rendered from.
 
-        The engine's `checker_user` section or the bundle's override of it,
+        The engine's `checker_user` prompt or the bundle's override of it,
         with its reference lists rendered in and its per-field slots left as
         the tokens they are: the text an author overrides, shown as itself.
         Captured beside the three system prompts so a session records the

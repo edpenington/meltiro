@@ -170,7 +170,7 @@ def source_hash():
     package's source cannot be read, as for a frozen or zipimported copy.
 
     Source here is the modules AND `engine_prompts/*.md` (see `_SOURCE_GLOBS`):
-    the engine's prompt sections are engine prose that reaches no config
+    the engine's own prompts are engine prose that reaches no config
     fingerprint, so this digest is the only thing that names them.
 
     direktoro's own `source_hash()` is the same function over that package

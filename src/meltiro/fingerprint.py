@@ -422,8 +422,8 @@ def instrument_fingerprint(prompts_hash, template_hash,
     description is part of the question — but it means `instrument_fp` is not
     a pure config identity, and two runs of one bundle under engine versions
     whose tool prose differs record different values. The engine's OTHER prose
-    — the framing around the bundle's prompts, and every engine prompt section
-    the bundle leaves as the engine wrote it — is not here and rides in
+    — the framing around the bundle's prompts, and every engine prompt the
+    bundle leaves as the engine wrote it — is not here and rides in
     `engine_fingerprint`.
 
     `prompts_hash` covers the three prompt files with `{include:NAME}`

@@ -302,7 +302,7 @@ class CheckerConfig:
             build_checker_config_text, checker_user_config_text)
         # Both components carry the CONFIG's half of their prompt: the
         # bundle's own text and its overrides of the checker's engine
-        # sections. Rewording an un-overridden section moves engine_fp and
+        # prompts. Rewording an un-overridden one moves engine_fp and
         # leaves every bundle's checker_fp where it was; an override is the
         # bundle's own text and hashes as such.
         system_text = build_checker_config_text(

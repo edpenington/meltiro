@@ -67,6 +67,7 @@ from meltiro.prompt_partials import (
     composed_engine_names,
     engine_citation_message,
     engine_cited_names,
+    engine_override_dir,
     engine_override_entries,
     engine_override_path,
     engine_prompt_names,
@@ -294,8 +295,8 @@ def load_config_bundle(path):
                     checker_system_path]
 
     # The override directory first: a file sitting there under a name no
-    # section has overrides nothing, and every check below would pass a bundle
-    # whose author believes it does.
+    # engine prompt has overrides nothing, and every check below would pass a
+    # bundle whose author believes it does.
     _validate_engine_overrides(partials_dir, root)
 
     # Then what the prompts directory holds and what its prompts say, reported
@@ -371,9 +372,10 @@ def _compute_prompts_hash(prompt_paths, partials_dir, predicates):
     An un-overridden engine prompt contributes nothing. Its text is the
     engine's, so it moves `engine_fp` and no config fingerprint, and every
     bundle's `prompts_hash` holds across a release that rewords it. The
-    consequence is intended: two bundles reading identically to a model, one on the engine's
-    wording and one overriding it with byte-identical text, hash differently —
-    one is pinned to the engine's copy and the other to its own.
+    consequence is intended: two bundles reading identically to a model, one
+    on the engine's wording and one overriding it with byte-identical text,
+    hash differently — one is pinned to the engine's copy and the other to
+    its own.
     """
     payload = {"prompts": {}, "engine_overrides": all_engine_override_pairs(
         partials_dir, predicates=predicates)}
@@ -472,30 +474,43 @@ def _validate_engine_overrides(partials_dir, root):
     """Fail loudly if `prompts/partials/meltiro/` holds anything that is not
     an override of a prompt the engine ships.
 
-    An override is read from exactly one path, `<name>.md`, so a file named
-    anything else — `extracter.md`, `Extractor.md`, `house_style.md`,
-    `extractor.txt` — is inert: the prompt it was written to replace still
-    renders the engine's own words, and the run behaves as though the file
-    were not there. Enumerating the directory turns that silence into a load
-    error naming the prompts that exist.
+    An override is one FILE read from exactly one path, `<name>.md`, so an
+    entry that is anything else — `extracter.md`, `Extractor.md`,
+    `house_style.md`, `extractor.txt`, or a DIRECTORY called `extractor.md` —
+    is inert: the prompt it was written to replace still renders the engine's
+    own words, and the run behaves as though the entry were not there.
+    Enumerating the directory turns that silence into a load error: an entry
+    whose name matches no prompt is told which prompts exist, and one whose
+    name matches a prompt is told that an override is a file.
 
     The names come from a directory LISTING and the comparison is
     case-sensitive (see `prompt_partials.engine_override_entries`), so a
     case-insensitive filesystem cannot make a bundle load on macOS and fail on
-    Linux, or the reverse.
+    Linux, or the reverse. Each entry's `is_file()` is then asked of the name
+    the listing gave back, which is the name the filesystem holds, so that
+    question is not a probe under a spelling of the caller's own.
     """
     known = engine_prompt_names()
     expected = {f"{name}.md" for name in known}
+    override_dir = engine_override_dir(partials_dir)
     problems = []
     for entry in engine_override_entries(partials_dir):
-        if entry in expected:
-            continue
-        problems.append(
-            f"prompts/partials/{ENGINE_NAMESPACE}/{entry} overrides no engine "
-            f"prompt. An override is read from '<name>.md' with the name "
-            f"spelled exactly as the engine ships it, and the engine's "
-            f"prompts are {list(known)}. Rename the file, or move it out of "
-            f"{ENGINE_NAMESPACE}/ to make it a partial of your own.")
+        if entry not in expected:
+            problems.append(
+                f"prompts/partials/{ENGINE_NAMESPACE}/{entry} overrides no "
+                f"engine prompt. An override is read from '<name>.md' with "
+                f"the name spelled exactly as the engine ships it, and the "
+                f"engine's prompts are {list(known)}. Rename the file, or "
+                f"move it out of {ENGINE_NAMESPACE}/ to make it a partial of "
+                f"your own.")
+        elif not (override_dir / entry).is_file():
+            problems.append(
+                f"prompts/partials/{ENGINE_NAMESPACE}/{entry} is not a file. "
+                f"An override of engine prompt '{Path(entry).stem}' is a "
+                f"single markdown file holding the text to send in its place; "
+                f"under this name the engine reads nothing, and the prompt "
+                f"renders the engine's own words. Replace the entry with a "
+                f"file, or move it out of {ENGINE_NAMESPACE}/.")
     if problems:
         raise ConfigBundleError(problems, path=root)
 

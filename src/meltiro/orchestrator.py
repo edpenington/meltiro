@@ -3493,7 +3493,7 @@ class Orchestrator:
                 # The run's one predicate map, from the instrument that owns
                 # the structure toggles, so this per-field scaffold and the
                 # checker system prompt cached beside it resolve their
-                # conditional sections the same way, and checker_fp covers the
+                # conditional partials the same way, and checker_fp covers the
                 # text that was actually sent.
                 predicates=self.instrument.predicates(),
                 # The same lists rendered into the three system prompts, so a

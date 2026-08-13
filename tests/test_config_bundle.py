@@ -477,7 +477,7 @@ class TestCheckerUserPlaceholderAllowlist:
     survives into the prompt as literal text and the checker reads
     `{field_pat}` where the field path should be. That silent failure is
     hoisted to config-load time, over the one copy of that scaffold a bundle
-    can write: its override of the engine's `checker_user` section."""
+    can write: its override of the engine's `checker_user` prompt."""
 
     def _rewrite(self, config, text):
         path = config / "prompts" / "partials" / "meltiro"
