@@ -284,7 +284,8 @@ What the format leaves to you, this pipeline then leans on:
   arrives in the message under that label, the paper's caption for it, and the
   exhibit's own printed footnote where the manifest records one. **No check
   reads the image.** A crop that clips its header row, or catches the wrong
-  table, satisfies every check here; looking at the crops stays a human job.
+  table, satisfies every check the format makes; looking at the crops stays a
+  human job.
   Nor can any check know the paper contains a table nobody cropped — that
   question goes to the Extractor, which reads the paper.
 - `summary` is what the Checker is shown as the paper's short identity. Without
@@ -331,10 +332,10 @@ prompts can be overwritten as part of config.
 Each role's system message opens with the engine's prompt for that role, and
 your prompt file for that role is appended after it. The engine's prompt wraps
 itself in a tag naming the role it briefs — `<extractor>`, `<reviewer>`,
-`<checker>` — so closing that tag is what marks the handover to your text. Your
-file supplies the
-review: its scope and criteria, what counts as one record, what each field
-means. Two of the files below are conditional on the run's structure, and are
+`<checker>` — so closing that tag is what marks the handover to your text, and
+a bundle that overrides a role's engine prompt supplies that whole half and
+marks it as it pleases. Your file supplies the review: its scope and criteria,
+what counts as one record, what each field means. Two of the files below are conditional on the run's structure, and are
 left out entirely when their stage is switched off. `checker_user.md` is the
 one that is not a system prompt: it is the scaffold each per-field checker
 message is rendered from, and the Checker's own system message is `checker.md`.
@@ -664,8 +665,8 @@ fetch them for you:
 
 ```bash
 pip install --no-deps "meltiro @ git+https://github.com/edpenington/meltiro"
-pip install "alteksto @ git+https://github.com/edpenington/alteksto"
-pip install pyyaml          # both needed by `import meltiro` itself
+pip install "alteksto @ git+https://github.com/edpenington/alteksto"  # needed by
+pip install pyyaml                                                    # the import
 pip install python-dotenv   # needed by the CLI only; omit for library use
 ```
 

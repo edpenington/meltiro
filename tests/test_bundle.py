@@ -16,6 +16,7 @@ the run puts in front of a model.
 import dataclasses
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 from alteksto.bundle import validate_bundle
@@ -112,6 +113,17 @@ class TestLoadBundle:
         assert set(b.exhibits) == {"table_01"}
         assert b.exhibits["table_01"].startswith("Table 1.")
         assert b.exhibit_notes["table_01"].startswith("CI, confidence")
+
+    def test_the_notes_map_is_the_one_field_with_a_default(self):
+        # `PaperBundle` is on the library surface, so a consumer constructs
+        # one: a test fake, a fixture, a bundle assembled in memory. A
+        # footnote map every such caller has to pass would make "this paper's
+        # exhibits print nothing" a thing you must say rather than a thing
+        # that is simply true.
+        bundle = PaperBundle(
+            root=Path("/nowhere"), study_id="x", title="T", doi=None,
+            summary=None, text="Methods.", figures={}, exhibits={})
+        assert bundle.exhibit_notes == {}
 
     def test_frozen(self, bundle_minimal_dir):
         b = load_bundle(bundle_minimal_dir)

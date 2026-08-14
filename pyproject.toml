@@ -38,19 +38,19 @@ classifiers = [
 ]
 dependencies = [
     # The paper bundle format: the specification of what a run is given, and
-    # the validator that enforces it. meltiro reads bundles and does not
-    # define them, so the definition is imported rather than restated —
-    # `load_bundle` refuses behind `alteksto.bundle.validate_bundle`, and what
-    # this package accepts is that specification by construction rather than a
-    # second implementation that agrees for now. Anyone building a bundle
-    # builds to alteksto, which is also where a bundle is produced from a PDF.
+    # the code that enforces it. meltiro reads bundles and does not define
+    # them, so the definition is imported: `load_bundle` refuses behind
+    # `alteksto.bundle.validate_bundle` and enumerates `figures/` through
+    # `alteksto.bundle.figure_files`, so what this package accepts, and what
+    # it then reads off the directory, are that specification's answers.
+    # Anyone building a bundle builds to alteksto, which is also where a
+    # bundle is produced from a PDF.
     #
-    # The floor is where the format's own version 2 landed (the exhibit
-    # `notes` field, which a run puts in front of every model that reads the
-    # exhibit) and where the page stack moved behind an extra, so this
-    # dependency weighs what the contract weighs: `alteksto.bundle` imports
-    # the standard library and nothing else. An older install validates
-    # against the wrong schema version and rejects every current bundle.
+    # The floor is where `figure_files` arrives, and where the page stack
+    # moved behind an extra so that this dependency weighs what the contract
+    # weighs: `alteksto.bundle` imports the standard library and nothing
+    # else. An install below it lacks the enumeration `load_bundle` calls,
+    # and drags a PDF library into every environment that only reads bundles.
     "alteksto>=0.2.0",
     # The shared provider layer: adapters, model registry, cost arithmetic —
     # and, since meltiro builds no provider client of its own, the package that

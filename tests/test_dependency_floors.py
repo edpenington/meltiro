@@ -35,10 +35,11 @@ folds in, so an install below the floor does not merely compute different
 numbers — it raises on the call meltiro makes.
 
 alteksto carries one for the same reason on the input side: it owns the paper
-bundle format, and the version it validates against is the version a bundle
-has to be built to. Beside it sits the other half of that ownership — that
-this package restates no rule of the format anywhere, so there is no second
-copy to drift from the one that decides.
+bundle format, and `load_bundle` calls into it both for the verdict on a
+bundle and for the enumeration of what the bundle's `figures/` holds. Beside
+it sits the other half of that ownership — that the loader restates no rule of
+the format itself, so there is no second copy to drift from the one that
+decides.
 
 Offline: signature inspection and file reads only, no client, no network.
 """
@@ -212,32 +213,45 @@ def test_meltiro_declares_neither_sdk():
 
 
 def test_installed_alteksto_satisfies_the_declared_floor():
-    # The package that owns the paper bundle format. Its floor is a FORMAT
-    # floor: `alteksto.bundle.SCHEMA_VERSION` is the version a bundle must
-    # declare, so an install below the floor rejects every bundle built to the
-    # current specification, before any spend and with a message about a
-    # schema version rather than about a stale install.
+    # The package that owns the paper bundle format. Its floor buys two
+    # things: `figure_files`, which `load_bundle` calls to enumerate the
+    # crops, and the packaging split that lets this dependency weigh what the
+    # format contract weighs. Below the floor the call is missing outright,
+    # which is why it is checked against the version actually resolved rather
+    # than assumed from the declaration.
     import alteksto
+    from alteksto.bundle import figure_files, validate_bundle  # noqa: F401
 
     floor = _declared_floor(
         _meltiro_requirements(), "alteksto", "meltiro's pyproject.toml")
     assert _version_tuple(alteksto.__version__) >= _version_tuple(floor), (
         f"alteksto {alteksto.__version__} is below meltiro's declared floor "
-        f"of {floor}; the bundle format it validates is not the one this "
-        f"release consumes")
+        f"of {floor}; the enumeration `load_bundle` calls is not there")
 
 
-def test_meltiro_states_no_rule_of_the_bundle_format_itself():
-    # The format is declared, not copied. A schema version, a manifest key set
-    # or a label pattern restated in this package would be a second
-    # implementation of someone else's specification: it can only drift, and
-    # the drift would show up as a bundle one package accepts and the other
-    # refuses.
+def test_the_loader_states_no_rule_of_the_bundle_format():
+    # The format is declared, not copied. A schema version, a manifest key
+    # set, a label pattern or a rule about which files under `figures/` are
+    # exhibits, restated in this package, would be a second implementation of
+    # someone else's specification: it can only drift, and the drift would
+    # show up as a bundle one package accepts and the other reads differently.
+    #
+    # Read off the source rather than the behaviour, because the two agree
+    # today for a reason that hides divergence: validation runs first and
+    # rejects the cases they would disagree about.
     src_dir = REPO_ROOT / "src" / "meltiro"
-    offenders = [path.name for path in sorted(src_dir.glob("*.py"))
+    versioned = [path.name for path in sorted(src_dir.glob("*.py"))
                  if "SCHEMA_VERSION" in path.read_text(encoding="utf-8")]
-    assert offenders == [], (
-        f"{offenders} name a bundle schema version; alteksto declares it")
+    assert versioned == [], (
+        f"{versioned} name a bundle schema version; alteksto declares it")
+
+    from meltiro.bundle import load_bundle
+
+    loader = inspect.getsource(load_bundle)
+    for rule in (".png", "startswith(\".\")", "is_dir()"):
+        assert rule not in loader, (
+            f"load_bundle names {rule!r}, which is the format's rule about "
+            f"what a crop is; alteksto.bundle.figure_files answers that")
 
 
 def test_installed_direktoro_satisfies_the_declared_floor():

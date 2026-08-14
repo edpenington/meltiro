@@ -7,7 +7,7 @@ The note is where the extractor records whatever justifies or explains the value
 
 A verbatim quote is shown first as a quoted block, then again inside the paper's own surrounding text with the quoted span marked. An image reference arrives as the cropped exhibit itself, attached to this message.
 
-The surrounding text is there to settle what a quote means, so that the selection of the quote itself is not misleading. An image reference has no position in the text and so has no surrounding-text window, and needs none: the exhibit arrives entire and the checker reads the cell in its own table. Where the study manifest records the footnote printed under that exhibit, it arrives as text under the label as well. The crop carries the same words in its smallest print, so this adds nothing to what the checker was given; it makes the exhibit's own qualifications legible.
+The surrounding text is there to settle what a quote means, so that the selection of the quote itself is not misleading. An image reference has no position in the text and so has no surrounding-text window, and needs none: the exhibit arrives entire and the checker reads the cell in its own table. Where the study manifest records the footnote printed under that exhibit, it arrives as text under the label as well. The footnote is normally printed on the crop too, in the smallest print on it, so this is the exhibit's own qualifications made legible rather than context from outside the exhibit.
 
 The checker carefully considers this material and answers one question: does the provided evidence, read in its context in the paper, support the extracted value?
 

@@ -16,6 +16,7 @@ fixture, hermetic and shaped like a text-only GLM chat endpoint
 
 import dataclasses
 import json
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +27,7 @@ from meltiro.config_bundle import load_config_bundle
 from meltiro.extraction_record import ExtractionRecord
 from meltiro.fingerprint import structure_hash
 from meltiro.orchestrator import Orchestrator
-from meltiro.prompt_builder import NO_EXHIBITS_NOTICE
+from meltiro.prompt_builder import NO_EXHIBITS_NOTICE, image_label_text
 from direktoro.registry import (
     MODEL_REGISTRY, Model, PROVIDER_OPENAI, WIRE_CHAT_COMPLETIONS,
     known_models, model_info, model_supports_images)
@@ -488,3 +489,100 @@ class TestReviewCapability:
                      review_model=TEXT_ONLY_MODEL)
         orch.prepare_new_session()
         assert orch.session.meta["images_omitted"] == {"review": True}
+
+
+# ---------------------------------------------------------------------------
+# The dry run previews the message, not the bundle
+# ---------------------------------------------------------------------------
+
+def _mixed_case_label_bundle(tmp_path, bundle_minimal_dir):
+    """A copy of the fixture whose exhibit label carries a capital.
+
+    The format's label rule admits one (`^[A-Za-z0-9._-]+$`), and a capital is
+    the shape that tells a preview built from the message apart from one built
+    from the dispatcher's normalised label set.
+    """
+    root = tmp_path / "mixed"
+    shutil.copytree(bundle_minimal_dir, root)
+    # Unlink before writing: a case-insensitive filesystem (macOS by default)
+    # treats the two names as one file, so writing first would delete what was
+    # just written.
+    crop = (root / "figures" / "table_01.png").read_bytes()
+    (root / "figures" / "table_01.png").unlink()
+    (root / "figures" / "Table_01.png").write_bytes(crop)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["exhibits"][0]["label"] = "Table_01"
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+class TestTheDryRunPreviewIsTheMessage:
+    """`attached_exhibits` is a preview of the extractor's user message, so it
+    is built from that message's own figure sequence.
+
+    The normalised label set is the dispatcher's, lower-cased and covering the
+    whole bundle. A preview built from it would differ from the message in two
+    ways at once, and each is reachable from a valid bundle: a label the paper
+    capitalised, and a role that was sent no images at all.
+    """
+
+    def _preview(self, orch, tmp_path):
+        orch.dry_run_report(tmp_path / "report")
+        return (tmp_path / "report" / "attached_exhibits.txt").read_text(
+            encoding="utf-8")
+
+    def _message_label_blocks(self, orch):
+        figures, _ = orch._extractor_image_inputs()
+        return [image_label_text(label, orch.image_captions, orch.image_notes)
+                for label, _ in figures]
+
+    def test_it_spells_a_label_the_way_the_message_does(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        bundle_dir = _mixed_case_label_bundle(tmp_path, bundle_minimal_dir)
+        orch = _orch(config_dir, bundle_dir, tmp_path / "runs",
+                     extractor_model="claude-opus-4-7")
+        preview = self._preview(orch, tmp_path)
+        capsys.readouterr()
+        assert "[Table_01]" in preview
+        assert "[table_01]" not in preview
+        for block in self._message_label_blocks(orch):
+            assert block in preview
+
+    def test_a_text_only_extractor_previews_no_exhibits(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # Its message states that none accompany the study, so a preview
+        # listing the bundle's crops would contradict the message and the
+        # `images_omitted` flag in the same report.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     extractor_model=TEXT_ONLY_MODEL)
+        preview = self._preview(orch, tmp_path)
+        capsys.readouterr()
+        assert preview == ""
+        assert self._message_label_blocks(orch) == []
+
+    def test_an_exhibit_with_a_footnote_is_still_one_entry(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # Two exhibits, the first of which prints a footnote and so runs to
+        # two lines. Separated by a blank line, the file still reads as two
+        # exhibits; separated by a newline alone, the footnote would read as a
+        # third — which is the whole reason the separator is not "\n".
+        root = tmp_path / "two"
+        shutil.copytree(bundle_minimal_dir, root)
+        (root / "figures" / "figure_02.png").write_bytes(
+            (root / "figures" / "table_01.png").read_bytes())
+        manifest = json.loads(
+            (root / "manifest.json").read_text(encoding="utf-8"))
+        manifest["exhibits"].append(
+            {"label": "figure_02", "caption": "Figure 2. Fleet flow"})
+        (root / "manifest.json").write_text(json.dumps(manifest),
+                                            encoding="utf-8")
+
+        orch = _orch(config_dir, root, tmp_path / "runs",
+                     extractor_model="claude-opus-4-7")
+        preview = self._preview(orch, tmp_path)
+        capsys.readouterr()
+        entries = [e for e in preview.split("\n\n") if e.strip()]
+        assert len(entries) == 2
+        by_label = {e.split("]")[0] + "]": e for e in entries}
+        assert "\nFootnote: CI, confidence" in by_label["[table_01]"]
+        assert by_label["[figure_02]"] == "[figure_02] Figure 2. Fleet flow"

@@ -1052,12 +1052,21 @@ class Orchestrator:
         tool_catalogue = self.instrument.tool_catalogue()
         # The exhibits as the extractor's user message will label them: the
         # label it must cite, the paper's caption beside it, and the exhibit's
-        # printed footnote under that where the manifest records one. Rendered
-        # through the message builders' own helper, so the preview cannot say
-        # one thing and the message another.
+        # printed footnote under that where the manifest records one.
+        #
+        # Built from the extractor's effective FIGURE SEQUENCE and rendered
+        # through the message builders' own helper, on the same terms as the
+        # capture in `_render_user_prompt_text`, so the preview cannot say one
+        # thing and the message another. The normalised label set beside it
+        # would say two: it is lower-cased, so a manifest label carrying a
+        # capital previews a label no message ever sends, and it is sorted on
+        # that lower-cased form; and it is the whole bundle's, so a text-only
+        # extractor would preview crops its message states do not accompany
+        # the study.
+        ext_figures, _ = self._extractor_image_inputs()
         attached_exhibits = [image_label_text(label, self.image_captions,
                                               self.image_notes)
-                             for label in sorted(self.image_labels)]
+                             for label, _ in ext_figures]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -1346,8 +1355,11 @@ class Orchestrator:
                 self.system_text, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
+            # One blank line between exhibits, because an entry runs to two
+            # lines when the manifest records a footnote: separated only by a
+            # newline, a footnote would read as an exhibit of its own.
             (tmp_dir / "attached_exhibits.txt").write_text(
-                "".join(f"{line}\n" for line in attached_exhibits),
+                "".join(f"{entry}\n\n" for entry in attached_exhibits),
                 encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",
@@ -2387,8 +2399,10 @@ class Orchestrator:
         texts are the half a label alone cannot supply: `table_02` says which
         crop was cited and nothing about which table it is or what its small
         print qualified, and no other capture holds the manifest's wording once
-        the bundle directory has moved on. A crop the manifest gave neither
-        for records a null, which is a different fact from an empty one.
+        the bundle directory has moved on. A crop the manifest gave neither of
+        records a null in each, which is a different fact from an empty string
+        — and, for the footnote, one the reader of a transcript is told apart
+        from a session that recorded no footnotes at all.
 
         Empty for a bundle carrying no crops and for a text-only extractor
         alike; `meta.images_omitted` is what tells those two apart.

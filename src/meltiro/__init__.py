@@ -13,11 +13,11 @@ Grouped by what they do:
   - Config bundle: `load_config_bundle` and the frozen `ConfigBundle` it
     returns (carrying the content fingerprints a consumer pins).
   - Paper bundle: `load_bundle` and the frozen `PaperBundle` it returns. The
-    format itself belongs to `alteksto`, a declared dependency of this one:
-    it specifies what a bundle is, validates one, and is where a bundle is
-    built. A consumer wanting the verdict without the loading imports
-    `alteksto.bundle.validate_bundle` from there, which is the same call
-    `load_bundle` refuses behind.
+    format itself belongs to `alteksto`, a declared dependency of this
+    package: it specifies what a bundle is, validates one, and is where a
+    bundle is built. A consumer wanting the verdict without the loading
+    imports `alteksto.bundle.validate_bundle` from there, which is the same
+    call `load_bundle` refuses behind.
   - Run statuses: the `RUN_STATUSES` vocabulary plus the `TERMINAL_STATUSES`
     and `VALIDATED_STATUSES` subsets.
 

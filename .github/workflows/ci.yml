@@ -36,11 +36,14 @@ jobs:
 
       # Two public sister packages: a plain install each, no deploy key and no
       # repository secret. alteksto owns the paper bundle format meltiro
-      # reads; direktoro is the provider layer. Neither is pinned to a tag
-      # here — a stranger's install takes whatever each is current, held only
-      # by the floors in pyproject.toml, and CI should test that same thing.
-      # Once they are on PyPI this whole step can be deleted: the editable
-      # install below resolves both names on its own.
+      # reads; direktoro is the provider layer. Neither is on an index, so
+      # both are named by repository and resolve to whatever their default
+      # branch currently holds, which is also what a stranger's install gets.
+      # The floors in pyproject.toml then hold that: a sister package whose
+      # main is below its floor fails the install below rather than testing
+      # green against a version this release cannot use. Once they are on
+      # PyPI this whole step can be deleted: the editable install below
+      # resolves both names on its own.
       - name: Install the sister packages (alteksto, direktoro)
         run: |
           pip install "alteksto @ git+https://github.com/edpenington/alteksto"
@@ -104,7 +107,10 @@ jobs:
         run: |
           python - <<'PY'
           import importlib.util as u
-          for absent in ("direktoro", "anthropic", "openai"):
+          # pymupdf is in this list for the sentence above it: alteksto brings
+          # nothing with it only while its page stack sits behind an extra, and
+          # this is the one job in a position to notice it stopping.
+          for absent in ("direktoro", "anthropic", "openai", "pymupdf"):
               assert u.find_spec(absent) is None, f"{absent} unexpectedly installed"
           import sys
           import meltiro
@@ -161,6 +167,7 @@ jobs:
         # than run off pytest's `pythonpath` alone: a bare `pytest` there fails
         # 4 tests with "No module named 'meltiro'" in the child process.
         run: |
+          pip install "alteksto @ git+https://github.com/edpenington/alteksto"
           pip install "direktoro @ git+https://github.com/edpenington/direktoro"
           mkdir -p "$RUNNER_TEMP/sdist"
           tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist" --strip-components=1

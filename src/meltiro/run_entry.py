@@ -7,7 +7,7 @@ when relevant.
 """
 
 from meltiro import __version__
-from meltiro.run_log import append_run, direktoro_version
+from meltiro.run_log import alteksto_version, append_run, direktoro_version
 
 
 def build_entry(session, *, input_tokens=0, output_tokens=0,
@@ -123,9 +123,12 @@ def build_entry(session, *, input_tokens=0, output_tokens=0,
         # The readable half of the engine identity, next to the git anchor
         # `append_run` adds below it; `engine_fp` above is the value that
         # identifies the code. `direktoro_version` is null only when the
-        # package is absent (an install that places no calls at all).
+        # package is absent (an install that places no calls at all), and
+        # `alteksto_version` names what admitted the paper this row is about,
+        # which no fingerprint here carries.
         "meltiro_version": __version__,
         "direktoro_version": direktoro_version(),
+        "alteksto_version": alteksto_version(),
     }
 
 

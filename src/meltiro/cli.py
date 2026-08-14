@@ -32,7 +32,7 @@ non-zero if any bundle is invalid. The paper bundle format belongs to
 *alteksto* (github.com/edpenington/alteksto), which specifies it, produces
 bundles to it and supplies the verdict printed here; this subcommand is where
 an operator holding a bundle asks the question without leaving the tool that
-will consume the answer.
+will consume the bundle.
 
 `render-template` renders the config bundle's extraction template as a
 human-readable Markdown document, in the operational or publication view, to

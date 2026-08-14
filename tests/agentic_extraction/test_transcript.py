@@ -572,6 +572,34 @@ class TestItReadsStartToFinish:
         for note in recorded_notes:
             assert note in figures
 
+    def test_2_6_tells_no_footnote_apart_from_no_footnotes_recorded(
+            self, session):
+        """A footnote is optional in the format, so its absence has two
+        readings and the cell has to give the right one: an exhibit the paper
+        printed no footnote under is not a session that recorded none.
+        """
+        path = session.session.instrument_dir / "image_labels.json"
+        exhibits = json.loads(path.read_text())
+
+        # Recorded, and null: the paper printed no footnote under this crop.
+        path.write_text(json.dumps([dict(e, notes=None) for e in exhibits]),
+                        encoding="utf-8")
+        figures = _between(render_transcript(session.session.session_dir),
+                           "### 2.6 The figures",
+                           "### 2.7 The checker's per-field scaffold")
+        assert "*(none printed)*" in figures
+        assert "*(not recorded)*" not in figures
+
+        # The key absent altogether: a session that kept no footnotes at all.
+        path.write_text(json.dumps([{k: v for k, v in e.items()
+                                     if k != "notes"} for e in exhibits]),
+                        encoding="utf-8")
+        figures = _between(render_transcript(session.session.session_dir),
+                           "### 2.6 The figures",
+                           "### 2.7 The checker's per-field scaffold")
+        assert "*(not recorded)*" in figures
+        assert "*(none printed)*" not in figures
+
     def test_2_6_reads_an_exhibits_record_that_carries_labels_alone(
             self, session):
         """The section's tolerance, matching the rest of the document's: an

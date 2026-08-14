@@ -6,22 +6,22 @@ them. Papers are copyrighted, so they are NEVER shipped with the code; a
 run is handed one at the moment it starts.
 
     my-paper/
-      manifest.json    (required)  identity and the exhibit declaration
-      text.md          (required)  the paper's full text as markdown, UTF-8
-      figures/         (optional)  cropped tables and figures, *.png only
+      manifest.json    identity and the exhibit declaration
+      text.md          the paper's full text as markdown
+      figures/         cropped tables and figures
 
 The format belongs to *alteksto* (github.com/edpenington/alteksto), which
-specifies it in `docs/bundle.md`, produces bundles to it, and enforces it.
-`alteksto.bundle.validate_bundle` is the verdict `load_bundle` refuses
-behind, so what this package accepts and what that specification describes
-are one set by construction rather than two implementations that agree
-today. Anyone assembling a bundle, from a PDF or by hand, builds to it.
+specifies it in `docs/bundle.md`, produces bundles to it, and enforces it —
+which of those three entries is required, what may sit in each, and what
+the manifest holds are all read there. `alteksto.bundle.validate_bundle` is
+the verdict `load_bundle` refuses behind, so what this package accepts is
+that specification by construction. Anyone assembling a bundle, from a PDF
+or by hand, builds to it.
 
 What this module adds is what a valid bundle MEANS to a run:
 
-  - `id` names the session directory (`{out}/{study_id}/...`), which is why
-    the format restricts it to filename-safe characters with at least one
-    alphanumeric among them.
+  - `id` names the session directory (`{out}/{study_id}/...`), which is what
+    the format's constraint on it is for: it is a path component here.
   - `text.md` is the whole text the models are shown, and the authority
     every `<q>` quote in the evidence is checked against, verbatim and
     markdown syntax included (`quote_check.py`).
@@ -30,9 +30,10 @@ What this module adds is what a valid bundle MEANS to a run:
     filename stem already IS the citation.
   - an exhibit's `caption` introduces its crop in the message, so a model
     reading `[table_01]` can tell which exhibit it is looking at, and its
-    `notes` (the footnote the paper prints under the exhibit, which the
-    crop carries as pixels and `text.md` does not carry at all) follows the
-    caption as text, so small print does not have to be read off the image.
+    `notes` (the footnote the paper prints under the exhibit, which the crop
+    normally carries as pixels and `text.md` does not carry at all) follows
+    the caption as text, so small print does not have to be read off the
+    image.
   - `summary` is the CHECKER's identity context for study-level fields (the
     checker never reads the paper). For a published paper that is the
     abstract; for grey literature an executive summary or a couple of
@@ -60,7 +61,7 @@ the first.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from alteksto import bundle as paper_bundle_format
@@ -86,7 +87,9 @@ class PaperBundle:
     # one. A separate map rather than a richer `exhibits` value: an exhibit
     # without a footnote is simply absent here, so a caller reads "no
     # footnote" as a missing key rather than as a None it has to test for.
-    exhibit_notes: dict[str, str]
+    # The empty default carries that reading one step further: a bundle whose
+    # exhibits print nothing constructs exactly as it always did.
+    exhibit_notes: dict[str, str] = field(default_factory=dict)
 
 
 def load_bundle(path):
@@ -104,21 +107,13 @@ def load_bundle(path):
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     text = (root / "text.md").read_text(encoding="utf-8")
 
-    figures = {}
-    figures_dir = root / "figures"
-    if figures_dir.is_dir():
-        for child in figures_dir.iterdir():
-            # The same enumeration the validator ran, so what was validated
-            # and what is loaded cannot diverge (a case-varying suffix
-            # included).
-            if child.name.startswith(".") or child.is_dir():
-                continue
-            if child.suffix.lower() == ".png":
-                figures[child.stem] = child
-    # Re-sort by label for a stable, deterministic order.
-    figures = {k: figures[k] for k in sorted(figures)}
+    # Which files under `figures/` are exhibits, and what each is called, is
+    # the format's answer and not a reading of the directory taken here: a
+    # second reading could disagree with the one validation ran and put a
+    # label in front of a model that no check ever saw.
+    figures = paper_bundle_format.figure_files(root)
     # Validation has already established that these are exactly the labels
-    # `figures` carries, so sorting both by label keeps them in lockstep.
+    # the manifest declares, so sorting both by label keeps them in lockstep.
     declared = sorted(manifest["exhibits"], key=lambda e: e["label"])
     exhibits = {e["label"]: e["caption"] for e in declared}
     exhibit_notes = {e["label"]: e["notes"] for e in declared if "notes" in e}
