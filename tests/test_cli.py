@@ -657,7 +657,7 @@ class TestRetiredModelRejection:
         from direktoro import registry
         m = registry.Model(
             registry.PROVIDER_ANTHROPIC, None, registry.ANTHROPIC_KEY_ENV,
-            forced_tool_choice=True, retired=retired)
+            supports_images=True, forced_tool_choice=True, retired=retired)
         monkeypatch.setitem(registry.MODEL_REGISTRY, model_id, m)
 
     def test_retired_extractor_model_exit_1(

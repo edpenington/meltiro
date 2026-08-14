@@ -529,9 +529,9 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
         # spurious split here would fork the identity of two runs the provider
         # cannot tell apart.
         a = resolved_decoding_params("gpt-5.6-sol", sampling={"temperature": 0.0},
-                                     max_tokens=100)
+                                     max_tokens=4096)
         b = resolved_decoding_params("gpt-5.6-sol", sampling={"temperature": 0.9},
-                                     max_tokens=100)
+                                     max_tokens=4096)
         assert a == b
         assert "temperature" not in a
         assert self._config_fp("gpt-5.6-sol", a) == \
@@ -554,7 +554,7 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
         # gpt-5.6-sol sends reasoning effort, so it appears in the sent dict and
         # in the identity block: bumping it moves config_fp.
         dec = resolved_decoding_params("gpt-5.6-sol", sampling={"temperature": 0.0},
-                                       max_tokens=100)
+                                       max_tokens=4096)
         assert dec["reasoning"] == {"effort": "medium"}
         bumped = dict(dec, reasoning={"effort": "high"})
         assert self._config_fp("gpt-5.6-sol", dec) != \
@@ -565,7 +565,7 @@ class TestResolvedDecodingFoldedIntoCallIdentity:
         # max_tokens. The cap rides under whatever key the wire uses, and
         # direktoro applies that keying inside the block.
         assert "max_output_tokens" in resolved_decoding_params(
-            "gpt-5.6-sol", sampling={"temperature": 0.0}, max_tokens=100)
+            "gpt-5.6-sol", sampling={"temperature": 0.0}, max_tokens=4096)
         assert "max_tokens" in resolved_decoding_params(
             "z-ai/glm-5v-turbo", sampling={"temperature": 0.0}, max_tokens=4096)
 
