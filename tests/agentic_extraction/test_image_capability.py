@@ -83,7 +83,7 @@ def _no_figures_bundle(tmp_path):
     # no tables and no figures, which is what makes this a no-figures bundle
     # rather than a bundle whose crops were forgotten.
     (root / "manifest.json").write_text(
-        '{"schema_version": 1, "id": "nofig-001", "title": "T", '
+        '{"schema_version": 2, "id": "nofig-001", "title": "T", '
         '"exhibits": [], '
         '"summary": "A synthetic study used only to exercise the suite."}',
         encoding="utf-8")
@@ -378,6 +378,7 @@ def _checker_orch(config_dir, bundle_dir, template, checker_model):
     orch = Orchestrator.__new__(Orchestrator)
     orch.template = template
     orch.image_labels = {"table_01"}
+    orch.image_notes = bundle.exhibit_notes
     orch.config = config
     orch.bundle = bundle  # figures={"table_01": Path(.../table_01.png)}
     # context_chars=0: this is the image-attachment path, which has no text
@@ -430,6 +431,32 @@ class TestCheckerAttachment:
         assert _call_image_blocks(calls) == []
         # The call is still built (no error), just without the attachment.
         assert any(c["field_path"] == "study.primary_aim" for c in calls)
+
+    def test_the_attached_crops_footnote_arrives_under_its_label(
+            self, config_dir, bundle_minimal_dir, synthetic_template):
+        # The checker's context is deliberately narrow, and this stays inside
+        # it: the footnote is printed on the crop the checker is already
+        # holding, so reading it as text adds nothing the attachment did not
+        # carry. The paper's caption is a different matter and stays out.
+        orch = _checker_orch(config_dir, bundle_minimal_dir,
+                             synthetic_template, "claude-sonnet-4-6")
+        calls, _ = orch._build_checker_calls(["study.primary_aim"])
+        texts = [b["text"] for b in calls[0]["user_message_blocks"]
+                 if b.get("type") == "text"]
+        label_block = next(t for t in texts if t.startswith("[table_01]"))
+        assert label_block.startswith("[table_01]\nFootnote: CI, confidence")
+        assert "Primary and secondary associations" not in label_block
+
+    def test_a_text_only_checker_reads_no_footnote_either(
+            self, config_dir, bundle_minimal_dir, synthetic_template):
+        # The footnote describes an attachment. With no attachment there is
+        # nothing for it to describe, so it is withheld with the image rather
+        # than becoming a text-only consolation for the crop.
+        orch = _checker_orch(config_dir, bundle_minimal_dir,
+                             synthetic_template, TEXT_ONLY_MODEL)
+        calls, _ = orch._build_checker_calls(["study.primary_aim"])
+        assert not any("Footnote:" in b.get("text", "")
+                       for b in calls[0]["user_message_blocks"])
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,13 @@ CAPTIONS = {
     "figure_01": "Figure 1. Study flow",
 }
 
+# One of the two exhibits prints a footnote and the other does not, which is
+# the ordinary case: the maps are separate because only some exhibits have one.
+NOTES = {
+    "table_01": "SD, standard deviation. Percentages are of the 588 units "
+                "carried through both rounds.",
+}
+
 
 def test_system_message_includes_key_sections(synthetic_template,
                                                extractor_system_path):
@@ -128,6 +135,68 @@ def test_the_captured_user_prompt_mirrors_the_message():
         "376", "Methods.", ["table_01", "figure_01"], CAPTIONS)
     assert "[table_01] Table 1. Unit characteristics" in text
     assert "[figure_01] Figure 1. Study flow" in text
+
+
+class TestAnExhibitsPrintedFootnote:
+    """A crop's printed footnote reaches the model as text, under its label.
+
+    It is the smallest print on the exhibit and the crop carries it as pixels;
+    `text.md` carries it nowhere, which is also why the engine prompts tell a
+    model to cite what it reads there as `<img>label</img>` rather than quote
+    it. The line follows the caption rather than replacing it, because the two
+    say different things about the same crop.
+    """
+
+    def _texts(self, blocks):
+        return [b.get("text") for b in blocks if b["type"] == "text"]
+
+    def test_it_follows_the_caption_under_the_same_label(self):
+        blocks = build_initial_user_blocks(
+            "376", "Methods.", figures=[("table_01", PNG)],
+            image_captions=CAPTIONS, image_notes=NOTES)
+        assert ("[table_01] Table 1. Unit characteristics\n"
+                "Footnote: SD, standard deviation. Percentages are of the "
+                "588 units carried through both rounds.") in self._texts(
+                    blocks)
+
+    def test_the_reviewer_reads_the_same_line(self):
+        blocks = build_review_user_blocks(
+            "376", "Methods.", [("table_01", PNG)], {"study": {}},
+            CAPTIONS, NOTES)
+        assert any(t.startswith("[table_01] Table 1.") and "Footnote: SD" in t
+                   for t in self._texts(blocks))
+
+    def test_the_captured_prompt_mirrors_it(self):
+        # The session's record of the message, so the footnote is in the
+        # record exactly as it went on the wire.
+        text = render_user_prompt_text(
+            "376", "Methods.", ["table_01", "figure_01"], CAPTIONS, NOTES)
+        assert "Footnote: SD, standard deviation." in text
+
+    def test_an_exhibit_that_prints_none_carries_no_footnote_line(self):
+        # The absence is silent: no empty `Footnote:` under a crop whose paper
+        # printed nothing under it, and none at all for a caller with no map.
+        blocks = build_initial_user_blocks(
+            "376", "Methods.",
+            figures=[("figure_01", PNG), ("table_01", PNG)],
+            image_captions=CAPTIONS, image_notes=NOTES)
+        texts = self._texts(blocks)
+        assert "[figure_01] Figure 1. Study flow" in texts
+        assert sum("Footnote:" in t for t in texts) == 1
+
+        bare = build_initial_user_blocks(
+            "376", "Methods.", figures=[("table_01", PNG)],
+            image_captions=CAPTIONS)
+        assert "[table_01] Table 1. Unit characteristics" in self._texts(bare)
+
+    def test_a_footnote_on_a_crop_with_no_caption_still_arrives(self):
+        # The two are independent: a manifest may record a footnote for an
+        # exhibit whose caption the paper never printed.
+        blocks = build_initial_user_blocks(
+            "376", "Methods.", figures=[("table_01", PNG)],
+            image_notes=NOTES)
+        assert any(t.startswith("[table_01]\nFootnote: SD")
+                   for t in self._texts(blocks))
 
 
 # A figure list that is neither alphabetical nor lower-cased, so a capture

@@ -33,8 +33,9 @@ from pathlib import Path
 
 import pytest
 
+from alteksto.bundle import validate_bundle
 from meltiro import cli
-from meltiro.bundle import PaperBundle, load_bundle, validate_bundle
+from meltiro.bundle import PaperBundle, load_bundle
 from meltiro.config_bundle import load_config_bundle
 from meltiro.errors import AgenticExtractionError
 from meltiro.orchestrator import Orchestrator

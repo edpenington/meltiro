@@ -136,23 +136,44 @@ EMPTY_ASSISTANT_PLACEHOLDER = "(the model returned no text or tool call.)"
 NO_EXHIBITS_NOTICE = "(no cropped figures or tables accompany this study)"
 
 
-def image_label_text(label, captions=None):
+# What introduces an exhibit's printed footnote where the manifest records
+# one. A word rather than a tag, because the line sits in a message a model
+# reads rather than in a structure it parses, and it names what the words are:
+# the paper's own footnote to that exhibit, not an instruction from the
+# engine.
+EXHIBIT_FOOTNOTE_PREFIX = "Footnote:"
+
+
+def image_label_text(label, captions=None, notes=None):
     """The text block that introduces one attached exhibit.
 
     The label first and alone in brackets, because it is what an
     `<img>label</img>` citation must contain; the paper's own caption after
     it, so a model reading `[table_01]` can tell which crop it is looking at
-    without guessing. `captions` is a label -> caption map
-    (`PaperBundle.exhibits`), looked up on the same normalised key the
-    dispatcher matches a citation on; a label the map has no entry for renders
-    as the bare label, which is what a caller with no caption map at all gets.
+    without guessing; and on its own line the footnote the paper prints under
+    the exhibit, where the manifest records one. The crop carries that
+    footnote as pixels and `text.md` does not carry it at all, so supplying it
+    as text is what lets a model read a table's small print without resolving
+    it off the image — and it is why the engine prompts say a fact taken from
+    it is cited as `<img>label</img>` rather than quoted.
+
+    `captions` and `notes` are label -> text maps (`PaperBundle.exhibits` and
+    `PaperBundle.exhibit_notes`), looked up on the same normalised key the
+    dispatcher matches a citation on. A label neither map has an entry for
+    renders as the bare label, which is what a caller with no maps at all
+    gets.
 
     One definition, used by the message builders and by the text-only render
     the session captures, so the recorded prompt cannot drift from the
     message.
     """
-    caption = (captions or {}).get(str(label).strip().lower())
-    return f"[{label}] {caption}" if caption else f"[{label}]"
+    key = str(label).strip().lower()
+    caption = (captions or {}).get(key)
+    line = f"[{label}] {caption}" if caption else f"[{label}]"
+    footnote = (notes or {}).get(key)
+    if not footnote:
+        return line
+    return f"{line}\n{EXHIBIT_FOOTNOTE_PREFIX} {footnote}"
 
 
 def _partials_dir(system_prompt_path):
@@ -322,14 +343,14 @@ def system_message_blocks(text):
 
 
 def render_user_prompt_text(study_id, paper_text, image_labels,
-                            image_captions=None):
+                            image_captions=None, image_notes=None):
     """Render the text-only view of the initial user message.
 
     Mirrors `build_initial_user_blocks` minus the base64 image bytes,
     suitable for capturing inline into the session as the canonical
     "what was the user prompt" record. The exact text strings match
-    those `build_initial_user_blocks` emits as text content blocks, captions
-    and the no-exhibits notice included.
+    those `build_initial_user_blocks` emits as text content blocks, captions,
+    exhibit footnotes and the no-exhibits notice included.
 
     `image_labels` is the labels of the figure sequence that message carries,
     in the order it carries them. A caller passing a re-sorted or re-cased set
@@ -346,13 +367,13 @@ def render_user_prompt_text(study_id, paper_text, image_labels,
     if not labels:
         parts.append(NO_EXHIBITS_NOTICE)
     for label in labels:
-        parts.append(image_label_text(label, image_captions))
+        parts.append(image_label_text(label, image_captions, image_notes))
         parts.append(f"(image: {label}.png)")
     return "\n\n".join(parts)
 
 
 def build_initial_user_blocks(study_id, paper_text, figures,
-                              image_captions=None):
+                              image_captions=None, image_notes=None):
     """Build the initial user message content blocks.
 
     Args:
@@ -361,6 +382,9 @@ def build_initial_user_blocks(study_id, paper_text, figures,
         figures: list of (label, png_bytes) tuples.
         image_captions: label -> caption map (`PaperBundle.exhibits`), so each
             attachment arrives under the caption the paper prints beside it.
+        image_notes: label -> footnote map (`PaperBundle.exhibit_notes`), so
+            an exhibit's printed footnote arrives as text beside the crop
+            that prints it.
 
     Returns a list of content blocks. The LAST block carries
     cache_control: ephemeral so the whole user message caches.
@@ -384,7 +408,8 @@ def build_initial_user_blocks(study_id, paper_text, figures,
         # Label first so the model can refer to it by name in `source`, and
         # the caption beside it so it knows which exhibit it is looking at.
         blocks.append({"type": "text",
-                       "text": image_label_text(label, image_captions)})
+                       "text": image_label_text(label, image_captions,
+                                                image_notes)})
         blocks.append({
             "type": "image",
             "source": {
@@ -434,11 +459,13 @@ def build_review_system_message(*,
 
 
 def build_review_user_blocks(study_id, paper_text, figures,
-                             extraction_record_dict, image_captions=None):
+                             extraction_record_dict, image_captions=None,
+                             image_notes=None):
     """Build the user content blocks for the final-review pass.
 
     The reviewer sees the paper text + all cropped images, each under its
-    label and the paper's caption for it, + the assembled extraction output as
+    label, the paper's caption for it and its printed footnote where the
+    manifest records one, + the assembled extraction output as
     a JSON block, framed as "review and confirm or revise". With no images to
     attach it reads `NO_EXHIBITS_NOTICE` where they would have been, on the
     same terms as the extractor. Last block carries cache_control.
@@ -477,7 +504,8 @@ def build_review_user_blocks(study_id, paper_text, figures,
 
     for label, png_bytes in figures:
         blocks.append({"type": "text",
-                       "text": image_label_text(label, image_captions)})
+                       "text": image_label_text(label, image_captions,
+                                                image_notes)})
         blocks.append({
             "type": "image",
             "source": {

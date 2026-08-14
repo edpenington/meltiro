@@ -71,7 +71,7 @@ import json
 from pathlib import Path
 
 from meltiro.prompt_builder import (  # noqa: F401
-    bundle_root_for_prompt, system_message_blocks)
+    EXHIBIT_FOOTNOTE_PREFIX, bundle_root_for_prompt, system_message_blocks)
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
     CHECKER_SYSTEM,
@@ -561,10 +561,21 @@ def _join_sections(sections):
     return "\n\n".join(s for s in sections if s)
 
 
-def _image_caption(label):
+def _image_caption(label, notes=None):
     """The caption block that precedes an attached image, so the checker can
-    correlate the PNG with the image reference in the text body."""
-    return f"[{label}]"
+    correlate the PNG with the image reference in the text body.
+
+    The label alone, and where the manifest records the exhibit's printed
+    footnote, that footnote under it. The footnote is inside the crop already,
+    in the smallest print on it, so reading it as text tells the checker
+    nothing the attachment did not carry — which is what keeps it on the right
+    side of the checker's deliberately narrow context. The paper's caption is
+    a different matter and stays out: it is the paper's words about the
+    exhibit rather than the exhibit's own.
+    """
+    footnote = (notes or {}).get(str(label).strip().lower())
+    return (f"[{label}]\n{EXHIBIT_FOOTNOTE_PREFIX} {footnote}" if footnote
+            else f"[{label}]")
 
 
 def _attach_image_block(label, figures):
@@ -601,6 +612,7 @@ def build_checker_user_message(
         *,
         partials_dir,
         figures=None,
+        exhibit_notes=None,
         paper_text=None,
         context_chars=0,
         predicates=None,
@@ -626,6 +638,8 @@ def build_checker_user_message(
             it is read from.
         figures: the paper bundle's figures map (label -> png Path). Used
             to attach the cropped PNG for image-cited evidence.
+        exhibit_notes: label -> footnote map (`PaperBundle.exhibit_notes`),
+            rendered under the label of each attached crop that prints one.
         paper_text: the paper's full text, used to window the surrounding
             context around each quote. None means no context is rendered.
         context_chars: characters of surrounding paper text shown on each
@@ -686,7 +700,8 @@ def build_checker_user_message(
             img_block = _attach_image_block(label, figures)
             if img_block is not None:
                 image_blocks.extend([
-                    {"type": "text", "text": _image_caption(label)},
+                    {"type": "text",
+                     "text": _image_caption(label, exhibit_notes)},
                     img_block,
                 ])
         blocks = image_blocks + blocks

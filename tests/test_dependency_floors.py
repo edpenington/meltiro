@@ -34,6 +34,12 @@ resolves what reaches the wire, and supplies the shapes every fingerprint
 folds in, so an install below the floor does not merely compute different
 numbers — it raises on the call meltiro makes.
 
+alteksto carries one for the same reason on the input side: it owns the paper
+bundle format, and the version it validates against is the version a bundle
+has to be built to. Beside it sits the other half of that ownership — that
+this package restates no rule of the format anywhere, so there is no second
+copy to drift from the one that decides.
+
 Offline: signature inspection and file reads only, no client, no network.
 """
 
@@ -203,6 +209,35 @@ def test_meltiro_declares_neither_sdk():
         assert _requirement(_meltiro_requirements(), package) is None, (
             f"meltiro declares a floor for {package}, but builds no client "
             f"with it; direktoro owns that floor")
+
+
+def test_installed_alteksto_satisfies_the_declared_floor():
+    # The package that owns the paper bundle format. Its floor is a FORMAT
+    # floor: `alteksto.bundle.SCHEMA_VERSION` is the version a bundle must
+    # declare, so an install below the floor rejects every bundle built to the
+    # current specification, before any spend and with a message about a
+    # schema version rather than about a stale install.
+    import alteksto
+
+    floor = _declared_floor(
+        _meltiro_requirements(), "alteksto", "meltiro's pyproject.toml")
+    assert _version_tuple(alteksto.__version__) >= _version_tuple(floor), (
+        f"alteksto {alteksto.__version__} is below meltiro's declared floor "
+        f"of {floor}; the bundle format it validates is not the one this "
+        f"release consumes")
+
+
+def test_meltiro_states_no_rule_of_the_bundle_format_itself():
+    # The format is declared, not copied. A schema version, a manifest key set
+    # or a label pattern restated in this package would be a second
+    # implementation of someone else's specification: it can only drift, and
+    # the drift would show up as a bundle one package accepts and the other
+    # refuses.
+    src_dir = REPO_ROOT / "src" / "meltiro"
+    offenders = [path.name for path in sorted(src_dir.glob("*.py"))
+                 if "SCHEMA_VERSION" in path.read_text(encoding="utf-8")]
+    assert offenders == [], (
+        f"{offenders} name a bundle schema version; alteksto declares it")
 
 
 def test_installed_direktoro_satisfies_the_declared_floor():

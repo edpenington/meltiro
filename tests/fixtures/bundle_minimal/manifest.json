@@ -1,12 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "demo-001",
   "title": "A synthetic study of baseline CRT-HD scores and lifecycle maintenance costs in a fleet of load-bearing widgets",
   "doi": "10.0000/demo.0001",
   "exhibits": [
     {
       "label": "table_01",
-      "caption": "Table 1. Primary and secondary associations between baseline CRT-HD total score and each outcome"
+      "caption": "Table 1. Primary and secondary associations between baseline CRT-HD total score and each outcome",
+      "notes": "CI, confidence interval; CRT-HD, Composite Rating Tool (Heavy Duty); DI-4, Durability Index 4; IRR, incidence rate ratio. R1 and R3 are adjusted for unit age, duty class, manufacturer and baseline severity; R2 is unadjusted. Every estimate is per one-point increase in the baseline total score."
     }
   ],
   "summary": "This invented study describes an entirely synthetic fleet of load-bearing widgets and structural brackets under a depot maintenance contract. It reports associations between baseline CRT-HD (Heavy Duty) total scores and lifecycle maintenance costs, DI-4 durability index, inspection visits, and unplanned removal in a fabricated dataset used only to exercise the meltiro test suite."

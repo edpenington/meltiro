@@ -27,9 +27,11 @@ its own set of fields (subgroups, controls, etc.). Currently only one record
 type is permitted per run.
 
 **It does not** fetch or convert papers, crop figures, judge whether a crop is
-good, or replace human verification. It does not guarantee that the same
-fingerprint yields the same output: a fingerprint pins a run's *inputs*, never
-its outputs.
+good, or replace human verification. Producing the paper bundle is
+[alteksto](https://github.com/edpenington/alteksto)'s job: it owns the format,
+converts a paper PDF to it, and validates the result. It does not guarantee
+that the same fingerprint yields the same output: a fingerprint pins a run's
+*inputs*, never its outputs.
 
 ## How it works
 
@@ -145,14 +147,17 @@ appended under an exclusive `flock`, so that two sessions finishing at once
 cannot clobber each other's entry, and `fcntl` is POSIX-only. Windows is not
 supported and is not tested at this stage.
 
-*meltiro* depends on [direktoro](https://github.com/edpenington/direktoro), the
-shared provider layer that owns the model registry and the adapters. It is not
-on PyPI yet, so install it first:
+*meltiro* depends on two sister packages, neither on PyPI yet, so both are
+installed first: [alteksto](https://github.com/edpenington/alteksto), which
+owns the paper bundle format and is where a bundle is produced, and
+[direktoro](https://github.com/edpenington/direktoro), the shared provider
+layer that owns the model registry and the adapters.
 
 ```bash
 git clone https://github.com/edpenington/meltiro
 cd meltiro
 python3 -m venv .venv
+.venv/bin/pip install "alteksto @ git+https://github.com/edpenington/alteksto"
 .venv/bin/pip install "direktoro @ git+https://github.com/edpenington/direktoro"
 .venv/bin/pip install -e ".[dev]"
 ```
@@ -245,58 +250,46 @@ identically under any shell.
 
 ## The paper bundle
 
-*meltiro* consumes a directory per paper. Any tool that produces this layout
-can feed it.
+*meltiro* consumes a directory per paper: the full text as markdown, the
+cropped tables and figures, and a manifest naming them.
 
 ```
 paper-bundle/
-├── manifest.json      # required
+├── manifest.json      # required: identity and the exhibit declaration
 ├── text.md            # required: the paper's full text as markdown
 └── figures/           # optional: one PNG per declared exhibit
     ├── table_01.png
     └── figure_02.png
 ```
 
-```json
-{
-  "schema_version": 1,
-  "id": "1702",
-  "title": "Durability gauge scores and service life in load-bearing widgets",
-  "doi": "10.5555/widget.2027.0142",
-  "exhibits": [
-    {"label": "table_01", "caption": "Table 1. Sample characteristics"},
-    {"label": "figure_02", "caption": "Figure 2. Study flow"}
-  ],
-  "summary": "..."
-}
-```
+**The format belongs to [alteksto](https://github.com/edpenington/alteksto),
+and that is where to go to make one.** It specifies the format in
+[`docs/bundle.md`](https://github.com/edpenington/alteksto/blob/main/docs/bundle.md),
+it validates a bundle against that specification — the verdict `meltiro
+validate-bundle` prints and the one a run refuses behind — and it converts a
+paper PDF into a bundle, agentically and against the page. Any other tool that
+produces the same layout can feed *meltiro* just as well; the specification is
+what it has to satisfy.
 
-- `schema_version` (must be `1`), `id`, `title` and `exhibits` are required.
-  `id` is an opaque identifier you choose — letters, digits, `.`, `_`, `-`, with
-  at least one alphanumeric, so `.` and `..` are rejected — and it names the
-  output directory.
-- `exhibits` declares every table and figure supplied as a cropped image:
-  exactly a `label` (the `figures/<label>.png` stem) and the caption the paper
-  prints. It may be `[]` for a paper that genuinely has neither. It is required
-  so an author either enumerates the exhibits or says explicitly that there are
-  none; a bundle quietly shipping no crops for a paper full of tables is the
-  failure this key exists to prevent.
-- Declaration and directory must agree exactly: every declared label has its
-  PNG, and every PNG is declared. **No check can see crop quality.** A crop that
-  clips its header row, or catches the wrong table, passes everything here.
-  Looking at the crops stays a human job. Nor can any check know the paper
-  contains a table nobody cropped — that question goes to the Extractor, which
-  reads the paper.
-- `summary` is optional and overrides what the Checker is shown as the paper's
-  short identity. Without it the Checker uses the extracted field the template
-  marks `role: summary`, and failing that, title plus DOI.
-- Unknown manifest keys are rejected. Extra *files* in the bundle directory are
-  ignored, so a bundle may carry its own paperwork alongside the contract files.
+What the format leaves to you, this pipeline then leans on:
 
-Evidence is checked verbatim against `text.md`, markdown syntax included, so a
-converter should keep inline emphasis out of running text where it can. A
-sentence reporting an italicised statistic as `*N* = 42` makes `*N* = 42`, not
-`N = 42`, the string the Extractor must quote.
+- `id` names the output directory, so it is the handle a study is known by
+  through every session, run-log entry and fingerprint here.
+- `text.md` is the whole text the models are shown, and evidence is checked
+  verbatim against it, markdown syntax included. A converter should keep inline
+  emphasis out of running text where it can: a sentence reporting an
+  italicised statistic as `*N* = 42` makes `*N* = 42`, not `N = 42`, the string
+  the Extractor must quote.
+- Each crop's `label` is the token a model cites as `<img>label</img>`, and it
+  arrives in the message under that label, the paper's caption for it, and the
+  exhibit's own printed footnote where the manifest records one. **No check
+  reads the image.** A crop that clips its header row, or catches the wrong
+  table, satisfies every check here; looking at the crops stays a human job.
+  Nor can any check know the paper contains a table nobody cropped — that
+  question goes to the Extractor, which reads the paper.
+- `summary` is what the Checker is shown as the paper's short identity. Without
+  it the Checker uses the extracted field the template marks `role: summary`,
+  and failing that, title plus DOI.
 
 ## The config bundle
 
@@ -660,24 +653,30 @@ from meltiro import (
 `import meltiro` succeeds without `direktoro` installed: every name in
 `meltiro.__all__` is reachable with the provider layer absent. The model
 registry is direktoro's own surface and is imported from there; the CLI does
-require it.
+require it. A consumer wanting a bundle's verdict without loading it imports
+`alteksto.bundle.validate_bundle`, which is the call `load_bundle` refuses
+behind.
 
 **What `--no-deps` buys, exactly.** It is a way to install this wheel *without
 the provider layer* — direktoro and the provider SDKs it brings — not a claim
-that the package has no dependencies. Two are still needed and pip will not
+that the package has no dependencies. Three are still needed and pip will not
 fetch them for you:
 
 ```bash
 pip install --no-deps "meltiro @ git+https://github.com/edpenington/meltiro"
-pip install pyyaml          # needed by `import meltiro` itself
+pip install "alteksto @ git+https://github.com/edpenington/alteksto"
+pip install pyyaml          # both needed by `import meltiro` itself
 pip install python-dotenv   # needed by the CLI only; omit for library use
 ```
 
-Without `pyyaml` the import itself fails (`meltiro.reference_lists` imports
-`yaml`). With it, and with the whole provider layer and `python-dotenv`
-absent, every name in `__all__` resolves and nothing pulls direktoro into
-`sys.modules`. A `no-direktoro-import` job in CI installs exactly this way and
-asserts precisely that.
+Without either of the first two the import itself fails (`meltiro.bundle`
+imports `alteksto`, `meltiro.reference_lists` imports `yaml`). alteksto brings
+nothing with it: its format contract is standard library only, and the page
+stack its own converter needs sits behind an extra. With those two, and with
+the whole provider layer and `python-dotenv` absent, every name in `__all__`
+resolves and nothing pulls direktoro into `sys.modules`. A
+`no-direktoro-import` job in CI installs exactly this way and asserts precisely
+that.
 
 Note the boundary around the bundle loaders. `load_config_bundle` validates
 everything a bundle settles on its own, but the model-registry and numeric

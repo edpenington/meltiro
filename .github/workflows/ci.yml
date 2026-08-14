@@ -34,14 +34,17 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # direktoro is a public package now: a plain install, no deploy key and
-      # no repository secret. It is deliberately NOT pinned to a tag — meltiro
-      # declares `direktoro` with no version bound, so a stranger's install
-      # takes whatever direktoro is current, and CI should test that same
-      # thing. Once direktoro is on PyPI this whole step can be deleted: the
-      # editable install below resolves the name on its own.
-      - name: Install direktoro (public sister package)
-        run: pip install "direktoro @ git+https://github.com/edpenington/direktoro"
+      # Two public sister packages: a plain install each, no deploy key and no
+      # repository secret. alteksto owns the paper bundle format meltiro
+      # reads; direktoro is the provider layer. Neither is pinned to a tag
+      # here — a stranger's install takes whatever each is current, held only
+      # by the floors in pyproject.toml, and CI should test that same thing.
+      # Once they are on PyPI this whole step can be deleted: the editable
+      # install below resolves both names on its own.
+      - name: Install the sister packages (alteksto, direktoro)
+        run: |
+          pip install "alteksto @ git+https://github.com/edpenington/alteksto"
+          pip install "direktoro @ git+https://github.com/edpenington/direktoro"
 
       - name: Install
         run: pip install -e ".[dev]"
@@ -88,10 +91,15 @@ jobs:
           python-version: "3.12"
       - run: pip install build
       - run: python -m build --wheel
-      # --no-deps, then the two dependencies that ARE needed at import time
-      # (meltiro.reference_lists imports yaml; meltiro.cli imports dotenv).
-      # direktoro, anthropic and openai are all left out.
-      - run: pip install --no-deps dist/*.whl && pip install pyyaml python-dotenv
+      # --no-deps, then the dependencies that ARE needed at import time
+      # (meltiro.bundle imports alteksto; meltiro.reference_lists imports
+      # yaml; meltiro.cli imports dotenv). direktoro, anthropic and openai are
+      # all left out. alteksto comes from git for as long as it is off PyPI,
+      # and brings nothing with it: its format contract is stdlib-only.
+      - run: |
+          pip install --no-deps dist/*.whl
+          pip install pyyaml python-dotenv \
+            "alteksto @ git+https://github.com/edpenington/alteksto"
       - name: Import and use the library with direktoro absent
         run: |
           python - <<'PY'

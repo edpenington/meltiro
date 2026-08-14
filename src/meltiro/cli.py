@@ -28,7 +28,11 @@ paying for the run again. It reads the session only, makes no API call, and
 touches no fingerprint.
 
 `validate-bundle` reports every problem with each paper bundle and exits
-non-zero if any bundle is invalid.
+non-zero if any bundle is invalid. The paper bundle format belongs to
+*alteksto* (github.com/edpenington/alteksto), which specifies it, produces
+bundles to it and supplies the verdict printed here; this subcommand is where
+an operator holding a bundle asks the question without leaving the tool that
+will consume the answer.
 
 `render-template` renders the config bundle's extraction template as a
 human-readable Markdown document, in the operational or publication view, to
@@ -55,7 +59,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from meltiro.bundle import load_bundle, validate_bundle
+from alteksto.bundle import validate_bundle
+from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, DIAGNOSTICS_LEVELS
@@ -226,7 +231,10 @@ def _parse_args(argv=None):
         "validate-bundle",
         help="Validate one or more paper bundles.",
         description="Report every problem with each paper bundle; exit 1 if "
-                    "any bundle is invalid.",
+                    "any bundle is invalid. The verdict is the paper bundle "
+                    "format's own, from alteksto "
+                    "(github.com/edpenington/alteksto), which specifies the "
+                    "format and is where a bundle is built.",
     )
     vb.add_argument("bundle", nargs="+", metavar="BUNDLE_DIR",
                     help="Paper bundle directory to validate.")
