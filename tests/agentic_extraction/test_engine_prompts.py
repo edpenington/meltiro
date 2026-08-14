@@ -24,9 +24,10 @@ The three boundaries pinned here:
     rides in the config fingerprints like any other prose of theirs, empty
     overrides included: leaving one out is a methodological choice.
 
-The engine's half ends with one transition sentence handing the role over to
-the review's own briefing. It is composed rather than shipped as a file, and it
-falls on the engine's side of both hashing boundaries above.
+A role's prompt wraps its whole text in a tag naming the role it briefs, and
+closing it is what hands the role over to the review's own briefing. The tag is
+written in the file, so it falls on the engine's side of both hashing
+boundaries above exactly as the prose it wraps does.
 """
 
 import re
@@ -35,10 +36,9 @@ import shutil
 import pytest
 import yaml
 
-from meltiro import checker_prompts, prompt_builder, prompt_partials
+from meltiro import prompt_partials
 from meltiro.checker import CheckerConfig
 from meltiro.checker_prompts import (
-    CHECKER_BUNDLE_TRANSITION,
     build_checker_system_text,
     build_checker_user_message,
     render_checker_user_template,
@@ -55,8 +55,6 @@ from meltiro.fingerprint import (
     structure_hash,
 )
 from meltiro.prompt_builder import (
-    EXTRACTOR_BUNDLE_TRANSITION,
-    REVIEW_BUNDLE_TRANSITION,
     build_config_prompt_text,
     build_review_system_message,
     build_system_message,
@@ -169,10 +167,10 @@ def _engine_half(bundle, *, max_checks_per_field=2, final_review=True,
                  check_reviewer_edits=False):
     """The extractor's system message with the bundle's own text cut out.
 
-    What is left is the engine's half: its prompt for the extractor and the
-    transition sentence after it. A review may write whatever it likes in its
-    own prompt file, so a claim about what the ENGINE tells a model has to be
-    made against this rather than against the whole message.
+    What is left is the engine's half: its prompt for the extractor, closing
+    tag and all. A review may write whatever it likes in its own prompt file,
+    so a claim about what the ENGINE tells a model has to be made against this
+    rather than against the whole message.
     """
     predicates = stage_predicates(max_checks_per_field, final_review,
                                   check_reviewer_edits)
@@ -1143,54 +1141,94 @@ class TestAnOverrideCountsWhenItsTextReachedAModel:
 # The handover from the engine's half to the review's
 # ---------------------------------------------------------------------------
 
-class TestTheTransitionSentence:
-    """One engine sentence between a role's own prompt and the bundle's text.
+class TestTheRoleTag:
+    """Each role prompt wraps its whole text in a tag naming the role.
 
     A system message is two halves written by two authors, and read straight
-    through the seam is invisible: the machinery stops being described and the
-    review starts, mid-message, with nothing to mark it. The sentence marks it.
+    through the seam would otherwise be invisible: the machinery stops being
+    described and the review starts, mid-message, with nothing to mark it. The
+    closing tag marks it, and the opening one tells a model whose briefing the
+    first half is.
 
-    It is emitted only where it is true. A bundle prompt file that is empty is
-    promised no briefing, and a bundle that overrode the engine's half away
-    gets no lone engine sentence in front of its own opening line.
+    The tag is written IN the file, so it is the engine's half in the same
+    sense every other word of that file is: it composes when the file does, an
+    override replaces it along with the text it wrapped, and no compose-time
+    rule decides whether to emit it.
     """
 
-    def test_each_role_reads_it_between_the_two_halves(self, config_dir):
+    ROLE_TAGS = (("extractor", "extractor"), ("reviewer", "reviewer"),
+                 ("checker", "checker"))
+
+    def test_each_role_prompt_opens_and_closes_its_own_tag(self):
+        for name, tag in self.ROLE_TAGS:
+            text = _engine_text(name)
+            assert text.startswith(f"<{tag}>\n"), name
+            assert text.endswith(f"\n</{tag}>"), name
+
+    def test_it_is_the_only_tag_wrapping_the_file(self):
+        # One wrapper per role prompt, opened once and closed once, so a model
+        # cannot read a stray closing tag as the end of the briefing. Counted
+        # over the file rather than asserted at the ends alone, which would
+        # pass for a file that opened the tag again in the middle.
+        for name, tag in self.ROLE_TAGS:
+            text = _engine_text(name)
+            assert text.count(f"<{tag}>") == 1, name
+            assert text.count(f"</{tag}>") == 1, name
+
+    def test_a_composed_partial_carries_no_tag_of_its_own(self):
+        # A partial composes INSIDE the role prompt that cites it, already
+        # within that role's tag; a second wrapper there would nest one
+        # briefing inside another. The per-field scaffold is excluded for a
+        # different reason — it is a user message, not a briefing — and this
+        # holds it to the same rule, so every non-role file is plain text.
+        roles = {name for name, _ in self.ROLE_TAGS}
+        for name in engine_prompt_names():
+            if name in roles:
+                continue
+            text = _engine_text(name)
+            for _, tag in self.ROLE_TAGS:
+                assert f"<{tag}>" not in text, (name, tag)
+
+    def test_each_role_reads_the_closing_tag_before_the_bundles_text(
+            self, config_dir):
         bundle = load_config_bundle(config_dir)
-        cases = (
-            (_extractor(bundle), EXTRACTOR_BUNDLE_TRANSITION, "extractor"),
-            (_reviewer(bundle), REVIEW_BUNDLE_TRANSITION, "reviewer"),
-            (_checker(bundle), CHECKER_BUNDLE_TRANSITION, "checker"),
-        )
-        for rendered, transition, name in cases:
-            engine_tail = _engine_text(name).splitlines()[-1]
-            assert rendered.index(engine_tail) < rendered.index(transition) \
+        cases = ((_extractor(bundle), "extractor"),
+                 (_reviewer(bundle), "reviewer"),
+                 (_checker(bundle), "checker"))
+        for rendered, tag in cases:
+            assert rendered.startswith(f"<{tag}>")
+            assert rendered.index(f"</{tag}>") \
                 < rendered.index("<review_context>")
 
-    def test_an_empty_bundle_prompt_gets_none(self, tmp_path, config_dir):
-        bundle_dir = _copy_bundle(tmp_path, config_dir)
-        for name in ("extractor_system", "review_system", "checker_system"):
-            (bundle_dir / "prompts" / f"{name}.md").write_text(
-                "", encoding="utf-8")
-        bundle = load_config_bundle(bundle_dir)
-        assert EXTRACTOR_BUNDLE_TRANSITION not in _extractor(bundle)
-        assert REVIEW_BUNDLE_TRANSITION not in _reviewer(bundle)
-        assert CHECKER_BUNDLE_TRANSITION not in _checker(bundle)
-
-    def test_an_engine_half_overridden_away_gets_none_either(self, tmp_path,
-                                                             config_dir):
+    def test_an_engine_half_overridden_away_takes_the_tag_with_it(
+            self, tmp_path, config_dir):
+        # The tag is text in the file, so removing the file removes it: a
+        # bundle that overrode the engine's half away reads its own opening
+        # line first, with no unopened closing tag left behind it.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         _write_override(bundle_dir, "extractor", "")
         rendered = _extractor(load_config_bundle(bundle_dir))
-        assert EXTRACTOR_BUNDLE_TRANSITION not in rendered
+        assert "</extractor>" not in rendered
         assert rendered.startswith("<review_context>")
 
+    def test_an_override_supplies_its_own_marking(self, tmp_path, config_dir):
+        # An override is that role's whole engine half, rendered literally.
+        # The engine wraps nothing around words it did not write, so an
+        # override that marks no boundary gets none — its author writes both
+        # halves and marks them as they please.
+        bundle_dir = _copy_bundle(tmp_path, config_dir)
+        _write_override(bundle_dir, "extractor", "Extract the study.")
+        rendered = _extractor(load_config_bundle(bundle_dir))
+        assert rendered.startswith("Extract the study.")
+        assert "<extractor>" not in rendered
+
     def test_it_moves_no_config_fingerprint(self, tmp_path, config_dir,
-                                            monkeypatch):
-        # Compose-time framing, so it belongs to the engine on exactly the
-        # terms its own prompts do: the model reads it, `engine_fp` carries
-        # it, and no config preimage names it. Asserted by rewording all three
-        # and finding every config fingerprint where it was.
+                                            engine_dir):
+        # Engine text, on exactly the terms the rest of the file is: the model
+        # reads it, `engine_fp` carries it through the source digest, and no
+        # config preimage names it. Asserted by renaming all three tags in a
+        # writable copy of the engine's directory and finding every config
+        # fingerprint where it was.
         bundle_dir = _copy_bundle(tmp_path, config_dir)
         before = _config_fingerprints(bundle_dir, config_dir)
 
@@ -1199,13 +1237,14 @@ class TestTheTransitionSentence:
             return (_extractor(bundle), _reviewer(bundle), _checker(bundle))
 
         wire_before = wire()
-        monkeypatch.setattr(prompt_builder, "EXTRACTOR_BUNDLE_TRANSITION",
-                            "A later release hands the extractor over so.")
-        monkeypatch.setattr(prompt_builder, "REVIEW_BUNDLE_TRANSITION",
-                            "And the reviewer so.")
-        monkeypatch.setattr(checker_prompts, "CHECKER_BUNDLE_TRANSITION",
-                            "And the checker so.")
-        # The rewording really did reach all three messages: without this the
+        for name, tag in self.ROLE_TAGS:
+            path = engine_dir / f"{name}.md"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                .replace(f"<{tag}>", f"<the_{tag}>")
+                .replace(f"</{tag}>", f"</the_{tag}>"),
+                encoding="utf-8")
+        # The renaming really did reach all three messages: without this the
         # equality below would hold for an edit that changed nothing.
         for after, was in zip(wire(), wire_before):
             assert after != was

@@ -9,10 +9,11 @@ context: nothing from the earlier check is carried in.
 
 `build_checker_system_text(...)` returns the cacheable system prompt: the
 checker's engine prompt (what the checker is, what it is shown, what a verdict
-means), one transition sentence, and then the bundle's checker prompt file,
-with `{include:...}` partials expanded, `{reference:...}` lists rendered in,
-and the run's per-field check budget substituted. No field catalogue: every
-field-specific detail reaches the checker through the user message.
+means), which closes the `<checker>` tag it opens, and then the bundle's
+checker prompt file, with `{include:...}` partials expanded,
+`{reference:...}` lists rendered in, and the run's per-field check budget
+substituted. No field catalogue: every field-specific detail reaches the
+checker through the user message.
 `build_checker_user_message(...)` returns that message as a list of content
 blocks: the rendered text, preceded for an image-sourced field by a caption
 block and the cropped PNG, which IS the evidence. The cache_control
@@ -78,7 +79,7 @@ from meltiro.prompt_partials import (
     compose_engine_prompt,
     config_prompt_preimage,
     engine_override_pairs,
-    join_role_message,
+    join_blocks,
     substitute_include_placeholders,
 )
 from meltiro.quote_context import (
@@ -92,15 +93,6 @@ from meltiro.quote_context import (
 # ---------------------------------------------------------------------------
 # System message
 # ---------------------------------------------------------------------------
-
-# The checker's own sentence marking where the engine's half of its system
-# message ends and the review's begins, the counterpart of the extractor's and
-# the reviewer's in `prompt_builder`. Framing, so it rides in `engine_fp` and
-# in no config preimage.
-CHECKER_BUNDLE_TRANSITION = (
-    "Everything that follows is the review's own briefing: its context, its "
-    "criteria, and any guidance it has for the checker."
-)
 
 
 def _load(path):
@@ -173,10 +165,9 @@ def build_checker_system_text(*, system_prompt_path, max_checks_per_field,
     engine_text = compose_engine_prompt(
         CHECKER_SYSTEM, _partials_dir(system_prompt_path),
         predicates=predicates)
-    return join_role_message(
+    return join_blocks(
         _fill_slots(engine_text, system_prompt_path, reference_lists,
                     max_checks_per_field),
-        CHECKER_BUNDLE_TRANSITION,
         render_checker_bundle_text(
             system_prompt_path=system_prompt_path,
             max_checks_per_field=max_checks_per_field,

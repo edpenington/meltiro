@@ -336,8 +336,10 @@ receives prompts from the engine that enable their core functionality. These
 prompts can be overwritten as part of config.
 
 Each role's system message opens with the engine's prompt for that role, and
-your prompt file for that role is appended after it; wherever both are present,
-one engine sentence marks the handover between the two. Your file supplies the
+your prompt file for that role is appended after it. The engine's prompt wraps
+itself in a tag naming the role it briefs — `<extractor>`, `<reviewer>`,
+`<checker>` — so closing that tag is what marks the handover to your text. Your
+file supplies the
 review: its scope and criteria, what counts as one record, what each field
 means. Two of the files below are conditional on the run's structure, and are
 left out entirely when their stage is switched off. `checker_user.md` is the
