@@ -262,8 +262,14 @@ def _mixed_case_bundle(tmp_path, source_dir):
     manifest["exhibits"] = []
     for label in ("TABLE_01", "figure_01"):
         (root / "figures" / f"{label}.png").write_bytes(png)
-        manifest["exhibits"].append(
-            {"label": label, "caption": f"Exhibit {label}. Depot readings"})
+        entry = {"label": label,
+                 "caption": f"Exhibit {label}. Depot readings"}
+        if label == "TABLE_01":
+            # One of the two prints a footnote, and it is the capitalised one:
+            # the maps this is looked up in are keyed on the normalised label,
+            # so an unnormalised map loses the footnote here and nowhere else.
+            entry["notes"] = "Note. Readings are depot means over the round."
+        manifest["exhibits"].append(entry)
     (root / "manifest.json").write_text(
         json.dumps(manifest), encoding="utf-8")
     return root
@@ -297,6 +303,10 @@ def test_the_orchestrator_captures_the_prompt_it_sends(
     # equality above would hold for a capture that agreed by accident.
     assert labels == ["TABLE_01", "figure_01"]
     assert "[TABLE_01] Exhibit TABLE_01. Depot readings" in captured
+    # And the footnote the manifest records for that exhibit is in both, which
+    # the equality above cannot show on its own: a message and a capture that
+    # both lost it agree with each other.
+    assert "Footnote: Note. Readings are depot means" in captured
 
 
 def test_system_message_blocks_carries_cache_control(synthetic_template,
@@ -410,3 +420,128 @@ def _section_text(haystack, heading):
     after = haystack.split(needle, 1)[1]
     # Stop at next `## ` heading.
     return after.split("\n## ", 1)[0]
+
+
+def _footnote_lines(blocks):
+    """Every footnote line in a message's content blocks."""
+    return [line
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+            for line in block.get("text", "").split("\n")
+            if line.startswith("Footnote: ")]
+
+
+def test_a_resumed_session_rebuilds_the_message_it_paused_on(
+        tmp_path, config_dir, bundle_tables_dir, stage_keys):
+    """The resume path builds the initial message a second time.
+
+    It is a separate call site from the one that opens a session, and the
+    conversation it rebuilds is prepended to every replayed turn — so a
+    resumed run that dropped part of the message would carry the extractor
+    through the rest of its work on a paper described differently from the
+    one it started on.
+    """
+    bundle_dir = _mixed_case_bundle(tmp_path, bundle_tables_dir)
+    out = tmp_path / "runs"
+
+    def _orch():
+        return Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+
+    first = _orch()
+    first.prepare_new_session()
+    opened = _footnote_lines(first.initial_user_blocks)
+    assert opened == ["Footnote: Note. Readings are depot means over the "
+                      "round."]
+
+    resumed = _orch()
+    resumed.resume_session(first.session.session_dir)
+    assert _footnote_lines(resumed.initial_user_blocks) == opened
+    assert resumed.messages[0]["content"] == first.initial_user_blocks
+
+
+def test_the_reviewer_is_shown_the_exhibits_the_extractor_was(
+        tmp_path, config_dir, bundle_tables_dir, stage_keys, monkeypatch):
+    """The review stage builds its own user message, from its own call site.
+
+    The reviewer reads the paper and the crops to form an independent view,
+    so an exhibit that reaches the extractor labelled and footnoted and the
+    reviewer bare would leave the two stages looking at the same image with
+    different amounts of it legible.
+    """
+    from meltiro import orchestrator as orch_mod
+
+    bundle_dir = _mixed_case_bundle(tmp_path, bundle_tables_dir)
+    orch = Orchestrator(
+        load_config_bundle(config_dir), load_bundle(bundle_dir),
+        tmp_path / "runs",
+        extractor_model="claude-opus-4-8",
+        checker_config=CheckerConfig(max_tokens=1024,
+                                     checker_model="claude-sonnet-4-6"),
+        review_model="claude-opus-4-8",
+        extractor_max_tokens=4096, review_max_tokens=4096,
+    )
+    orch.prepare_new_session()
+
+    # Spy rather than stub: the real builder still runs, so what is asserted
+    # is the message the reviewer would actually be sent.
+    built = {}
+    real = orch_mod.build_review_user_blocks
+
+    def _spy(*args, **kwargs):
+        blocks = real(*args, **kwargs)
+        built["blocks"] = blocks
+        return blocks
+
+    monkeypatch.setattr(orch_mod, "build_review_user_blocks", _spy)
+    # The review loop needs an adapter and a model reply; neither is the
+    # subject here, so the loop is cut short after the message is built.
+    monkeypatch.setattr(orch_mod, "get_tool_definitions",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError))
+    orch._adapter_for_role = lambda role: object()
+    with pytest.raises(RuntimeError):
+        orch._final_review()
+
+    assert _footnote_lines(built["blocks"]) == _footnote_lines(
+        orch.initial_user_blocks)
+
+
+def test_the_session_records_the_exhibits_the_message_carried(
+        tmp_path, config_dir, bundle_tables_dir, stage_keys):
+    """`instrument/image_labels.json` is the durable copy of the manifest's
+    wording, so it is written from the same normalised maps the message is.
+
+    The capitalised label is what makes this decidable: those maps are keyed
+    on the normalised label, so a record that looked a label up as the
+    manifest spells it would write `null` for an exhibit that printed a
+    footnote, and the transcript would report "none printed" for it.
+    """
+    bundle_dir = _mixed_case_bundle(tmp_path, bundle_tables_dir)
+    orch = Orchestrator(
+        load_config_bundle(config_dir), load_bundle(bundle_dir),
+        tmp_path / "runs",
+        extractor_model="claude-opus-4-8",
+        checker_config=CheckerConfig(max_tokens=1024,
+                                     checker_model="claude-sonnet-4-6"),
+        review_model="claude-opus-4-8",
+        extractor_max_tokens=4096, review_max_tokens=4096,
+    )
+    orch.prepare_new_session()
+
+    recorded = json.loads(
+        (orch.session.instrument_dir / "image_labels.json").read_text(
+            encoding="utf-8"))
+    assert recorded == [
+        {"label": "TABLE_01",
+         "caption": "Exhibit TABLE_01. Depot readings",
+         "notes": "Note. Readings are depot means over the round."},
+        {"label": "figure_01",
+         "caption": "Exhibit figure_01. Depot readings",
+         "notes": None},
+    ]

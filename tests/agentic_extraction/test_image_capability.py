@@ -26,6 +26,7 @@ from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.extraction_record import ExtractionRecord
 from meltiro.fingerprint import structure_hash
+from meltiro import orchestrator as orch_mod
 from meltiro.orchestrator import Orchestrator
 from meltiro.prompt_builder import NO_EXHIBITS_NOTICE, image_label_text
 from direktoro.registry import (
@@ -448,16 +449,36 @@ class TestCheckerAttachment:
         assert label_block.startswith("[table_01]\nFootnote: CI, confidence")
         assert "Primary and secondary associations" not in label_block
 
-    def test_a_text_only_checker_reads_no_footnote_either(
-            self, config_dir, bundle_minimal_dir, synthetic_template):
-        # The footnote describes an attachment. With no attachment there is
-        # nothing for it to describe, so it is withheld with the image rather
-        # than becoming a text-only consolation for the crop.
+    def test_a_text_only_checker_is_handed_no_footnote_either(
+            self, config_dir, bundle_minimal_dir, synthetic_template,
+            monkeypatch):
+        """The footnote describes an attachment, so it is withheld with the
+        attachment rather than becoming a text-only consolation for the crop.
+
+        Asserted on what the trigger HANDS the message builder, because the
+        rendered message cannot tell the two apart: with no figures map the
+        builder emits no label block at all, so a footnote passed there would
+        be invisible in the output and the guard untested.
+        """
+        handed = {}
+        real = orch_mod.build_checker_user_message
+        monkeypatch.setattr(
+            orch_mod, "build_checker_user_message",
+            lambda **kw: handed.update(kw) or real(**kw))
+
         orch = _checker_orch(config_dir, bundle_minimal_dir,
                              synthetic_template, TEXT_ONLY_MODEL)
-        calls, _ = orch._build_checker_calls(["study.primary_aim"])
-        assert not any("Footnote:" in b.get("text", "")
-                       for b in calls[0]["user_message_blocks"])
+        orch._build_checker_calls(["study.primary_aim"])
+        assert handed["figures"] is None
+        assert handed["exhibit_notes"] is None
+
+        handed.clear()
+        capable = _checker_orch(config_dir, bundle_minimal_dir,
+                                synthetic_template, "claude-sonnet-4-6")
+        capable._build_checker_calls(["study.primary_aim"])
+        assert handed["figures"] == capable.bundle.figures
+        assert handed["exhibit_notes"] == capable.image_notes
+        assert handed["exhibit_notes"]  # the fixture records one
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +537,24 @@ def _mixed_case_label_bundle(tmp_path, bundle_minimal_dir):
     return root
 
 
+def _preview_entries(text):
+    """The exhibits a dry-run report names, back in the form the message
+    carries them.
+
+    The file's rule is that an entry starts at column 0 and every later line
+    of it is indented, so a footnote of any shape stays inside its exhibit.
+    Reading it back is how a test compares the file against the message
+    without either of them being the other's definition.
+    """
+    entries = []
+    for line in text.split("\n"):
+        if line.startswith("  "):
+            entries[-1] += "\n" + line[2:]
+        elif line:
+            entries.append(line)
+    return entries
+
+
 class TestTheDryRunPreviewIsTheMessage:
     """`attached_exhibits` is a preview of the extractor's user message, so it
     is built from that message's own figure sequence.
@@ -545,8 +584,23 @@ class TestTheDryRunPreviewIsTheMessage:
         capsys.readouterr()
         assert "[Table_01]" in preview
         assert "[table_01]" not in preview
-        for block in self._message_label_blocks(orch):
-            assert block in preview
+        # Entry for entry, the message's own blocks.
+        assert _preview_entries(preview) == self._message_label_blocks(orch)
+
+    def test_the_printed_preview_indents_an_exhibit_whole(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # stdout is read by eye rather than parsed, so what it owes the reader
+        # is that a footnote sits under the exhibit it belongs to instead of
+        # hanging at the margin as if it were one.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     extractor_model="claude-opus-4-7")
+        orch.dry_run_report(tmp_path / "report")
+        printed = capsys.readouterr().out
+        block = printed.split("=== ATTACHED EXHIBITS (1) ===")[1]
+        block = block.split("=== FINGERPRINTS ===")[0]
+        lines = [ln for ln in block.split("\n") if ln.strip()]
+        assert lines[0].startswith("  [table_01] Table 1.")
+        assert lines[1].startswith("  Footnote: CI, confidence")
 
     def test_a_text_only_extractor_previews_no_exhibits(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
@@ -560,18 +614,24 @@ class TestTheDryRunPreviewIsTheMessage:
         assert preview == ""
         assert self._message_label_blocks(orch) == []
 
-    def test_an_exhibit_with_a_footnote_is_still_one_entry(
+    def test_a_footnote_of_any_shape_stays_inside_its_exhibit(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        # Two exhibits, the first of which prints a footnote and so runs to
-        # two lines. Separated by a blank line, the file still reads as two
-        # exhibits; separated by a newline alone, the footnote would read as a
-        # third — which is the whole reason the separator is not "\n".
-        root = tmp_path / "two"
+        """Two exhibits, the first carrying a footnote of two paragraphs.
+
+        The format asks a footnote only to be a non-empty string, so a blank
+        line inside one is a valid bundle, and a file that separated exhibits
+        by a blank line would read this as three. The reader's rule is column
+        0, which no footnote line can reach.
+        """
+        root = tmp_path / "shaped"
         shutil.copytree(bundle_minimal_dir, root)
         (root / "figures" / "figure_02.png").write_bytes(
             (root / "figures" / "table_01.png").read_bytes())
         manifest = json.loads(
             (root / "manifest.json").read_text(encoding="utf-8"))
+        manifest["exhibits"][0]["notes"] = (
+            "SD, standard deviation.\n\nUnits withdrawn before the first "
+            "round are excluded from every column.")
         manifest["exhibits"].append(
             {"label": "figure_02", "caption": "Figure 2. Fleet flow"})
         (root / "manifest.json").write_text(json.dumps(manifest),
@@ -581,8 +641,7 @@ class TestTheDryRunPreviewIsTheMessage:
                      extractor_model="claude-opus-4-7")
         preview = self._preview(orch, tmp_path)
         capsys.readouterr()
-        entries = [e for e in preview.split("\n\n") if e.strip()]
+        entries = _preview_entries(preview)
         assert len(entries) == 2
-        by_label = {e.split("]")[0] + "]": e for e in entries}
-        assert "\nFootnote: CI, confidence" in by_label["[table_01]"]
-        assert by_label["[figure_02]"] == "[figure_02] Figure 2. Fleet flow"
+        assert entries == self._message_label_blocks(orch)
+        assert "\n\nUnits withdrawn" in entries[1]

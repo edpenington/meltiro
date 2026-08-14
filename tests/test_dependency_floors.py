@@ -236,9 +236,11 @@ def test_the_loader_states_no_rule_of_the_bundle_format():
     # someone else's specification: it can only drift, and the drift would
     # show up as a bundle one package accepts and the other reads differently.
     #
-    # Read off the source rather than the behaviour, because the two agree
-    # today for a reason that hides divergence: validation runs first and
-    # rejects the cases they would disagree about.
+    # A cheap guard over the source, and the narrow one: it sees the loader
+    # itself, so a rule restated in a helper beside it would pass here. What
+    # catches that is behavioural and lives with the loader's own tests
+    # (`test_bundle.py::test_the_loader_reads_the_directory_the_format_reads`,
+    # over a directory built to make two readings disagree).
     src_dir = REPO_ROOT / "src" / "meltiro"
     versioned = [path.name for path in sorted(src_dir.glob("*.py"))
                  if "SCHEMA_VERSION" in path.read_text(encoding="utf-8")]

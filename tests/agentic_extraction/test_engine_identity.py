@@ -587,8 +587,13 @@ class TestTheAltekstoVersionIsRecorded:
         # is provenance a human compares rather than identity a consumer does.
         before = _prepared_orch(
             config_dir, bundle_minimal_dir, tmp_path / "a").session.meta
-        monkeypatch.setattr(
-            "meltiro.session.alteksto_version", lambda: "0.0.0-not-real")
+        # Patched where each caller looks it up, as the direktoro test above
+        # does: a fingerprint that folded the version in through `run_log`
+        # would go unperturbed by a patch to the name `session` imported, and
+        # this test would then assert nothing.
+        for module in ("meltiro.session", "meltiro.run_log"):
+            monkeypatch.setattr(f"{module}.alteksto_version",
+                                lambda: "0.0.0-not-real")
         after = _prepared_orch(
             config_dir, bundle_minimal_dir, tmp_path / "b").session.meta
         assert after["alteksto_version"] == "0.0.0-not-real"

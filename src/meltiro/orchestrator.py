@@ -127,6 +127,20 @@ THINKING_KEY_PREFIX = "thinking_"
 THINKING_FIELDS = ("mode", "effort", "budget_tokens", "display")
 
 
+def _indent_continuation(entry, indent="  "):
+    """`entry` with every line after the first indented, empty ones included.
+
+    What makes a multi-line entry one entry in a file of them: the reader's
+    rule is that an entry starts at column 0, which holds whatever the entry's
+    later lines contain. Indenting an empty line to whitespace rather than
+    leaving it empty is the point of `including empty ones` — a blank line
+    inside an exhibit's printed footnote would otherwise look like the gap
+    between two exhibits.
+    """
+    first, *rest = entry.split("\n")
+    return "\n".join([first] + [f"{indent}{line}" for line in rest])
+
+
 def _configured_thinking(thinking):
     """A `Thinking` spec as the `{key: value}` a decoding block would have
     written, over the fields it actually sets.
@@ -1355,11 +1369,14 @@ class Orchestrator:
                 self.system_text, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
-            # One blank line between exhibits, because an entry runs to two
-            # lines when the manifest records a footnote: separated only by a
-            # newline, a footnote would read as an exhibit of its own.
+            # One exhibit per entry, and an entry starts at column 0: a
+            # manifest may record a footnote of any shape, blank lines
+            # included, so the separator has to be something a footnote cannot
+            # contain rather than something it is merely unlikely to. Every
+            # line after the first is indented, including an empty one.
             (tmp_dir / "attached_exhibits.txt").write_text(
-                "".join(f"{entry}\n\n" for entry in attached_exhibits),
+                "".join(f"{_indent_continuation(entry)}\n"
+                        for entry in attached_exhibits),
                 encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",

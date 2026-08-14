@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from alteksto.bundle import validate_bundle
+from alteksto.bundle import figure_files, validate_bundle
 
 from meltiro.bundle import PaperBundle, load_bundle
 from meltiro.errors import BundleError
@@ -69,18 +69,58 @@ class TestTheVerdictIsTheFormats:
                         bundle_unicode_dir):
             assert validate_bundle(fixture) == []
 
-    def test_a_refusal_carries_the_whole_report(self, good_bundle):
-        # Two faults, so a loader reporting only the first would be visible.
-        (good_bundle / "text.md").unlink()
-        m = _base_manifest()
-        m["bogus"] = 1
-        _write_manifest(good_bundle, m)
+    @pytest.mark.parametrize("break_it", [
+        # One per area of the directory the format has an opinion about, so a
+        # loader that passed on part of the report would be caught by the
+        # part it dropped rather than by whichever fault a single case used.
+        pytest.param(lambda d: (d / "text.md").unlink(), id="text"),
+        pytest.param(lambda d: _write_manifest(d, {**_base_manifest(),
+                                                   "bogus": 1}),
+                     id="manifest-key"),
+        pytest.param(lambda d: (d / "figures" / "stray.txt").write_text("x"),
+                     id="stray-file"),
+        pytest.param(lambda d: (d / "figures" / "table_02.png").write_bytes(
+            (d / "figures" / "table_01.png").read_bytes()),
+            id="undeclared-crop"),
+        pytest.param(lambda d: (d / "figures" / "table_01.png").unlink(),
+                     id="declared-crop-missing"),
+    ])
+    def test_a_refusal_carries_the_whole_report(self, good_bundle, break_it):
+        break_it(good_bundle)
         with pytest.raises(BundleError) as excinfo:
             load_bundle(good_bundle)
-        # Not "at least two problems": the same list, in the same order, so
-        # nothing is summarised, reordered or quietly dropped on the way out.
+        # The same list, in the same order, so nothing is summarised,
+        # reordered or quietly dropped on the way out.
         assert excinfo.value.problems == validate_bundle(good_bundle)
-        assert len(excinfo.value.problems) >= 2
+        assert excinfo.value.problems
+
+    @pytest.mark.parametrize("manifest", [
+        pytest.param("{not json", id="not-json"),
+        pytest.param('["a", "list"]', id="not-an-object"),
+        pytest.param('{"schema_version": 2, "title": "T", "exhibits": []}',
+                     id="no-id"),
+        pytest.param('{"schema_version": 2, "id": "x", "exhibits": []}',
+                     id="no-title"),
+        pytest.param('{"schema_version": 2, "id": "x", "title": "T"}',
+                     id="no-exhibits"),
+        pytest.param('{"schema_version": 2, "id": "x", "title": "T", '
+                     '"exhibits": [{"caption": "T1."}]}', id="no-label"),
+        pytest.param('{"schema_version": 2, "id": "x", "title": "T", '
+                     '"exhibits": {"table_01": "T1."}}', id="exhibits-a-dict"),
+    ])
+    def test_a_refusal_is_always_a_BundleError(self, good_bundle, manifest):
+        """Whatever is wrong with the directory, the caller catches one thing.
+
+        The loader reads the manifest by key once the verdict is in
+        (`manifest["id"]`, `manifest["exhibits"]`, `e["label"]`), so a rule
+        that stopped being enforced would not surface as a value it can cope
+        with: it would surface here, as a `KeyError`, a `TypeError` or a
+        `JSONDecodeError` out of a function documented to raise `BundleError`
+        — past the `except BundleError` every caller in the CLI is built on.
+        """
+        (good_bundle / "manifest.json").write_text(manifest, encoding="utf-8")
+        with pytest.raises(BundleError):
+            load_bundle(good_bundle)
 
     def test_the_schema_version_is_the_formats_to_declare(self, good_bundle):
         # The version this package accepts is not written down here. A bundle
@@ -176,11 +216,24 @@ class TestLoadBundle:
         assert b.exhibits == {}
         assert b.exhibit_notes == {}
 
-    def test_hidden_os_files_in_figures_are_not_loaded_as_crops(
+    def test_the_loader_reads_the_directory_the_format_reads(
             self, good_bundle):
-        # macOS drops .DS_Store into any browsed directory. The format skips
-        # it, so the loader must skip it too: enumerating one file more than
-        # was validated would put an undeclared label in front of a model.
+        """`figures` is the format's own enumeration, not a second one.
+
+        Built to make two readings disagree: a crop whose suffix is
+        capitalised, which is a valid bundle and which a reading that
+        compared suffixes exactly would miss entirely, and a dotfile, which
+        a reading that took every file would carry as a label no check saw.
+        A loader that got either wrong would break the map's documented
+        lockstep with `exhibits` while the bundle validates clean.
+        """
+        crop = good_bundle / "figures" / "table_01.png"
+        data = crop.read_bytes()
+        crop.unlink()
+        (good_bundle / "figures" / "table_01.PNG").write_bytes(data)
         (good_bundle / "figures" / ".DS_Store").write_bytes(b"\x00\x01")
+
+        assert validate_bundle(good_bundle) == []
         b = load_bundle(good_bundle)
-        assert set(b.figures) == {"table_01"}
+        assert b.figures == figure_files(good_bundle)
+        assert set(b.figures) == {"table_01"} == set(b.exhibits)
