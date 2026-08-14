@@ -69,8 +69,9 @@ class ResumeRefused(SessionError):
 class BundleError(AgenticExtractionError):
     """Raised when a paper bundle cannot be loaded.
 
-    Carries the full list of problems (one string per problem) so the
-    caller sees every issue at once rather than the first that trips.
+    Carries the full list of problems the format reported (one string per
+    problem) so the caller sees every issue at once rather than the first
+    that trips.
     """
 
     def __init__(self, problems, path=None):

@@ -37,6 +37,21 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
+    # The paper bundle format: the specification of what a run is given, and
+    # the code that enforces it. meltiro reads bundles and does not define
+    # them, so the definition is imported: `load_bundle` refuses behind
+    # `alteksto.bundle.validate_bundle` and enumerates `figures/` through
+    # `alteksto.bundle.figure_files`, so what this package accepts, and what
+    # it then reads off the directory, are that specification's answers.
+    # Anyone building a bundle builds to alteksto, which is also where a
+    # bundle is produced from a PDF.
+    #
+    # The floor is where `figure_files` arrives, and where the page stack
+    # moved behind an extra so that this dependency weighs what the contract
+    # weighs: `alteksto.bundle` imports the standard library and nothing
+    # else. An install below it lacks the enumeration `load_bundle` calls,
+    # and drags a PDF library into every environment that only reads bundles.
+    "alteksto>=0.2.0",
     # The shared provider layer: adapters, model registry, cost arithmetic —
     # and, since meltiro builds no provider client of its own, the package that
     # carries the provider SDKs. `direktoro.build_adapter` resolves the
@@ -47,11 +62,11 @@ dependencies = [
     #
     # meltiro stays importable WITHOUT it — every name `import meltiro`
     # advertises resolves with direktoro absent, so a consumer that only reads
-    # and validates bundles can install --no-deps and add `pyyaml` (needed by
-    # the import itself) plus `python-dotenv` (needed by the CLI) by hand.
-    # --no-deps here means "without the provider layer", NOT "without
-    # dependencies": pyyaml and python-dotenv below are load-bearing either
-    # way. The CLI requires direktoro outright.
+    # and validates bundles can install --no-deps and add `alteksto` and
+    # `pyyaml` (both needed by the import itself) plus `python-dotenv` (needed
+    # by the CLI) by hand. --no-deps here means "without the provider layer",
+    # NOT "without dependencies": the other three are load-bearing either way.
+    # The CLI requires direktoro outright.
     #
     # The floor is a fingerprint floor, not a feature floor, and it is the
     # strictest kind meltiro declares. `call_identity_fields` plus

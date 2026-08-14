@@ -186,6 +186,34 @@ def source_hash():
     return "nosource" if digest is None else digest
 
 
+def alteksto_version():
+    """The installed alteksto's version string, or None when it is absent.
+
+    alteksto owns the paper bundle format: it decides whether a directory is
+    a bundle at all, and which files under `figures/` are the crops a run
+    attaches. So it is what a run's INPUT was admitted by, and a record that
+    named the engine and the paper but not the version that read the paper
+    would leave a reader unable to say which contract the input met.
+
+    It reaches no fingerprint, and that is deliberate rather than an
+    oversight. An engine fingerprint answers "was this the same question",
+    and a validator that accepts a bundle changes nothing about the question
+    asked of it; what the enumeration actually produced is already hashed on
+    the paper axis, as sorted (label, content-digest) pairs in `figures_fp`.
+    So the version is recorded and compared by a human, beside the versions
+    that do move fingerprints.
+
+    Read lazily and None rather than an exception on ImportError, matching
+    `direktoro_version()`, so a record can still be written by a tree where
+    the import has gone missing.
+    """
+    try:
+        import alteksto
+    except ImportError:
+        return None
+    return getattr(alteksto, "__version__", None)
+
+
 def direktoro_version():
     """The installed direktoro's version string, or None when it is absent.
 

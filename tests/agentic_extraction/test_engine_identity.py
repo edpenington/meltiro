@@ -545,3 +545,58 @@ class TestConsumerPinnedHashesAreUnaffected:
         assert cb_a.template_hash == cb_b.template_hash
         assert cb_a.reference_lists_hash == cb_b.reference_lists_hash
         assert cb_a.instrument_fp == cb_b.instrument_fp
+
+
+# ---------------------------------------------------------------------------
+# What admitted the paper
+# ---------------------------------------------------------------------------
+
+class TestTheAltekstoVersionIsRecorded:
+    """alteksto decides what a bundle IS: whether the directory a run was
+    handed qualifies, and which of its files are the crops that get attached.
+
+    So it belongs in the artefact for the reason meltiro's and direktoro's
+    versions do — a reader has to be able to say which contract the input
+    met — and it belongs in no fingerprint, for a reason neither of theirs
+    shares: accepting a bundle does not change the question asked of it, and
+    what the enumeration produced is already hashed on the paper axis.
+    """
+
+    def test_meta_records_the_running_alteksto_version(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        import alteksto
+
+        orch = _prepared_orch(config_dir, bundle_minimal_dir, tmp_path / "runs")
+        assert orch.session.meta["alteksto_version"] == alteksto.__version__
+        with open(orch.session.meta_path, encoding="utf-8") as f:
+            assert json.load(f)["alteksto_version"] == alteksto.__version__
+
+    def test_the_run_log_entry_records_it_too(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        import alteksto
+
+        orch = _prepared_orch(config_dir, bundle_minimal_dir, tmp_path / "runs")
+        assert build_entry(orch.session)["alteksto_version"] == (
+            alteksto.__version__)
+
+    def test_it_moves_no_fingerprint(
+            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+        # The counterpart of direktoro's test above, asserting the opposite
+        # and for a stated reason: a validator that admits the same bundle
+        # leaves every axis of the run untouched, so a version recorded here
+        # is provenance a human compares rather than identity a consumer does.
+        before = _prepared_orch(
+            config_dir, bundle_minimal_dir, tmp_path / "a").session.meta
+        # Patched where each caller looks it up, as the direktoro test above
+        # does: a fingerprint that folded the version in through `run_log`
+        # would go unperturbed by a patch to the name `session` imported, and
+        # this test would then assert nothing.
+        for module in ("meltiro.session", "meltiro.run_log"):
+            monkeypatch.setattr(f"{module}.alteksto_version",
+                                lambda: "0.0.0-not-real")
+        after = _prepared_orch(
+            config_dir, bundle_minimal_dir, tmp_path / "b").session.meta
+        assert after["alteksto_version"] == "0.0.0-not-real"
+        for axis in ("engine_fp", "run_fp", "instrument_fp", "config_fp",
+                     "extractor_call_fp", "bundle_fp"):
+            assert after[axis] == before[axis], axis

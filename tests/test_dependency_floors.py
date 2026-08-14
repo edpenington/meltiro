@@ -34,6 +34,13 @@ resolves what reaches the wire, and supplies the shapes every fingerprint
 folds in, so an install below the floor does not merely compute different
 numbers — it raises on the call meltiro makes.
 
+alteksto carries one for the same reason on the input side: it owns the paper
+bundle format, and `load_bundle` calls into it both for the verdict on a
+bundle and for the enumeration of what the bundle's `figures/` holds. Beside
+it sits the other half of that ownership — that the loader restates no rule of
+the format itself, so there is no second copy to drift from the one that
+decides.
+
 Offline: signature inspection and file reads only, no client, no network.
 """
 
@@ -203,6 +210,50 @@ def test_meltiro_declares_neither_sdk():
         assert _requirement(_meltiro_requirements(), package) is None, (
             f"meltiro declares a floor for {package}, but builds no client "
             f"with it; direktoro owns that floor")
+
+
+def test_installed_alteksto_satisfies_the_declared_floor():
+    # The package that owns the paper bundle format. Its floor buys two
+    # things: `figure_files`, which `load_bundle` calls to enumerate the
+    # crops, and the packaging split that lets this dependency weigh what the
+    # format contract weighs. Below the floor the call is missing outright,
+    # which is why it is checked against the version actually resolved rather
+    # than assumed from the declaration.
+    import alteksto
+    from alteksto.bundle import figure_files, validate_bundle  # noqa: F401
+
+    floor = _declared_floor(
+        _meltiro_requirements(), "alteksto", "meltiro's pyproject.toml")
+    assert _version_tuple(alteksto.__version__) >= _version_tuple(floor), (
+        f"alteksto {alteksto.__version__} is below meltiro's declared floor "
+        f"of {floor}; the enumeration `load_bundle` calls is not there")
+
+
+def test_the_loader_states_no_rule_of_the_bundle_format():
+    # The format is declared, not copied. A schema version, a manifest key
+    # set, a label pattern or a rule about which files under `figures/` are
+    # exhibits, restated in this package, would be a second implementation of
+    # someone else's specification: it can only drift, and the drift would
+    # show up as a bundle one package accepts and the other reads differently.
+    #
+    # A cheap guard over the source, and the narrow one: it sees the loader
+    # itself, so a rule restated in a helper beside it would pass here. What
+    # catches that is behavioural and lives with the loader's own tests
+    # (`test_bundle.py::test_the_loader_reads_the_directory_the_format_reads`,
+    # over a directory built to make two readings disagree).
+    src_dir = REPO_ROOT / "src" / "meltiro"
+    versioned = [path.name for path in sorted(src_dir.glob("*.py"))
+                 if "SCHEMA_VERSION" in path.read_text(encoding="utf-8")]
+    assert versioned == [], (
+        f"{versioned} name a bundle schema version; alteksto declares it")
+
+    from meltiro.bundle import load_bundle
+
+    loader = inspect.getsource(load_bundle)
+    for rule in (".png", "startswith(\".\")", "is_dir()"):
+        assert rule not in loader, (
+            f"load_bundle names {rule!r}, which is the format's rule about "
+            f"what a crop is; alteksto.bundle.figure_files answers that")
 
 
 def test_installed_direktoro_satisfies_the_declared_floor():

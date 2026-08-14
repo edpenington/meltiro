@@ -9,12 +9,13 @@ context: nothing from the earlier check is carried in.
 
 `build_checker_system_text(...)` returns the cacheable system prompt: the
 checker's engine prompt (what the checker is, what it is shown, what a verdict
-means), one transition sentence, and then the bundle's checker prompt file,
-with `{include:...}` partials expanded, `{reference:...}` lists rendered in,
-and the run's per-field check budget substituted. No field catalogue: every
-field-specific detail reaches the checker through the user message.
+means), which closes the `<checker>` tag it opens, and then the bundle's
+checker prompt file, with `{include:...}` partials expanded,
+`{reference:...}` lists rendered in, and the run's per-field check budget
+substituted. No field catalogue: every field-specific detail reaches the
+checker through the user message.
 `build_checker_user_message(...)` returns that message as a list of content
-blocks: the rendered text, preceded for an image-sourced field by a caption
+blocks: the rendered text, preceded for an image-sourced field by a label
 block and the cropped PNG, which IS the evidence. The cache_control
 wrapper is `prompt_builder.system_message_blocks`, re-exported here so a
 checker call site need not reach across to the extractor's module.
@@ -70,7 +71,7 @@ import json
 from pathlib import Path
 
 from meltiro.prompt_builder import (  # noqa: F401
-    bundle_root_for_prompt, system_message_blocks)
+    EXHIBIT_FOOTNOTE_PREFIX, bundle_root_for_prompt, system_message_blocks)
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
     CHECKER_SYSTEM,
@@ -78,7 +79,7 @@ from meltiro.prompt_partials import (
     compose_engine_prompt,
     config_prompt_preimage,
     engine_override_pairs,
-    join_role_message,
+    join_blocks,
     substitute_include_placeholders,
 )
 from meltiro.quote_context import (
@@ -92,15 +93,6 @@ from meltiro.quote_context import (
 # ---------------------------------------------------------------------------
 # System message
 # ---------------------------------------------------------------------------
-
-# The checker's own sentence marking where the engine's half of its system
-# message ends and the review's begins, the counterpart of the extractor's and
-# the reviewer's in `prompt_builder`. Framing, so it rides in `engine_fp` and
-# in no config preimage.
-CHECKER_BUNDLE_TRANSITION = (
-    "Everything that follows is the review's own briefing: its context, its "
-    "criteria, and any guidance it has for the checker."
-)
 
 
 def _load(path):
@@ -173,10 +165,9 @@ def build_checker_system_text(*, system_prompt_path, max_checks_per_field,
     engine_text = compose_engine_prompt(
         CHECKER_SYSTEM, _partials_dir(system_prompt_path),
         predicates=predicates)
-    return join_role_message(
+    return join_blocks(
         _fill_slots(engine_text, system_prompt_path, reference_lists,
                     max_checks_per_field),
-        CHECKER_BUNDLE_TRANSITION,
         render_checker_bundle_text(
             system_prompt_path=system_prompt_path,
             max_checks_per_field=max_checks_per_field,
@@ -570,10 +561,25 @@ def _join_sections(sections):
     return "\n\n".join(s for s in sections if s)
 
 
-def _image_caption(label):
-    """The caption block that precedes an attached image, so the checker can
-    correlate the PNG with the image reference in the text body."""
-    return f"[{label}]"
+def _image_label_block(label, notes=None):
+    """The text block that precedes an attached image, so the checker can
+    correlate the PNG with the image reference in the text body.
+
+    The label alone, and where the manifest records the exhibit's printed
+    footnote, that footnote under it. A footnote is normally printed on the
+    crop as well, in the smallest print on it, so supplying it as text is the
+    exhibit's own qualifications made legible rather than context from outside
+    the exhibit — which is what keeps it on the right side of the checker's
+    deliberately narrow view.
+
+    The paper's caption stays out on that same reading: it describes the
+    exhibit from the outside, and a description is the kind of thing that
+    steers a verdict, where small print is something the checker would
+    otherwise have to squint at.
+    """
+    footnote = (notes or {}).get(str(label).strip().lower())
+    return (f"[{label}]\n{EXHIBIT_FOOTNOTE_PREFIX} {footnote}" if footnote
+            else f"[{label}]")
 
 
 def _attach_image_block(label, figures):
@@ -610,6 +616,7 @@ def build_checker_user_message(
         *,
         partials_dir,
         figures=None,
+        exhibit_notes=None,
         paper_text=None,
         context_chars=0,
         predicates=None,
@@ -635,6 +642,8 @@ def build_checker_user_message(
             it is read from.
         figures: the paper bundle's figures map (label -> png Path). Used
             to attach the cropped PNG for image-cited evidence.
+        exhibit_notes: label -> footnote map (`PaperBundle.exhibit_notes`),
+            rendered under the label of each attached crop that prints one.
         paper_text: the paper's full text, used to window the surrounding
             context around each quote. None means no context is rendered.
         context_chars: characters of surrounding paper text shown on each
@@ -645,7 +654,7 @@ def build_checker_user_message(
 
     Returns a list of content blocks suitable for the user message of the
     checker call: the rendered text as one block, preceded for an
-    image-sourced field by a caption block and the cropped PNG per image
+    image-sourced field by a label block and the cropped PNG per image
     its evidence cites. No cache_control on any of them: what the checker's
     calls share is the system prompt, and that is where the marker goes
     (`prompt_builder.system_message_blocks`); this message is one field's.
@@ -687,15 +696,17 @@ def build_checker_user_message(
     # Attach every cropped PNG referenced by an <img>...</img> tag in the
     # evidence string. Images go BEFORE the text in the user message, so the
     # checker reads the question after the image it is about; a tiny "[label]"
-    # caption block precedes each image so the checker can correlate them with
-    # the references in the text body.
+    # block precedes each image so the checker can correlate them with the
+    # references in the text body, carrying the exhibit's printed footnote
+    # where the manifest records one.
     if image_attach_labels and figures:
         image_blocks = []
         for label in image_attach_labels:
             img_block = _attach_image_block(label, figures)
             if img_block is not None:
                 image_blocks.extend([
-                    {"type": "text", "text": _image_caption(label)},
+                    {"type": "text",
+                     "text": _image_label_block(label, exhibit_notes)},
                     img_block,
                 ])
         blocks = image_blocks + blocks

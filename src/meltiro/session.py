@@ -66,7 +66,8 @@ from meltiro.extraction_record import ExtractionRecord
 from meltiro.field_history import build_field_history
 from meltiro.fingerprint import (
     bundle_fingerprint, figure_hashes, run_fingerprint)
-from meltiro.run_log import current_engine_fp, direktoro_version, git_state
+from meltiro.run_log import (
+    alteksto_version, current_engine_fp, direktoro_version, git_state)
 from meltiro.statuses import TERMINAL_STATUSES
 
 
@@ -422,6 +423,10 @@ class Session:
         # actually sent. None when not installed
         # (see run_log.direktoro_version).
         direktoro_ver = direktoro_version()
+        # And what admitted the input: alteksto decides whether the directory
+        # this run was handed is a bundle, and which of its files are crops.
+        # It moves no fingerprint (see run_log.alteksto_version).
+        alteksto_ver = alteksto_version()
 
         meta = {
             "session_id": session_id,
@@ -435,9 +440,11 @@ class Session:
             # checkout they came from, and `engine_fp` below identifies the
             # code itself. `meltiro_version` is always present, including in
             # an installed copy with no repository around it;
-            # `direktoro_version` is null only when that package is absent.
+            # `direktoro_version` and `alteksto_version` are null only when
+            # those packages are absent.
             "meltiro_version": __version__,
             "direktoro_version": direktoro_ver,
+            "alteksto_version": alteksto_ver,
             "git_commit": git_commit,
             "git_dirty": git_dirty,
             "config_fp": config_fp,
@@ -651,14 +658,14 @@ class Session:
         tool-call caps and recorded on the same `resumed` event.
 
         What this gate does NOT check is the ENGINE. `meltiro_version`,
-        `direktoro_version`, `git_commit`, `git_dirty`, `engine_fp` and
-        `run_fp` are all read once, at creation, and none of them can refuse a
-        resume, so a resume across a new commit or an upgraded package is
-        admitted. That is deliberate: `engine_fp` moves on any edit to
-        either package's source, and refusing on it would refuse the documented
-        cap-hit recovery (pause, raise the cap, resume) to anyone whose tree
-        moved in between, which working on the engine guarantees. What changes
-        with the engine is the
+        `direktoro_version`, `alteksto_version`, `git_commit`, `git_dirty`,
+        `engine_fp` and `run_fp` are all read once, at creation, and none of
+        them can refuse a resume, so a resume across a new commit or an
+        upgraded package is admitted. That is deliberate: `engine_fp` moves on
+        any edit to either package's source, and refusing on it would refuse
+        the documented cap-hit recovery (pause, raise the cap, resume) to
+        anyone whose tree moved in between, which working on the engine
+        guarantees. What changes with the engine is the
         framing the pipeline writes around the config's prompts; what changes
         with a drifted stage fingerprint is the question itself, which is why
         that one refuses. The engine change is recorded instead: the

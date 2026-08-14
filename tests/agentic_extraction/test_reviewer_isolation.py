@@ -101,6 +101,7 @@ def _orch(tmp_path, template, paper_text, image_labels, *,
     orch.paper_text = paper_text
     orch.figures = []
     orch.image_labels = image_labels
+    orch.image_notes = {}
     orch.bundle = SimpleNamespace(figures={})
     orch.config = SimpleNamespace(partials_dir="/unused",
                                   checker_system_path="/unused")
@@ -231,7 +232,7 @@ def test_build_review_user_blocks_has_no_challenge_parameter():
     params = inspect.signature(build_review_user_blocks).parameters
     assert list(params) == [
         "study_id", "paper_text", "figures", "extraction_record_dict",
-        "image_captions"]
+        "image_captions", "image_notes"]
 
 
 def test_final_review_passes_the_reviewer_nothing_but_the_output():

@@ -16,6 +16,7 @@ fixture, hermetic and shaped like a text-only GLM chat endpoint
 
 import dataclasses
 import json
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -25,8 +26,9 @@ from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.extraction_record import ExtractionRecord
 from meltiro.fingerprint import structure_hash
+from meltiro import orchestrator as orch_mod
 from meltiro.orchestrator import Orchestrator
-from meltiro.prompt_builder import NO_EXHIBITS_NOTICE
+from meltiro.prompt_builder import NO_EXHIBITS_NOTICE, image_label_text
 from direktoro.registry import (
     MODEL_REGISTRY, Model, PROVIDER_OPENAI, WIRE_CHAT_COMPLETIONS,
     known_models, model_info, model_supports_images)
@@ -83,7 +85,7 @@ def _no_figures_bundle(tmp_path):
     # no tables and no figures, which is what makes this a no-figures bundle
     # rather than a bundle whose crops were forgotten.
     (root / "manifest.json").write_text(
-        '{"schema_version": 1, "id": "nofig-001", "title": "T", '
+        '{"schema_version": 2, "id": "nofig-001", "title": "T", '
         '"exhibits": [], '
         '"summary": "A synthetic study used only to exercise the suite."}',
         encoding="utf-8")
@@ -378,6 +380,7 @@ def _checker_orch(config_dir, bundle_dir, template, checker_model):
     orch = Orchestrator.__new__(Orchestrator)
     orch.template = template
     orch.image_labels = {"table_01"}
+    orch.image_notes = bundle.exhibit_notes
     orch.config = config
     orch.bundle = bundle  # figures={"table_01": Path(.../table_01.png)}
     # context_chars=0: this is the image-attachment path, which has no text
@@ -431,6 +434,52 @@ class TestCheckerAttachment:
         # The call is still built (no error), just without the attachment.
         assert any(c["field_path"] == "study.primary_aim" for c in calls)
 
+    def test_the_attached_crops_footnote_arrives_under_its_label(
+            self, config_dir, bundle_minimal_dir, synthetic_template):
+        # The checker's context is deliberately narrow, and this stays inside
+        # it: the footnote is printed on the crop the checker is already
+        # holding, so reading it as text adds nothing the attachment did not
+        # carry. The paper's caption is a different matter and stays out.
+        orch = _checker_orch(config_dir, bundle_minimal_dir,
+                             synthetic_template, "claude-sonnet-4-6")
+        calls, _ = orch._build_checker_calls(["study.primary_aim"])
+        texts = [b["text"] for b in calls[0]["user_message_blocks"]
+                 if b.get("type") == "text"]
+        label_block = next(t for t in texts if t.startswith("[table_01]"))
+        assert label_block.startswith("[table_01]\nFootnote: CI, confidence")
+        assert "Primary and secondary associations" not in label_block
+
+    def test_a_text_only_checker_is_handed_no_footnote_either(
+            self, config_dir, bundle_minimal_dir, synthetic_template,
+            monkeypatch):
+        """The footnote describes an attachment, so it is withheld with the
+        attachment rather than becoming a text-only consolation for the crop.
+
+        Asserted on what the trigger HANDS the message builder, because the
+        rendered message cannot tell the two apart: with no figures map the
+        builder emits no label block at all, so a footnote passed there would
+        be invisible in the output and the guard untested.
+        """
+        handed = {}
+        real = orch_mod.build_checker_user_message
+        monkeypatch.setattr(
+            orch_mod, "build_checker_user_message",
+            lambda **kw: handed.update(kw) or real(**kw))
+
+        orch = _checker_orch(config_dir, bundle_minimal_dir,
+                             synthetic_template, TEXT_ONLY_MODEL)
+        orch._build_checker_calls(["study.primary_aim"])
+        assert handed["figures"] is None
+        assert handed["exhibit_notes"] is None
+
+        handed.clear()
+        capable = _checker_orch(config_dir, bundle_minimal_dir,
+                                synthetic_template, "claude-sonnet-4-6")
+        capable._build_checker_calls(["study.primary_aim"])
+        assert handed["figures"] == capable.bundle.figures
+        assert handed["exhibit_notes"] == capable.image_notes
+        assert handed["exhibit_notes"]  # the fixture records one
+
 
 # ---------------------------------------------------------------------------
 # Review: guarded on the reviewer's own model, folded into review_fp
@@ -461,3 +510,138 @@ class TestReviewCapability:
                      review_model=TEXT_ONLY_MODEL)
         orch.prepare_new_session()
         assert orch.session.meta["images_omitted"] == {"review": True}
+
+
+# ---------------------------------------------------------------------------
+# The dry run previews the message, not the bundle
+# ---------------------------------------------------------------------------
+
+def _mixed_case_label_bundle(tmp_path, bundle_minimal_dir):
+    """A copy of the fixture whose exhibit label carries a capital.
+
+    The format's label rule admits one (`^[A-Za-z0-9._-]+$`), and a capital is
+    the shape that tells a preview built from the message apart from one built
+    from the dispatcher's normalised label set.
+    """
+    root = tmp_path / "mixed"
+    shutil.copytree(bundle_minimal_dir, root)
+    # Unlink before writing: a case-insensitive filesystem (macOS by default)
+    # treats the two names as one file, so writing first would delete what was
+    # just written.
+    crop = (root / "figures" / "table_01.png").read_bytes()
+    (root / "figures" / "table_01.png").unlink()
+    (root / "figures" / "Table_01.png").write_bytes(crop)
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest["exhibits"][0]["label"] = "Table_01"
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+def _preview_entries(text):
+    """The exhibits a dry-run report names, back in the form the message
+    carries them.
+
+    The file's rule is that an entry starts at column 0 and every later line
+    of it is indented, so a footnote of any shape stays inside its exhibit.
+    Reading it back is how a test compares the file against the message
+    without either of them being the other's definition.
+    """
+    entries = []
+    for line in text.split("\n"):
+        if line.startswith("  "):
+            entries[-1] += "\n" + line[2:]
+        elif line:
+            entries.append(line)
+    return entries
+
+
+class TestTheDryRunPreviewIsTheMessage:
+    """`attached_exhibits` is a preview of the extractor's user message, so it
+    is built from that message's own figure sequence.
+
+    The normalised label set is the dispatcher's, lower-cased and covering the
+    whole bundle. A preview built from it would differ from the message in two
+    ways at once, and each is reachable from a valid bundle: a label the paper
+    capitalised, and a role that was sent no images at all.
+    """
+
+    def _preview(self, orch, tmp_path):
+        orch.dry_run_report(tmp_path / "report")
+        return (tmp_path / "report" / "attached_exhibits.txt").read_text(
+            encoding="utf-8")
+
+    def _message_label_blocks(self, orch):
+        figures, _ = orch._extractor_image_inputs()
+        return [image_label_text(label, orch.image_captions, orch.image_notes)
+                for label, _ in figures]
+
+    def test_it_spells_a_label_the_way_the_message_does(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        bundle_dir = _mixed_case_label_bundle(tmp_path, bundle_minimal_dir)
+        orch = _orch(config_dir, bundle_dir, tmp_path / "runs",
+                     extractor_model="claude-opus-4-7")
+        preview = self._preview(orch, tmp_path)
+        capsys.readouterr()
+        assert "[Table_01]" in preview
+        assert "[table_01]" not in preview
+        # Entry for entry, the message's own blocks.
+        assert _preview_entries(preview) == self._message_label_blocks(orch)
+
+    def test_the_printed_preview_indents_an_exhibit_whole(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # stdout is read by eye rather than parsed, so what it owes the reader
+        # is that a footnote sits under the exhibit it belongs to instead of
+        # hanging at the margin as if it were one.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     extractor_model="claude-opus-4-7")
+        orch.dry_run_report(tmp_path / "report")
+        printed = capsys.readouterr().out
+        block = printed.split("=== ATTACHED EXHIBITS (1) ===")[1]
+        block = block.split("=== FINGERPRINTS ===")[0]
+        lines = [ln for ln in block.split("\n") if ln.strip()]
+        assert lines[0].startswith("  [table_01] Table 1.")
+        assert lines[1].startswith("  Footnote: CI, confidence")
+
+    def test_a_text_only_extractor_previews_no_exhibits(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # Its message states that none accompany the study, so a preview
+        # listing the bundle's crops would contradict the message and the
+        # `images_omitted` flag in the same report.
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
+                     extractor_model=TEXT_ONLY_MODEL)
+        preview = self._preview(orch, tmp_path)
+        capsys.readouterr()
+        assert preview == ""
+        assert self._message_label_blocks(orch) == []
+
+    def test_a_footnote_of_any_shape_stays_inside_its_exhibit(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        """Two exhibits, the first carrying a footnote of two paragraphs.
+
+        The format asks a footnote only to be a non-empty string, so a blank
+        line inside one is a valid bundle, and a file that separated exhibits
+        by a blank line would read this as three. The reader's rule is column
+        0, which no footnote line can reach.
+        """
+        root = tmp_path / "shaped"
+        shutil.copytree(bundle_minimal_dir, root)
+        (root / "figures" / "figure_02.png").write_bytes(
+            (root / "figures" / "table_01.png").read_bytes())
+        manifest = json.loads(
+            (root / "manifest.json").read_text(encoding="utf-8"))
+        manifest["exhibits"][0]["notes"] = (
+            "SD, standard deviation.\n\nUnits withdrawn before the first "
+            "round are excluded from every column.")
+        manifest["exhibits"].append(
+            {"label": "figure_02", "caption": "Figure 2. Fleet flow"})
+        (root / "manifest.json").write_text(json.dumps(manifest),
+                                            encoding="utf-8")
+
+        orch = _orch(config_dir, root, tmp_path / "runs",
+                     extractor_model="claude-opus-4-7")
+        preview = self._preview(orch, tmp_path)
+        capsys.readouterr()
+        entries = _preview_entries(preview)
+        assert len(entries) == 2
+        assert entries == self._message_label_blocks(orch)
+        assert "\n\nUnits withdrawn" in entries[1]

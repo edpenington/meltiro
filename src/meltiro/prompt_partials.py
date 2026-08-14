@@ -7,10 +7,16 @@ Neither half can be lost by accident — the engine chooses its own prompt and
 the bundle's file is required — so a model is briefed on the machinery
 whatever the bundle says about the review.
 
-Between the two halves the engine writes one transition sentence, so a model
-reading straight through knows where its briefing on the machinery ends and the
-review's own briefing begins (`join_role_message`; each builder holds its
-role's wording).
+A ROLE prompt wraps its whole text in a tag naming the role it briefs —
+`<extractor>`, `<reviewer>`, `<checker>` — so a model reading straight through
+knows where its briefing on the machinery ends and the review's own briefing
+begins. The tag is written in the file rather than composed around it, which is
+what keeps an override literal: a bundle supplying its own text for a role
+prompt supplies that whole half, marks it as it pleases, and gets no engine
+wording wrapped around words the engine did not write. A cited PARTIAL carries
+no tag of its own — it composes inside the role prompt that cites it, already
+within that role's tag — and neither does `checker_user`, which is a per-field
+message rather than a briefing and has no second half to be separated from.
 
 `ENGINE_ROLE_PROMPTS` names the file each role renders:
 
@@ -509,32 +515,14 @@ def config_prompt_preimage(prompt_text, override_pairs):
 def join_blocks(*blocks):
     """Join rendered blocks with one blank line, dropping the empty ones.
 
-    An engine half overridden away, or an empty bundle prompt file, leaves no
-    leading or trailing gap behind it: a rendered prompt is hashed, so
-    whitespace is content.
+    How a role's system message is assembled from its two halves, and how an
+    engine partial joins the text around it. The engine's half carries its own
+    closing tag, so the seam needs no wording composed into it and this stays a
+    join: an engine half overridden away, or an empty bundle prompt file,
+    leaves no leading or trailing gap behind it. A rendered prompt is hashed,
+    so whitespace is content.
     """
     return BLOCK_SEPARATOR.join(b for b in (b.strip() for b in blocks) if b)
-
-
-def join_role_message(engine_text, transition, bundle_text):
-    """Join one role's system message: engine half, transition, bundle half.
-
-    The transition is the engine's signpost from its own half of the message to
-    the review's, and each role has its own (the builders hold the wording,
-    beside the rest of their framing). It is emitted only when there is text on
-    BOTH sides of it: a bundle whose prompt file is empty is promised no
-    briefing that never arrives, and a bundle that overrode the engine's half
-    away reads its own opening line first rather than a lone engine sentence.
-
-    Compose-time framing, so it is engine text like the user-block headers: it
-    reaches the wire and `engine_fp`, and no config preimage is built through
-    here (see `config_prompt_preimage`, which takes the bundle's text on its
-    own).
-    """
-    blocks = [engine_text, bundle_text]
-    if engine_text.strip() and bundle_text.strip():
-        blocks.insert(1, transition)
-    return join_blocks(*blocks)
 
 
 def _read_partial(name, partials_dir, placeholder):

@@ -1342,12 +1342,14 @@ class _Renderer:
                     "session.*")
             self._p()
             return
-        # An entry is `{"label", "caption"}`: the label an `<img>` citation
-        # names, and the paper's own caption for the crop, which is the half a
-        # label cannot carry and the bundle directory need no longer hold. A
-        # bare string is a label on its own, from a session whose record keeps
-        # no captions; it is read as an exhibit whose caption is unknown, and
-        # the caption cell says so rather than the section failing to render.
+        # An entry is `{"label", "caption", "notes"}`: the label an `<img>`
+        # citation names, the paper's own caption for the crop, and the
+        # footnote printed under it. The two texts are the half a label cannot
+        # carry and the bundle directory is not required to still hold. A bare
+        # string is a label on its own, from a session whose record keeps
+        # neither; it is read as an exhibit whose caption and footnote are
+        # unknown, and the cells say so rather than the section failing to
+        # render.
         exhibits = [{"label": e, "caption": None} if isinstance(e, str) else e
                     for e in exhibits]
         labels = [e["label"] for e in exhibits]
@@ -1362,20 +1364,30 @@ class _Renderer:
             self._p(
                 "The cropped figures attached to the extractor's prompt as "
                 "image parts, each under the caption the paper prints beside "
-                "it. A field whose evidence cites one of these labels had the "
-                "image itself sent to the checker as its evidence."
+                "it, and the footnote it prints under it where the manifest "
+                "records one. A field whose evidence cites one of these "
+                "labels had the image itself sent to the checker as its "
+                "evidence."
             )
             self._p()
             rows = [[f"`{e['label']}`",
-                     # The paper's own prose, so it is escaped as a cell:
-                     # a caption may carry a pipe.
+                     # The paper's own prose, so both are escaped as cells:
+                     # a caption or a footnote may carry a pipe.
                      _cell(_present(e.get("caption"))),
+                     # A footnote is optional in the format, so the two
+                     # absences are different facts and are told apart on the
+                     # key: a null under a recorded key is an exhibit the
+                     # paper printed no footnote under, and a missing key is a
+                     # session that recorded none for any exhibit.
+                     _cell(_present(e["notes"], absent="*(none printed)*")
+                           if "notes" in e else _present(None)),
                      _code_cell((hashes.get(e["label"]) or {}).get("sha256")),
                      _present((hashes.get(e["label"]) or {}).get(
                          "byte_length"))]
                     for e in exhibits]
             self._block(_table(
-                ["Label", "Caption", "SHA-256 of the cropped PNG", "Bytes"],
+                ["Label", "Caption", "Footnote",
+                 "SHA-256 of the cropped PNG", "Bytes"],
                 rows))
         extra = sorted(set(hashes) - set(labels))
         if extra:

@@ -127,6 +127,20 @@ THINKING_KEY_PREFIX = "thinking_"
 THINKING_FIELDS = ("mode", "effort", "budget_tokens", "display")
 
 
+def _indent_continuation(entry, indent="  "):
+    """`entry` with every line after the first indented, empty ones included.
+
+    What makes a multi-line entry one entry in a file of them: the reader's
+    rule is that an entry starts at column 0, which holds whatever the entry's
+    later lines contain. Indenting an empty line to whitespace rather than
+    leaving it empty is the point of `including empty ones` — a blank line
+    inside an exhibit's printed footnote would otherwise look like the gap
+    between two exhibits.
+    """
+    first, *rest = entry.split("\n")
+    return "\n".join([first] + [f"{indent}{line}" for line in rest])
+
+
 def _configured_thinking(thinking):
     """A `Thinking` spec as the `{key: value}` a decoding block would have
     written, over the fields it actually sets.
@@ -339,6 +353,11 @@ class Orchestrator:
         # config share a fingerprint).
         self.image_captions = {label.strip().lower(): caption
                                for label, caption in bundle.exhibits.items()}
+        # The footnote each exhibit prints, where the manifest records one, on
+        # the same key. Paper input on the same terms as the captions, and
+        # carried separately because only some exhibits have one.
+        self.image_notes = {label.strip().lower(): note
+                            for label, note in bundle.exhibit_notes.items()}
 
         # Refuse a call the registry says cannot be made, in the constructor,
         # so every entry point (CLI, resume, programmatic) fails before a
@@ -822,6 +841,7 @@ class Orchestrator:
         # extractor gets no image blocks (ext_figures is empty).
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
+            self.image_notes,
         )
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
@@ -998,6 +1018,7 @@ class Orchestrator:
         self._warn_inert_decoding_params()
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
+            self.image_notes,
         )
         replayed = self.session.replay_messages()
         self.messages = [
@@ -1044,11 +1065,22 @@ class Orchestrator:
 
         tool_catalogue = self.instrument.tool_catalogue()
         # The exhibits as the extractor's user message will label them: the
-        # label it must cite, and the paper's caption beside it. Rendered
-        # through the message builders' own helper, so the preview cannot say
-        # one thing and the message another.
-        attached_exhibits = [image_label_text(label, self.image_captions)
-                             for label in sorted(self.image_labels)]
+        # label it must cite, the paper's caption beside it, and the exhibit's
+        # printed footnote under that where the manifest records one.
+        #
+        # Built from the extractor's effective FIGURE SEQUENCE and rendered
+        # through the message builders' own helper, on the same terms as the
+        # capture in `_render_user_prompt_text`, so the preview cannot say one
+        # thing and the message another. The normalised label set beside it
+        # would say two: it is lower-cased, so a manifest label carrying a
+        # capital previews a label no message ever sends, and it is sorted on
+        # that lower-cased form; and it is the whole bundle's, so a text-only
+        # extractor would preview crops its message states do not accompany
+        # the study.
+        ext_figures, _ = self._extractor_image_inputs()
+        attached_exhibits = [image_label_text(label, self.image_captions,
+                                              self.image_notes)
+                             for label, _ in ext_figures]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -1300,8 +1332,12 @@ class Orchestrator:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
         print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
-        for line in attached_exhibits:
-            print(f"  {line}")
+        for entry in attached_exhibits:
+            # An entry is one exhibit and may run to two lines, the label and
+            # caption then the footnote under them. Indenting every line of it
+            # keeps the block one exhibit to the eye.
+            for line in entry.splitlines():
+                print(f"  {line}")
         print("\n=== FINGERPRINTS ===\n")
         print(json.dumps(fingerprints, indent=2, sort_keys=False))
 
@@ -1333,8 +1369,14 @@ class Orchestrator:
                 self.system_text, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
+            # One exhibit per entry, and an entry starts at column 0: a
+            # manifest may record a footnote of any shape, blank lines
+            # included, so the separator has to be something a footnote cannot
+            # contain rather than something it is merely unlikely to. Every
+            # line after the first is indented, including an empty one.
             (tmp_dir / "attached_exhibits.txt").write_text(
-                "".join(f"{line}\n" for line in attached_exhibits),
+                "".join(f"{_indent_continuation(entry)}\n"
+                        for entry in attached_exhibits),
                 encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",
@@ -1906,6 +1948,7 @@ class Orchestrator:
             # build_review_user_blocks).
             self.extraction_record.to_dict(include_checks=False),
             self.image_captions,
+            self.image_notes,
         )
         review_messages = [{"role": "user", "content": review_user_blocks}]
         tool_defs = get_tool_definitions(self.template, role=ROLE_REVIEW)
@@ -2368,19 +2411,23 @@ class Orchestrator:
         """The session's record of the exhibits the extractor's message carried.
 
         One entry per attachment, in the order the message attaches them,
-        carrying the label an `<img>` citation must name and the caption the
-        paper prints beside it. The caption is the half a label alone cannot
-        supply: `table_02` says which crop was cited and nothing about which
-        table it is, and no other capture holds the manifest's wording once the
-        bundle directory has moved on. A crop the manifest gave no caption for
-        records a null, which is a different fact from an empty caption.
+        carrying the label an `<img>` citation must name, the caption the
+        paper prints beside it, and the footnote it prints under it. The two
+        texts are the half a label alone cannot supply: `table_02` says which
+        crop was cited and nothing about which table it is or what its small
+        print qualified, and no other capture holds the manifest's wording once
+        the bundle directory has moved on. A crop the manifest gave neither of
+        records a null in each, which is a different fact from an empty string
+        — and, for the footnote, one the reader of a transcript is told apart
+        from a session that recorded no footnotes at all.
 
         Empty for a bundle carrying no crops and for a text-only extractor
         alike; `meta.images_omitted` is what tells those two apart.
         """
         return [{"label": label,
                  "caption": self.image_captions.get(
-                     str(label).strip().lower())}
+                     str(label).strip().lower()),
+                 "notes": self.image_notes.get(str(label).strip().lower())}
                 for label, _ in figures]
 
     def _render_user_prompt_text(self):
@@ -2400,6 +2447,7 @@ class Orchestrator:
         return render_user_prompt_text(
             self.study_id, self.paper_text,
             [label for label, _ in ext_figures], self.image_captions,
+            self.image_notes,
         )
 
     def _review_image_inputs(self):
@@ -3510,9 +3558,11 @@ class Orchestrator:
         if model_supports_images(self.checker_config.checker_model):
             checker_image_labels = self.image_labels
             checker_figures = self.bundle.figures
+            checker_notes = self.image_notes
         else:
             checker_image_labels = set()
             checker_figures = None
+            checker_notes = None
 
         calls = []
         envelopes = {}
@@ -3540,6 +3590,11 @@ class Orchestrator:
                 # validator will hold its verdict's field to.
                 reference_lists=self.reference_lists,
                 figures=checker_figures,
+                # The footnote each attached crop prints, where the manifest
+                # records one. It is inside the crop already, so it adds no
+                # context to the checker's narrow view; it makes the smallest
+                # print on the exhibit legible without resolving it off pixels.
+                exhibit_notes=checker_notes,
                 # The paper text the quotes are windowed into, and how wide
                 # the window is. The paper is the run's INPUT and rides in no
                 # fingerprint; the width is config identity and rides in
