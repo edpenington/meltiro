@@ -21,8 +21,8 @@ abstract: >-
   are not reproducible, runs with identical inputs and/or configurations can be
   meaningfully compared.
 type: software
-version: 0.1.0
-date-released: "2026-08-06"
+version: 0.4.0
+date-released: "2026-08-14"
 authors:
   - family-names: Penington
     given-names: Ed
