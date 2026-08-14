@@ -369,8 +369,8 @@ class Session:
         - `tool_definitions.json`: the tool schema as sent
         - `system_prompt.txt`: the rendered EXTRACTOR system message text
         - `user_prompt.txt`: the rendered user-message text portion
-          (paper text, then each attached exhibit under its label and
-          caption, or the statement that none accompany the study)
+          (paper text, then each attached exhibit under its label, caption
+          and printed notes, or the statement that none accompany the study)
         - `review_system_prompt.txt`: the rendered reviewer system message,
           absent when the reviewer stage is off
         - `checker_system_prompt.txt`: the rendered checker system message,
@@ -379,9 +379,10 @@ class Session:
           this run was rendered from, slot tokens and all, absent when the
           checker is off
         - `image_labels.json`: the exhibits attached, in the order the
-          message attached them, each as `{"label", "caption"}` — the label
-          an `<img>` citation names, and the caption the paper prints beside
-          the crop (null where the manifest declared none)
+          message attached them, each as `{"label", "caption", "notes"}` —
+          the label an `<img>` citation names, the caption the paper prints
+          beside the crop, and the footnote it prints under it (each null
+          where the manifest declared none)
 
         All three prompts render deterministically from the config bundle,
         the template, and the role's model, so all three are captured HERE,

@@ -31,7 +31,7 @@ def _base_manifest():
     the figure set changes this too.
     """
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": "demo-001",
         "title": "A title",
         "exhibits": [
@@ -143,15 +143,17 @@ class TestValidateFailureModes:
         assert validate_bundle(good_bundle) == []
 
     def test_wrong_schema_version_value(self, good_bundle):
+        # Forward-only: version 1, the shape before the exhibit `notes` key,
+        # is not read as a valid bundle either.
         m = _base_manifest()
-        m["schema_version"] = 2
+        m["schema_version"] = 1
         _write_manifest(good_bundle, m)
         problems = validate_bundle(good_bundle)
-        assert any("schema_version must be 1" in p for p in problems)
+        assert any("schema_version must be 2" in p for p in problems)
 
     def test_wrong_schema_version_type(self, good_bundle):
         m = _base_manifest()
-        m["schema_version"] = "1"  # string, not int
+        m["schema_version"] = "2"  # string, not int
         _write_manifest(good_bundle, m)
         problems = validate_bundle(good_bundle)
         assert any("must be an integer" in p for p in problems)
@@ -330,6 +332,8 @@ class TestExhibits:
                    and "label" in p for p in problems)
 
     def test_entry_extra_key(self, good_bundle):
+        # `notes` widened the key set by exactly one; everything else an
+        # author might reach for is still refused.
         m = _base_manifest()
         m["exhibits"][0]["page"] = 4
         _write_manifest(good_bundle, m)
@@ -380,6 +384,53 @@ class TestExhibits:
         problems = validate_bundle(good_bundle)
         assert not any("not declared" in p for p in problems)
 
+    def test_notes_is_optional(self, good_bundle):
+        # Most exhibits print no footnote, so the key is absent from most
+        # entries, and its absence is a valid bundle rather than a gap.
+        _write_manifest(good_bundle, _base_manifest())
+        assert validate_bundle(good_bundle) == []
+        assert load_bundle(good_bundle).exhibit_notes == {}
+
+    def test_notes_declared_is_valid(self, good_bundle):
+        m = _base_manifest()
+        m["exhibits"][0]["notes"] = "CRT-HD, Composite Rig Test (Heavy Duty)."
+        _write_manifest(good_bundle, m)
+        assert validate_bundle(good_bundle) == []
+
+    def test_wrong_notes_type(self, good_bundle):
+        m = _base_manifest()
+        m["exhibits"][0]["notes"] = ["a", "footnote"]
+        _write_manifest(good_bundle, m)
+        problems = validate_bundle(good_bundle)
+        assert any("exhibits[0] key 'notes' must be a string when present"
+                   in p for p in problems)
+
+    def test_empty_notes_rejected(self, good_bundle):
+        # Optional but, when present, non-empty: an exhibit with no printed
+        # footnote omits the key rather than declaring an empty one.
+        m = _base_manifest()
+        m["exhibits"][0]["notes"] = "   "
+        _write_manifest(good_bundle, m)
+        problems = validate_bundle(good_bundle)
+        assert any("exhibits[0] key 'notes' must be a non-empty string when "
+                   "present" in p for p in problems)
+
+    def test_load_exposes_notes_only_for_the_exhibits_that_declared_them(
+            self, good_bundle):
+        # A label missing from the map is an exhibit the paper prints no
+        # footnote under, which is why the map is a subset rather than a
+        # parallel one carrying nulls.
+        self._png(good_bundle, "figure_02")
+        m = _base_manifest()
+        m["exhibits"][0]["notes"] = "Adjusted for unit age and duty class."
+        m["exhibits"].append(
+            {"label": "figure_02", "caption": "Figure 2. Study flow"})
+        _write_manifest(good_bundle, m)
+        b = load_bundle(good_bundle)
+        assert b.exhibit_notes == {
+            "table_01": "Adjusted for unit age and duty class."}
+        assert set(b.exhibit_notes) <= set(b.exhibits)
+
     def test_load_exposes_captions_keyed_by_label(self, good_bundle):
         self._png(good_bundle, "figure_02")
         m = _base_manifest()
@@ -409,6 +460,9 @@ class TestLoadBundle:
         assert b.figures["table_01"].name == "table_01.png"
         assert set(b.exhibits) == {"table_01"}
         assert b.exhibits["table_01"].startswith("Table 1.")
+        # The fixture's one exhibit prints a footnote, and its text is
+        # carried beside the caption rather than left in the crop's pixels.
+        assert b.exhibit_notes["table_01"].startswith("CRT-HD, Composite Rig")
 
     def test_frozen(self, bundle_minimal_dir):
         b = load_bundle(bundle_minimal_dir)
@@ -430,6 +484,7 @@ class TestLoadBundle:
         b = load_bundle(good_bundle)
         assert b.figures == {}
         assert b.exhibits == {}
+        assert b.exhibit_notes == {}
 
     def test_load_raises_bundle_error_with_all_problems(self, good_bundle):
         (good_bundle / "text.md").unlink()

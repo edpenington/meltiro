@@ -195,9 +195,10 @@ class TestExtractDryRun:
 
     def test_dry_run_previews_the_exhibits_as_a_role_is_shown_them(
             self, tmp_path, config_dir, bundle_minimal_dir, capsys):
-        # End to end from the manifest: the bundle's declared caption reaches
-        # the preview beside the label a role must cite, in the form the user
-        # message will carry. The fixture declares one exhibit.
+        # End to end from the manifest: the bundle's declared caption and the
+        # footnote printed under the exhibit both reach the preview beside the
+        # label a role must cite, in the form the user message will carry. The
+        # fixture declares one exhibit, and it prints notes.
         out_dir = tmp_path / "runs"
         code = _run([
             "extract",
@@ -211,7 +212,8 @@ class TestExtractDryRun:
         report = out_dir / "demo-001" / "dry_run"
         expected = ("[table_01] Table 1. Primary and secondary "
                     "associations between baseline CRT-HD total score and "
-                    "each outcome")
+                    "each outcome\n"
+                    "Notes: CRT-HD, Composite Rig Test (Heavy Duty)")
         assert expected in (report / "attached_exhibits.txt").read_text(
             encoding="utf-8")
         # ... and neither system prompt names the paper's exhibits at all.

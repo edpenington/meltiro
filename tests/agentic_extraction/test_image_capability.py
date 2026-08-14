@@ -83,7 +83,7 @@ def _no_figures_bundle(tmp_path):
     # no tables and no figures, which is what makes this a no-figures bundle
     # rather than a bundle whose crops were forgotten.
     (root / "manifest.json").write_text(
-        '{"schema_version": 1, "id": "nofig-001", "title": "T", '
+        '{"schema_version": 2, "id": "nofig-001", "title": "T", '
         '"exhibits": [], '
         '"summary": "A synthetic study used only to exercise the suite."}',
         encoding="utf-8")

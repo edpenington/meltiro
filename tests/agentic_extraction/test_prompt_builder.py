@@ -35,6 +35,12 @@ CAPTIONS = {
     "figure_01": "Figure 1. Study flow",
 }
 
+# Only one of the two exhibits prints a footnote, which is the usual case: the
+# map holds an entry for the exhibits that declared `notes` and no other.
+NOTES = {
+    "table_01": "CRT-HD, Composite Rig Test (Heavy Duty). Costs in GBP.",
+}
+
 
 def test_system_message_includes_key_sections(synthetic_template,
                                                extractor_system_path):
@@ -121,12 +127,48 @@ def test_a_label_with_no_caption_arrives_bare():
     assert "[table_01]" in texts
 
 
+def test_an_exhibits_printed_notes_arrive_under_its_caption():
+    # The crop takes in the footnote lines as printed, so a model could read
+    # them off the image; carrying the same words as text is what lets it read
+    # a table's definitions and units without doing that. They follow the
+    # caption, on their own line, so the bracketed label stays the first thing
+    # in the block.
+    blocks = build_initial_user_blocks(
+        "376", "Methods.",
+        figures=[("table_01", PNG), ("figure_01", PNG)],
+        image_captions=CAPTIONS,
+        image_notes=NOTES,
+    )
+    texts = [b.get("text") for b in blocks if b["type"] == "text"]
+    assert ("[table_01] Table 1. Unit characteristics\n"
+            "Notes: CRT-HD, Composite Rig Test (Heavy Duty). Costs in GBP."
+            in texts)
+    # The exhibit that declared none arrives with its caption and nothing
+    # after it: no empty notes line stands in for a footnote the paper does
+    # not print.
+    assert "[figure_01] Figure 1. Study flow" in texts
+
+
+def test_the_reviewer_reads_the_same_notes():
+    blocks = build_review_user_blocks(
+        "376", "Methods.", [("table_01", PNG)], {"study": {}},
+        CAPTIONS, NOTES,
+    )
+    texts = [b.get("text") for b in blocks if b["type"] == "text"]
+    assert ("[table_01] Table 1. Unit characteristics\n"
+            "Notes: CRT-HD, Composite Rig Test (Heavy Duty). Costs in GBP."
+            in texts)
+
+
 def test_the_captured_user_prompt_mirrors_the_message():
     # `render_user_prompt_text` is what the session records as "the user
-    # prompt", so its text blocks are the message's own, captions included.
+    # prompt", so its text blocks are the message's own, captions and notes
+    # included.
     text = render_user_prompt_text(
-        "376", "Methods.", ["table_01", "figure_01"], CAPTIONS)
-    assert "[table_01] Table 1. Unit characteristics" in text
+        "376", "Methods.", ["table_01", "figure_01"], CAPTIONS, NOTES)
+    assert ("[table_01] Table 1. Unit characteristics\n"
+            "Notes: CRT-HD, Composite Rig Test (Heavy Duty). Costs in GBP."
+            in text)
     assert "[figure_01] Figure 1. Study flow" in text
 
 
@@ -138,6 +180,11 @@ MIXED_CASE_CAPTIONS = {
     "table_02": "Table 2. Removals by subgroup",
     "figure_01": "Figure 1. Study flow",
     "table_01": "Table 1. Unit characteristics",
+}
+# Keyed the normalised way the captions are, so a notes line reaches a
+# mixed-case label in the message and in the capture alike.
+MIXED_CASE_NOTES = {
+    "table_02": "Subgroups are pre-specified. n is units, not inspections.",
 }
 
 
@@ -167,9 +214,10 @@ def test_the_capture_and_the_message_emit_the_same_strings():
     # whole emitted text is compared, not membership of it.
     labels = [label for label, _ in MIXED_CASE_FIGURES]
     blocks = build_initial_user_blocks(
-        "376", "Methods.", MIXED_CASE_FIGURES, MIXED_CASE_CAPTIONS)
+        "376", "Methods.", MIXED_CASE_FIGURES, MIXED_CASE_CAPTIONS,
+        MIXED_CASE_NOTES)
     assert render_user_prompt_text(
-        "376", "Methods.", labels, MIXED_CASE_CAPTIONS) == \
+        "376", "Methods.", labels, MIXED_CASE_CAPTIONS, MIXED_CASE_NOTES) == \
         _capture_the_message_implies(blocks, labels)
 
 

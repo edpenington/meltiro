@@ -566,6 +566,23 @@ class TestItReadsStartToFinish:
             assert f"`{exhibit['label']}`" in figures
             assert exhibit["caption"] in figures
 
+    def test_2_6_carries_the_footnote_printed_under_each_exhibit(
+            self, session):
+        # Exhibit footnotes are not in text.md, so the exhibits record is the
+        # only text form of one the session holds: a reader auditing what a
+        # cited crop actually stated reads its notes here, or reads pixels.
+        document = (session.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        figures = _between(document, "### 2.6 The figures",
+                           "### 2.7 The checker's per-field scaffold")
+        exhibits = json.loads((session.session.instrument_dir /
+                               "image_labels.json").read_text())
+        notes = [e["notes"] for e in exhibits if e.get("notes")]
+        assert notes, "the fixture bundle declared no exhibit notes"
+        assert "| Label | Caption | Notes |" in figures
+        for note in notes:
+            assert note in figures
+
     def test_2_6_reads_an_exhibits_record_that_carries_labels_alone(
             self, session):
         """The section's tolerance, matching the rest of the document's: an

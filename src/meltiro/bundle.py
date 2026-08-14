@@ -12,10 +12,11 @@ minimal and human-authorable:
                        exhibit (absent when the manifest declares none)
 
 `manifest.json` keys:
-  - schema_version  (required, integer, must equal 1)
+  - schema_version  (required, integer, must equal 2)
   - id              (required, non-empty str, ^[A-Za-z0-9._-]+$)
   - title           (required, non-empty str)
-  - exhibits        (required, list of {label, caption}; may be empty)
+  - exhibits        (required, list of {label, caption}, each optionally
+                     carrying notes; may be empty)
   - doi             (optional, str)
   - summary         (optional, str; if present must be non-empty)
 Any unknown key, or any wrong type, is an error.
@@ -49,6 +50,16 @@ figures. Requiring it is the point: the author either enumerates the
 exhibits or explicitly asserts there are none, so a bundle that quietly
 ships no crops for a paper full of tables is not expressible.
 
+An exhibit whose printed footnote the bundle transcribes carries `notes`
+beside its caption. The crop takes in the footnote lines as printed, so
+they are already in the image; `notes` carries the same words as text, so
+a role reads the definitions and units a table states under itself without
+reading pixels. The key is OPTIONAL — an exhibit with no footnote omits it
+— and a present one must be a non-empty string, on the same terms as
+`summary`. Exhibit footnotes do not appear in `text.md`, so a footnote's
+words are not quotable as `<q>` evidence; the exhibit's own `<img>` label
+is what cites them.
+
 Two cross-checks bind the declaration to the directory, both hard errors:
 every declared label must have a `figures/<label>.png`, and every
 `figures/*.png` must be declared. The first catches a manifest promising
@@ -77,7 +88,7 @@ from pathlib import Path
 from meltiro.errors import BundleError
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # `\Z`, not `$`: in Python `$` also matches immediately before a trailing
 # newline, so `^[A-Za-z0-9._-]+$` accepts "1702\n" and `re.match` does not
 # change that. Both values this guards are broken by a newline they let
@@ -114,9 +125,13 @@ _MANIFEST_FIELDS = {
     "summary": (False, "str", False),
 }
 
-# The exact key set of one `exhibits` entry. Both are required and no other
-# key is accepted, on the same terms as the manifest's own key contract.
-_EXHIBIT_KEYS = ("label", "caption")
+# The key set of one `exhibits` entry: two required, one optional, and no
+# other key accepted, on the same terms as the manifest's own key contract.
+# `notes` carries the exhibit's printed footnote, which most exhibits do not
+# have, so it is the one key an entry may leave out.
+_EXHIBIT_REQUIRED_KEYS = ("label", "caption")
+_EXHIBIT_OPTIONAL_KEYS = ("notes",)
+_EXHIBIT_KEYS = _EXHIBIT_REQUIRED_KEYS + _EXHIBIT_OPTIONAL_KEYS
 
 
 @dataclass(frozen=True)
@@ -133,6 +148,11 @@ class PaperBundle:
     # label -> caption, sorted by label. Validation guarantees these are the
     # same labels `figures` carries, so the two maps stay in lockstep.
     exhibits: dict[str, str]
+    # label -> printed footnote text, sorted by label, and holding an entry
+    # only for an exhibit whose manifest entry declared `notes`. A subset of
+    # `exhibits`' labels rather than a parallel map with nulls in it, so
+    # "this exhibit has no footnote" is the absence of a key.
+    exhibit_notes: dict[str, str]
 
 
 def _is_int(value):
@@ -261,16 +281,15 @@ def _validate_exhibits(value):
     for index, entry in enumerate(value):
         where = f"manifest.json exhibits[{index}]"
         if not isinstance(entry, dict):
-            problems.append(f"{where} must be an object with exactly "
-                            f"'label' and 'caption', got "
-                            f"{type(entry).__name__}")
+            problems.append(f"{where} must be an object with 'label' and "
+                            f"'caption', got {type(entry).__name__}")
             continue
         for key in sorted(entry):
             if key not in _EXHIBIT_KEYS:
                 problems.append(f"{where} has unknown key: {key!r} (an "
-                                f"exhibit carries exactly 'label' and "
-                                f"'caption')")
-        for key in _EXHIBIT_KEYS:
+                                f"exhibit carries 'label' and 'caption', and "
+                                f"optionally 'notes')")
+        for key in _EXHIBIT_REQUIRED_KEYS:
             if key not in entry:
                 problems.append(f"{where} is missing required key: {key!r}")
                 continue
@@ -280,6 +299,19 @@ def _validate_exhibits(value):
             elif not entry[key].strip():
                 problems.append(f"{where} key {key!r} must be a non-empty "
                                 f"string")
+        # Optional, but a present one is held to exactly the rule the required
+        # strings are held to. An exhibit with no printed footnote omits the
+        # key; an empty string is a mistake, not a signal.
+        for key in _EXHIBIT_OPTIONAL_KEYS:
+            if key not in entry:
+                continue
+            if not isinstance(entry[key], str):
+                problems.append(f"{where} key {key!r} must be a string when "
+                                f"present, got {type(entry[key]).__name__}")
+            elif not entry[key].strip():
+                problems.append(f"{where} key {key!r} must be a non-empty "
+                                f"string when present; an exhibit with no "
+                                f"printed footnote omits the key")
         label = entry.get("label")
         if not isinstance(label, str) or not label.strip():
             continue
@@ -389,9 +421,11 @@ def load_bundle(path):
     figures = {k: figures[k] for k in sorted(figures)}
     # Validation has already established that these are exactly the labels
     # `figures` carries, so sorting both by label keeps them in lockstep.
-    exhibits = {e["label"]: e["caption"]
-                for e in sorted(manifest["exhibits"],
-                                key=lambda e: e["label"])}
+    declared = sorted(manifest["exhibits"], key=lambda e: e["label"])
+    exhibits = {e["label"]: e["caption"] for e in declared}
+    # Only the exhibits that declared a footnote, so a label missing from this
+    # map is an exhibit the paper prints no notes under.
+    exhibit_notes = {e["label"]: e["notes"] for e in declared if "notes" in e}
 
     return PaperBundle(
         root=root,
@@ -402,4 +436,5 @@ def load_bundle(path):
         text=text,
         figures=figures,
         exhibits=exhibits,
+        exhibit_notes=exhibit_notes,
     )

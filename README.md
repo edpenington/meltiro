@@ -259,28 +259,38 @@ paper-bundle/
 
 ```json
 {
-  "schema_version": 1,
-  "id": "1702",
+  "schema_version": 2,
+  "id": "widget-001",
   "title": "Durability gauge scores and service life in load-bearing widgets",
   "doi": "10.5555/widget.2027.0142",
   "exhibits": [
-    {"label": "table_01", "caption": "Table 1. Sample characteristics"},
+    {"label": "table_01",
+     "caption": "Table 1. Sample characteristics",
+     "notes": "Values are n (%) unless stated. Duty class is as recorded at intake."},
     {"label": "figure_02", "caption": "Figure 2. Study flow"}
   ],
   "summary": "..."
 }
 ```
 
-- `schema_version` (must be `1`), `id`, `title` and `exhibits` are required.
+- `schema_version` (must be `2`), `id`, `title` and `exhibits` are required.
   `id` is an opaque identifier you choose — letters, digits, `.`, `_`, `-`, with
   at least one alphanumeric, so `.` and `..` are rejected — and it names the
   output directory.
-- `exhibits` declares every table and figure supplied as a cropped image:
-  exactly a `label` (the `figures/<label>.png` stem) and the caption the paper
-  prints. It may be `[]` for a paper that genuinely has neither. It is required
-  so an author either enumerates the exhibits or says explicitly that there are
-  none; a bundle quietly shipping no crops for a paper full of tables is the
-  failure this key exists to prevent.
+- `exhibits` declares every table and figure supplied as a cropped image: a
+  `label` (the `figures/<label>.png` stem, unique in the bundle), the `caption`
+  as the paper prints it, and optionally `notes`. It may be `[]` for a paper
+  that genuinely has neither. It is required so an author either enumerates the
+  exhibits or says explicitly that there are none; a bundle quietly shipping no
+  crops for a paper full of tables is the failure this key exists to prevent.
+- `notes` is the exhibit's printed footnote, as text. The crop takes in those
+  footnote lines as printed — they are part of the exhibit — and `notes`
+  carries the same words, so a role reads the definitions, units and
+  abbreviations a table states under itself without reading them off an image.
+  It is optional: an exhibit that prints no footnote omits the key, and a
+  present one must be a non-empty string. Exhibit footnotes are not in
+  `text.md`, so a footnote's wording is not quotable as `<q>` evidence; the
+  exhibit's own `<img>` label is what cites it.
 - Declaration and directory must agree exactly: every declared label has its
   PNG, and every PNG is declared. **No check can see crop quality.** A crop that
   clips its header row, or catches the wrong table, passes everything here.
@@ -290,13 +300,16 @@ paper-bundle/
 - `summary` is optional and overrides what the Checker is shown as the paper's
   short identity. Without it the Checker uses the extracted field the template
   marks `role: summary`, and failing that, title plus DOI.
-- Unknown manifest keys are rejected. Extra *files* in the bundle directory are
-  ignored, so a bundle may carry its own paperwork alongside the contract files.
+- Unknown keys are rejected, at the top level and inside each exhibit. Extra
+  *files* in the bundle directory are ignored, so a bundle may carry its own
+  paperwork alongside the contract files.
 
-Evidence is checked verbatim against `text.md`, markdown syntax included, so a
-converter should keep inline emphasis out of running text where it can. A
-sentence reporting an italicised statistic as `*N* = 42` makes `*N* = 42`, not
-`N = 42`, the string the Extractor must quote.
+Evidence is checked verbatim against `text.md`, markdown syntax included. A
+converter transcribes the paper's own emphasis rather than flattening it, so a
+sentence reporting an italicised statistic carries `*N* = 42`, and `*N* = 42`,
+not `N = 42`, is the string the Extractor must quote. Nothing strips the
+markers before matching: every character the check agrees to ignore is a
+character a fabricated quote could differ by.
 
 ## The config bundle
 

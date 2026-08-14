@@ -120,9 +120,10 @@ def _review_orch(tmp_path, template, paper_text, image_labels, response,
     orch.paper_text = paper_text
     orch.figures = []
     orch.image_labels = image_labels
-    # No bundle here, so no declared exhibit captions: the label list renders
-    # exactly as it did before captions existed.
+    # No bundle here, so no declared exhibit captions and no declared notes:
+    # the label list renders exactly as it did before either existed.
     orch.image_captions = {}
+    orch.image_notes = {}
     orch.reference_lists = {}
     orch.config = SimpleNamespace(review_system_path=None)
     orch.max_tool_calls = 100
