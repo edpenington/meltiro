@@ -196,53 +196,51 @@ def test_an_ordinary_review_failure_still_ends_the_run(
 # What the pause is worth: re-entry
 # ---------------------------------------------------------------------------
 
-def test_the_completion_claim_survives_the_pause(
-        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
-    # The claim is session bookkeeping run.json holds, because the
-    # consumer-facing extraction output does not carry it.
-    out = tmp_path / "runs"
-    orch = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
-    orch.prepare_new_session()
+def _pause_in_review(orch, monkeypatch, *, edit=False):
+    """Drive `orch` to a real account pause inside the final-review stage.
 
-    def _complete():
-        orch.extraction_record.mark_complete()
-        return "mark_complete_validated"
-    monkeypatch.setattr(orch, "_extractor_loop", _complete)
+    The extractor is stubbed at the loop boundary; `_final_review` itself runs,
+    so the phase is set the way a live run sets it, and the refusal is raised
+    from inside the review loop where a live one would arrive.
+    """
+    monkeypatch.setattr(orch, "_extractor_loop",
+                        lambda: "mark_complete_validated")
 
-    def _refused(*a, **kw):
+    def _review(*a, **kw):
+        if edit:
+            # What a reviewer is FOR. It clears the extractor's completion
+            # claim as it lands, which is why the claim cannot be the signal
+            # a resume routes on.
+            orch.extraction_record.apply_update_study(
+                study={"title": {"value": "corrected by the reviewer",
+                                 "evidence": None}})
+            orch.session.write_extraction_record(orch.extraction_record)
         raise ProviderAccountError(SPENT)
-    monkeypatch.setattr(orch, "_call_review", _refused)
-
-    orch.run()
-    assert _meta(orch.session.session_dir)["mark_complete_flag"] is True
+    monkeypatch.setattr(orch, "_review_loop", _review)
+    return orch.run()
 
 
-def test_a_resume_holding_the_claim_never_calls_the_extractor(
-        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
-    # The whole point. Re-entering the extractor would replay the
-    # conversation and pay a live turn for an answer run.json already holds —
-    # and a model handed its own finished work back can revise it, so the turn
-    # is not merely wasted.
+@pytest.mark.parametrize("edit", [False, True])
+def test_a_review_pause_resumes_into_review_whatever_the_reviewer_touched(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch, edit):
+    # The defect this routing exists to avoid. A reviewer that edited before
+    # the refusal has cleared the extractor's completion claim, so routing on
+    # that claim sent the resume back into the extractor — replaying the whole
+    # conversation, paying a live turn, and handing the extractor a record the
+    # reviewer had altered underneath it. The phase is what records which
+    # stage the run reached, and it is not moved by an edit.
     out = tmp_path / "runs"
     first = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
     first.prepare_new_session()
     session_dir = first.session.session_dir
 
-    def _complete():
-        first.extraction_record.mark_complete()
-        return "mark_complete_validated"
-    monkeypatch.setattr(first, "_extractor_loop", _complete)
+    assert _pause_in_review(first, monkeypatch, edit=edit) == "in_progress"
+    meta = _meta(session_dir)
+    assert meta["pause_reason"] == "provider_account"
+    assert meta["current_phase"] == "final_review"
 
-    def _refused(*a, **kw):
-        raise ProviderAccountError(SPENT)
-    monkeypatch.setattr(first, "_call_review", _refused)
-    assert first.run() == "in_progress"
-
-    # The account is fixed; the same session continues.
     second = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
     second.resume_session(session_dir)
-    assert second.extraction_record.mark_complete_flag is True
-
     called = []
     monkeypatch.setattr(second, "_extractor_loop",
                         lambda: called.append("extractor") or "unreachable")
@@ -250,30 +248,81 @@ def test_a_resume_holding_the_claim_never_calls_the_extractor(
 
     assert second.run() == "complete"
     assert called == []
-    # And the pause it resumed from is gone, so nothing later reads a stale
-    # reason off a live session.
     assert "pause_reason" not in _meta(session_dir)
 
 
-def test_an_edit_after_the_claim_sends_the_resume_back_to_the_extractor(
+def test_a_spent_tool_call_cap_cannot_downgrade_the_account_pause(
         config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
-    # The claim is only ever true of the record exactly as it stands: every
-    # field write clears it as it lands. That is what makes persisting it safe
-    # — a resumed session cannot skip the extractor on a stale claim, because
-    # the thing that would make it stale is the thing that clears it.
+    # The cap is tested at the TOP of the extractor loop, so a run can finish
+    # `mark_complete_validated` with the cap exactly spent. Re-entering that
+    # loop on resume returns `tool_cap_hit` at once: the resume would call no
+    # provider, overwrite `pause_reason`, walk the phase backwards, and — via
+    # `cli._command_status` — turn the account pause's exit 1 into exit 0,
+    # telling a batch script the run progressed while the account is still
+    # spent. Routing on the phase never re-enters the loop, so the cap is
+    # never consulted and the signal survives.
     out = tmp_path / "runs"
-    orch = _orch(config_dir, bundle_minimal_dir, out)
-    orch.prepare_new_session()
+    first = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
+    first.prepare_new_session()
+    session_dir = first.session.session_dir
+    first.session.meta["tool_call_count"] = first.max_tool_calls
+    first.session.write_meta()
 
-    orch.extraction_record.mark_complete()
-    orch.session.write_extraction_record(orch.extraction_record)
-    assert _meta(orch.session.session_dir)["mark_complete_flag"] is True
+    assert _pause_in_review(first, monkeypatch) == "in_progress"
 
-    orch.extraction_record.apply_update_study(
-        study={"title": {"value": "revised after the claim",
-                         "evidence": None}})
-    orch.session.write_extraction_record(orch.extraction_record)
-    assert _meta(orch.session.session_dir)["mark_complete_flag"] is False
+    second = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
+    second.resume_session(session_dir)
+    monkeypatch.setattr(second, "_final_review", lambda: "review_clean")
+    assert second.run() == "complete"
+    meta = _meta(session_dir)
+    assert meta["status"] == "complete"
+    assert meta.get("pause_reason") is None
+
+
+def test_the_extractors_gate_is_not_applied_to_a_reviewed_extraction(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+    # The reviewer's `mark_complete` is ungated by design; the extractor's is
+    # not. A reviewer that deliberately removed a record leaves an extraction
+    # the extractor's completeness gate would reject, so a resume that
+    # re-entered the extractor would demand back what the reviewer removed —
+    # making a paused-and-resumed run something other than the run it would
+    # have been uninterrupted.
+    out = tmp_path / "runs"
+    first = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
+    first.prepare_new_session()
+    session_dir = first.session.session_dir
+    assert _pause_in_review(first, monkeypatch, edit=True) == "in_progress"
+
+    second = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
+    second.resume_session(session_dir)
+    reviewed = []
+    monkeypatch.setattr(second, "_extractor_loop",
+                        lambda: pytest.fail("the extractor was re-entered"))
+    monkeypatch.setattr(
+        second, "_final_review",
+        lambda: reviewed.append("review") or "review_clean")
+    assert second.run() == "complete"
+    assert reviewed == ["review"]
+
+
+def test_a_resume_into_a_run_without_the_reviewer_refuses(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+    # Phase and configuration are recorded in different files, and the one
+    # outcome that must not follow from them disagreeing is shipping
+    # `complete` an extraction that skipped both stages. The drift gate should
+    # make it unreachable; this is what happens if it ever is not.
+    out = tmp_path / "runs"
+    first = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
+    first.prepare_new_session()
+    session_dir = first.session.session_dir
+    assert _pause_in_review(first, monkeypatch) == "in_progress"
+
+    second = _orch(config_dir, bundle_minimal_dir, out, final_review=True)
+    second.resume_session(session_dir)
+    # Reach past the drift gate to the state it exists to prevent.
+    second.final_review = False
+    assert second.run() == "error"
+    assert _meta(session_dir)["status"] == "error"
 
 
 def test_the_transcript_reads_the_pause_without_promising_a_resume_point(

@@ -216,7 +216,11 @@ or the credential rather than the request (an exhausted balance or spend cap, a
 key absent, revoked, or not entitled to the model). The second leaves the
 extraction untouched and is fixed outside the process, so the session waits
 instead of repaying work that succeeded — a run whose extraction had finished
-resumes into the reviewer without re-running the expensive half. `--resume
+resumes into the reviewer rather than re-extracting. The stage it stopped in
+is repeated: a paused review starts a fresh review conversation over the same
+extraction, since the reviewer holds no state between segments. A checker call
+refused the same way does not pause; it leaves that field unchecked and the
+run says so at the end. `--resume
 SESSION_DIR` continues a named session, and `--auto-resume` finds the newest
 in-progress session whose config still matches. A resume is refused if the
 config has drifted, because continuing under a changed instrument would

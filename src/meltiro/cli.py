@@ -834,11 +834,13 @@ def _print_run_summary(orch, status):
         print("  request, so the run PAUSED rather than failing "
               "(pause_reason: "
               f"{meta.get('pause_reason')}).")
-        print("  The extraction is untouched. Fix the account — top up the "
-              "balance, or")
-        print("  replace a revoked key, or grant the key access to the "
-              "model — then resume")
-        print("  the same session, which repays nothing it already spent:")
+        print("  The extraction is not re-extracted. Fix the account — top "
+              "up the balance,")
+        print("  or replace a revoked key, or grant the key access to the "
+              "model — then")
+        print("  resume the same session. A run stopped in the final review "
+              "repeats that")
+        print("  review from the start; the extraction it reviews is kept:")
         print()
         print("    meltiro extract --config <config> --paper <bundle> \\")
         print(f"      --resume {orch.session.session_dir}")

@@ -1495,6 +1495,18 @@ class Orchestrator:
         would repay work that succeeded, which for a run that had already
         finished extracting is the entire expensive half.
 
+        What a resume repays is the stage it stopped in, not the run. An
+        extractor pause continues the same conversation from where it
+        stopped. A REVIEW pause repays the whole review: the reviewer builds
+        its context fresh from the finished extraction every time and holds no
+        cross-segment state, so the paper, the figures and every review turn
+        already made are sent again, and `max_review_tool_calls` is a fresh
+        budget for the new conversation rather than a running total. The
+        extraction itself is never re-extracted, which is the half worth
+        keeping — but a reviewer that had already edited it leaves those
+        edits in place, so "nothing is repaid" would be false and is not
+        claimed.
+
         The refusal is `direktoro.ProviderAccountError` and nothing else. That
         class means the provider refused over WHO IS ASKING rather than what
         was asked, which is exactly the property that makes a pause safe: an
@@ -1504,6 +1516,23 @@ class Orchestrator:
         malformed request would resume into it for ever, since a resume sends
         the same inputs to the same provider. Waiting is NOT the axis: a 400
         is as unfixable by waiting as an empty balance.
+
+        THREE legs reach a provider and only two of them pause. The
+        extractor's refusal and the reviewer's both raise into `run()`; the
+        CHECKER's does not, and deliberately so. `checker.py` turns every
+        provider failure into a degraded, error-origin verdict on the one
+        field it was asked about, because the fan-out runs a batch and letting
+        one field's refusal escape `fut.result()` would discard the verdicts
+        its siblings had already been billed for. So an account that empties
+        during a checker fan-out leaves those fields unchecked rather than
+        pausing, the run continues, and `meta.checker_diagnostics
+        .checker_errors` records exactly which fields ended with no verdict —
+        which `cli._print_checker_health` prints at every status, `complete`
+        included, on its own terms: an absence of checking is not an objection
+        to a value, and it is louder than a checker that found one thing to
+        say. A field left unchecked that way is not re-checked by a resume,
+        because a check fires on a field being written and a correct field is
+        not rewritten.
 
         `str(error)` is recorded and printed verbatim, whatever shape it has.
         For a translated SDK exception it is the SDK's own rendering of the
@@ -1521,8 +1550,9 @@ class Orchestrator:
             "the provider refused this call over the account or the "
             "credential rather than the request (an exhausted balance or "
             "spend cap, or a key that is absent, revoked, or not entitled "
-            "to this model). The extraction is untouched and the session is "
-            f"resumable once the account is fixed. The provider said: {error}")
+            "to this model). Nothing about the extraction is wrong and the "
+            "session is resumable once the account is fixed. The provider "
+            f"said: {error}")
         # The event log is where the provider's words live, not run.json:
         # `_pause` writes only what makes the pause durable and resumable, and
         # the sentence is neither. The transcript renders it from here (see
@@ -1598,20 +1628,29 @@ class Orchestrator:
         # key degrades every field to a challenge only after the extractor
         # has fully spent.
         self._preflight_keys()
-        # A resumed session that already holds the extractor's completion
-        # claim re-enters at the REVIEWER, not at the extractor. The claim is
-        # cleared by every field write and every record removal, so holding it
-        # means the record on disk is exactly the one the extractor declared
-        # complete and the completeness gate passed: the extractor has nothing
-        # left to be asked. Re-entering the loop instead would replay the whole
-        # conversation and pay a live turn to be told again what run.json
-        # already records — and a model given its own finished work back can
-        # revise it, so the turn is not merely wasted but capable of moving an
-        # extraction that was already final.
+        # A resumed session that had already reached the reviewer re-enters
+        # THERE, not at the extractor. The question is which STAGE the run got
+        # to, and `current_phase` is the only thing that records it: the
+        # extractor's completion claim looks like the same fact and is not,
+        # because the reviewer's job is to edit and every edit it makes clears
+        # that claim. Routing on the claim would send the common case — a
+        # reviewer that changed something, then met a refusal — back into the
+        # extractor, which is precisely the trip this exists to avoid, and
+        # would hand the extractor a record the reviewer had altered
+        # underneath it, invisible in the extractor's own conversation.
         #
-        # A fresh session always has the claim false, so this costs a first
-        # run nothing and changes nothing about how one reaches the reviewer.
-        if not self.extraction_record.mark_complete_flag:
+        # Re-entering the extractor on a finished extraction is not merely a
+        # wasted turn. It replays the whole conversation, pays for it, applies
+        # the EXTRACTOR's completeness gate to an extraction the reviewer has
+        # already approved — a reviewer that deliberately removed a record
+        # would have the extractor told to put it back — and a model handed
+        # its own finished work can revise it. A resumed run has to be the run
+        # it would have been uninterrupted.
+        #
+        # `current_phase` is "extracting" for a fresh session and for any
+        # pause the extractor took, so this costs a first run nothing and
+        # leaves the tool-call-cap pause exactly as it was.
+        if self.session.meta.get("current_phase") != "final_review":
             extractor_status = self._extractor_loop()
             stop = self._finalise_loop_stop(extractor_status)
             if stop is not None:
@@ -1631,6 +1670,20 @@ class Orchestrator:
         # Extractor signalled mark_complete. Challenges are advisory (see
         # module docstring); anything still challenged is recorded in
         # meta.checker_diagnostics at finalisation.
+
+        elif not self.final_review:
+            # Resumed into a review stage this run does not have. The drift
+            # gate should make it unreachable — `final_review` rides in
+            # `structure_hash` and so in `config_fp`, so turning the reviewer
+            # off refuses the resume — but the two facts are recorded in
+            # different files, and the one outcome that must not follow from
+            # them disagreeing is shipping `complete` an extraction that
+            # skipped BOTH stages.
+            raise AgenticExtractionError(
+                "this session stopped in the final-review phase but the "
+                "reviewer is off for this run, so neither stage would run "
+                "and nothing would examine the extraction. Resume with the "
+                "configuration the session was started under.")
 
         # Final review (optional per run: off when final_review is False).
         # When off the run finalises directly after the extractor.
