@@ -736,13 +736,20 @@ class _Renderer:
             "dispatcher returns to a model). `engine_fp` does: it hashes both "
             "engine packages' versions together with a digest of each one's "
             "source, so it names the code that asked the question. The commit "
-            "beside it names the checkout that code was read from."
+            "beside it names where that code came from — the checkout it "
+            "was read from, or, for an installed copy, what the installer "
+            "recorded fetching. An installed copy has no working tree, "
+            "which is what the row below says rather than calling it clean."
         )
         self._p()
         dirty = meta.get("git_dirty")
+        # Null is not "clean": an installed copy has no working tree to be
+        # either, and a commit can be known without one (see
+        # `run_log.git_state`). Naming it as unrecorded keeps the row from
+        # asserting a state nothing checked.
         tree = {True: "dirty at session start",
                 False: "clean at session start"}.get(
-                    dirty, "*(git unavailable)*")
+                    dirty, "*(not recorded)*")
         self._block(_kv_table(["Property", "Value"], [
             ("*meltiro* version", _code_cell(meta.get("meltiro_version"))),
             ("`engine_fp`", _code_cell(meta.get("engine_fp"))),
@@ -2126,6 +2133,15 @@ def _describe_run_event(event):
                 + " to "
                 + json.dumps(event.get("decoding_specified"),
                              ensure_ascii=False, sort_keys=True) + ".")
+        # Three states, because null is not clean: a copy with no working
+        # tree has neither state, and calling that clean would assert of the
+        # segment what nothing examined (see `run_log.git_state`).
+        tree = {
+            True: " The code tree was dirty at the start of this segment.",
+            False: " The code tree was clean at the start of this segment.",
+        }.get(event.get("git_dirty"),
+              " The code tree's state at the start of this segment was not "
+              "recorded.")
         return (
             "the run was resumed. Extractor tool-call cap "
             f"{event.get('previous')} to {event.get('max_tool_calls')}, "
@@ -2133,9 +2149,7 @@ def _describe_run_event(event):
             f"{event.get('previous_max_review_tool_calls')} to "
             f"{event.get('max_review_tool_calls')}, diagnostics "
             f"{event.get('previous_diagnostics')} to "
-            f"{event.get('diagnostics')}. The code tree was "
-            + ("dirty" if event.get("git_dirty") else "clean")
-            + " at the start of this segment." + decoding
+            f"{event.get('diagnostics')}." + tree + decoding
         )
     if name == "extractor_reprompt":
         return ("the turn called no tool, so *meltiro* sent this back: "

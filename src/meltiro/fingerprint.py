@@ -492,8 +492,9 @@ def engine_fingerprint(meltiro_version, meltiro_source_hash,
                           | direktoro_version | direktoro_src )
 
     The git commit and the working tree's state are recorded with every run
-    but are not preimage components: they identify the CHECKOUT; the source
-    hash identifies the code itself.
+    but are not preimage components: they identify WHERE THE CODE CAME FROM,
+    which for an installed copy is a commit with no working tree beside it;
+    the source hash identifies the code itself, wherever it sits.
     """
     direktoro_ver = (direktoro_version if direktoro_version is not None
                      else "nodirektoro")

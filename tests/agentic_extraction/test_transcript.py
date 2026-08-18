@@ -1054,6 +1054,44 @@ class TestTheUnhappyPaths:
         assert ("| Stated surrender reason | the paper reports no usable "
                 "outcome |") in document
 
+    @pytest.mark.parametrize("dirty,expected", [
+        (True, "| git working tree | dirty at session start |"),
+        (False, "| git working tree | clean at session start |"),
+        (None, "| git working tree | *(not recorded)* |"),
+    ])
+    def test_the_engine_table_reports_the_tree_state_it_was_given(
+            self, tmp_path, dirty, expected):
+        # All three arms pinned, not only the absent one: with the asserting
+        # arms unpinned the labels could be swapped — a dirty tree rendering
+        # as clean — and the suite would not notice.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "terminate",
+              "status": "failed_validation"}],
+            meta={"git_commit": "9f21ab7", "git_dirty": dirty})
+        assert expected in render_transcript(session_dir)
+
+    def test_an_unrecorded_tree_state_is_not_reported_as_clean(
+            self, tmp_path):
+        # An installed copy knows its commit and has no working tree to call
+        # clean or dirty, so both places that render the flag say it was not
+        # recorded rather than picking the reassuring half of a binary.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "resumed", "max_tool_calls": 200,
+              "previous": 50, "max_review_tool_calls": 30,
+              "previous_max_review_tool_calls": 30, "diagnostics": "minimal",
+              "previous_diagnostics": "minimal", "git_dirty": None},
+             {"ts": "T1", "event": "terminate",
+              "status": "failed_validation"}],
+            meta={"git_commit": "9f21ab7", "git_dirty": None})
+        document = render_transcript(session_dir)
+        assert "| git commit | `9f21ab7` |" in document
+        assert "| git working tree | *(not recorded)* |" in document
+        assert ("The code tree's state at the start of this segment was not "
+                "recorded.") in document
+        assert "The code tree was clean" not in document
+
     def test_a_canonicalised_value_is_reported_next_to_its_field(
             self, tmp_path):
         session_dir = _hand_built_session(tmp_path, [

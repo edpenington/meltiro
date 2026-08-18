@@ -201,9 +201,12 @@ meltiro --version
 ```
 
 `--version` takes no subcommand. It prints the release and the `engine_fp` this
-installation would record, with the checkout it sits in and the direktoro
+installation would record, with where that copy came from and the direktoro
 version beside it — so an operator holding a `run.json` can check the engine
-axis of a run against the code in front of them without opening Python.
+axis of a run against the code in front of them without opening Python. A
+source checkout prints its commit and whether the package's own files are
+clean; an installed copy prints the commit the installer recorded fetching and
+says it has no working tree, rather than calling one clean.
 
 `extract` also takes `--dry-run`, per-role model overrides
 (`--extractor-model`, `--checker-model`, `--review-model`), cap overrides
@@ -570,7 +573,9 @@ common comparisons are single-axis:
   (*meltiro*'s and direktoro's). Two runs share an `engine_fp` exactly when the
   same source ran, whether from a checkout, a wheel, or a tree with a working
   edit in it. The git commit and the tree's state are recorded beside it: they
-  say where the copy came from, the fingerprint says what it was.
+  say where the copy came from, the fingerprint says what it was. The tree's
+  state is null where there is no tree to read, which is the ordinary case for
+  an installed copy.
 
 The suite pins every fingerprint to a literal, so a change to any preimage
 fails loudly and has to be a deliberate, reviewed decision rather than a
