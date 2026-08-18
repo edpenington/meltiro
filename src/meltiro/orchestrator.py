@@ -1517,6 +1517,29 @@ class Orchestrator:
         the same inputs to the same provider. Waiting is NOT the axis: a 400
         is as unfixable by waiting as an empty balance.
 
+        WHAT THIS DEPENDS ON, AND WHERE THE DEPENDENCE LIVES. The pause means
+        whatever the class means, and the class is defined in another package.
+        Nothing is caught here to be logged: it is caught to stop a run in a
+        way that can be RESUMED, on the promise that a human fixes something
+        outside this process and the same call then succeeds. So a release
+        that admits a new failure into `ProviderAccountError` adds it to what
+        this pauses on, in a version bump, with no line of this file changing.
+
+        There is no defence from here. The class carries no discriminator, by
+        a decision this package asked for and would ask for again — telling
+        its members apart from outside would mean reading the exception's
+        message text, which is the thing the taxonomy exists to spare a
+        consumer and which would break the first time a provider reworded a
+        sentence. The declared floor in `pyproject.toml` is therefore the
+        whole of the defence, which makes raising it a semantic act rather
+        than routine maintenance: the question to answer before raising it is
+        not whether the new version is compatible but whether every failure it
+        newly admits satisfies "would a human fixing something outside the
+        process make this same call succeed". A refusal that is about the
+        REQUEST fails that test however credential-shaped its status looks,
+        and pausing on one would strand a run waiting for an account nobody
+        needs to touch.
+
         THREE legs reach a provider and only two of them pause. The
         extractor's refusal and the reviewer's both raise into `run()`; the
         CHECKER's does not, and deliberately so. `checker.py` turns every
