@@ -79,6 +79,15 @@ from meltiro.fingerprint import (
 from meltiro.instrument import Instrument
 from direktoro import (
     create_message_with_retry, is_known_model, resolved_decoding_params)
+# The refusal that is about the CALLER rather than the call: an exhausted
+# balance or spend cap, a key that is absent, wrong or revoked, a key not
+# entitled to this model or endpoint. It is the one provider failure a run can
+# pause on, because it is the one whose fix is outside the process and leaves
+# the extraction untouched. Everything else direktoro raises stays a plain
+# `ProviderError` and stays terminal — a malformed request is equally
+# unfixable by waiting, and a run that paused on one would resume into it for
+# ever. See `_pause_on_provider_account`.
+from direktoro import ProviderAccountError
 from meltiro.rates import cache_write_split
 from meltiro.prompt_builder import (
     EMPTY_ASSISTANT_PLACEHOLDER, EXTRACTOR_TOOL_REPROMPT,
@@ -1433,6 +1442,13 @@ class Orchestrator:
 
         The returned status is therefore always the one on disk, rendering
         fault or not.
+
+        Two things reach (a) as a PAUSE rather than a finalisation, and both
+        leave the session `in_progress` and resumable with no run-log entry:
+        the tool-call cap, raised from inside the extractor loop, and a
+        provider refusing over the account, caught here (see
+        `_pause_on_provider_account`). Every other provider failure, and every
+        other exception, finalises `error` through the handlers below.
         """
         if self.dry_run:
             # A dry run never enters the live loop: the CLI routes it through
@@ -1445,6 +1461,14 @@ class Orchestrator:
 
         try:
             status = self._run_to_stop()
+        except ProviderAccountError as e:
+            # Ordered first: the one provider refusal that PAUSES. It is about
+            # who is asking rather than what was asked, so the extraction is
+            # untouched and the fix is outside the process — the same shape as
+            # the tool-call cap, and resumable on the same terms. Every other
+            # provider failure falls through to the handlers below and ends
+            # the run.
+            status = self._pause_on_provider_account(e)
         except AgenticExtractionError as e:
             self._report_run_error(str(e))
             status = self._finalise("error")
@@ -1458,6 +1482,58 @@ class Orchestrator:
             status = self._finalise("error")
         self._render_artefacts()
         return status
+
+    def _pause_on_provider_account(self, error):
+        """Pause the run on a provider refusal about the ACCOUNT, and record
+        what the provider said. Returns "in_progress", from `_pause`.
+
+        The second thing that pauses rather than terminates, and it pauses for
+        the same reason the tool-call cap does: nothing about the extraction is
+        wrong, and the fix is a thing a person does outside this process — top
+        up a balance, replace a revoked key, grant a key access to the model.
+        Once they have, the same session continues; re-running from scratch
+        would repay work that succeeded, which for a run that had already
+        finished extracting is the entire expensive half.
+
+        The refusal is `direktoro.ProviderAccountError` and nothing else. That
+        class means the provider refused over WHO IS ASKING rather than what
+        was asked, which is exactly the property that makes a pause safe: an
+        outside fix changes the answer. The plain `ProviderError` beside it
+        covers malformed requests and direktoro's own refusals of a served
+        response, and those must stay terminal — a run that paused on a
+        malformed request would resume into it for ever, since a resume sends
+        the same inputs to the same provider. Waiting is NOT the axis: a 400
+        is as unfixable by waiting as an empty balance.
+
+        `str(error)` is recorded and printed verbatim, whatever shape it has.
+        For a translated SDK exception it is the SDK's own rendering of the
+        provider's response — an `Error code: 429 - {...}` wrapper around the
+        body dict, with the provider's instruction inside it. That is not a
+        tidy sentence and is not presented as one: it is what the provider
+        said, complete with the `type` and `code` that a support conversation
+        or a methods record may need, and the alternative to printing it whole
+        is parsing it, which would break on the first wrapper change. Every
+        other provider failure is reported through `_report_run_error` on the
+        same terms, so the pause note shows an operator no less than the error
+        note would have.
+        """
+        message = (
+            "the provider refused this call over the account or the "
+            "credential rather than the request (an exhausted balance or "
+            "spend cap, or a key that is absent, revoked, or not entitled "
+            "to this model). The extraction is untouched and the session is "
+            f"resumable once the account is fixed. The provider said: {error}")
+        # The event log is where the provider's words live, not run.json:
+        # `_pause` writes only what makes the pause durable and resumable, and
+        # the sentence is neither. The transcript renders it from here (see
+        # `_describe_run_event`), which is also where a reader finds the
+        # `provider_retry` events that preceded it on a leg that retried.
+        self.session.append_event({
+            "event": "provider_account_refused",
+            "message": str(error),
+        })
+        print(f"  PAUSED: {message}", file=sys.stderr)
+        return self._pause("provider_account")
 
     def _report_run_error(self, message, *, traceback=None):
         """Record the failure that ended the run: an `error` event carrying the
@@ -1522,21 +1598,35 @@ class Orchestrator:
         # key degrades every field to a challenge only after the extractor
         # has fully spent.
         self._preflight_keys()
-        extractor_status = self._extractor_loop()
-        stop = self._finalise_loop_stop(extractor_status)
-        if stop is not None:
-            return stop
-        if extractor_status != "mark_complete_validated":
-            # `_finalise_loop_stop` answers None both for the one outcome
-            # the run continues past and for any it does not recognise, so
-            # None alone does not mean "the extractor finished". An
-            # outcome added or renamed later raises here and finalises
-            # `error` rather than drifting through to `complete`.
-            raise AgenticExtractionError(
-                f"unrecognised extractor loop outcome "
-                f"{extractor_status!r}: it is neither a mapped stop nor "
-                f"the completion signal, so the run cannot continue. Map "
-                f"it in _finalise_loop_stop.")
+        # A resumed session that already holds the extractor's completion
+        # claim re-enters at the REVIEWER, not at the extractor. The claim is
+        # cleared by every field write and every record removal, so holding it
+        # means the record on disk is exactly the one the extractor declared
+        # complete and the completeness gate passed: the extractor has nothing
+        # left to be asked. Re-entering the loop instead would replay the whole
+        # conversation and pay a live turn to be told again what run.json
+        # already records — and a model given its own finished work back can
+        # revise it, so the turn is not merely wasted but capable of moving an
+        # extraction that was already final.
+        #
+        # A fresh session always has the claim false, so this costs a first
+        # run nothing and changes nothing about how one reaches the reviewer.
+        if not self.extraction_record.mark_complete_flag:
+            extractor_status = self._extractor_loop()
+            stop = self._finalise_loop_stop(extractor_status)
+            if stop is not None:
+                return stop
+            if extractor_status != "mark_complete_validated":
+                # `_finalise_loop_stop` answers None both for the one outcome
+                # the run continues past and for any it does not recognise, so
+                # None alone does not mean "the extractor finished". An
+                # outcome added or renamed later raises here and finalises
+                # `error` rather than drifting through to `complete`.
+                raise AgenticExtractionError(
+                    f"unrecognised extractor loop outcome "
+                    f"{extractor_status!r}: it is neither a mapped stop nor "
+                    f"the completion signal, so the run cannot continue. Map "
+                    f"it in _finalise_loop_stop.")
 
         # Extractor signalled mark_complete. Challenges are advisory (see
         # module docstring); anything still challenged is recorded in
@@ -2052,6 +2142,22 @@ class Orchestrator:
             try:
                 response = self._call_review(
                     adapter, tool_defs, messages, system_text, turn_id)
+            except ProviderAccountError:
+                # Ordered ahead of the catch-all deliberately, and it RAISES
+                # rather than returning an outcome. Every other per-turn
+                # failure here is a fact about this run that the review is
+                # entitled to end on; this one is a fact about the account,
+                # and flattening it into "error" would discard the one piece
+                # of information that makes the session resumable. run()
+                # pauses on it (see `_pause_on_provider_account`), which is
+                # why this leg needs the exception itself rather than a status
+                # word — and why the recording below is a plain event with no
+                # return.
+                self.session.append_event({
+                    "event": "review_provider_account_refused",
+                    "turn_id": turn_id,
+                })
+                raise
             except Exception as e:
                 self.session.append_event({
                     "event": "review_error", "message": str(e),

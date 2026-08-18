@@ -393,6 +393,24 @@ class ExtractionRecord:
         """
         self.initial_check_recorded = bool(recorded)
 
+    def set_mark_complete_flag(self, complete):
+        """Restore the extractor's standing completion claim (from run.json on
+        resume).
+
+        The flag means "the extractor declared this record complete and the
+        completeness gate passed, and nothing has changed it since": every
+        field write and every record removal clears it as it lands (see the
+        mutations above), so it can only be true of the record exactly as it
+        sits. That is what makes it safe to persist and to act on — a resumed
+        session holding it can go straight to the reviewer, because the
+        extraction the claim was made about is the extraction on disk.
+
+        Without this a resumed session would re-enter the extractor loop with
+        the claim lost, and pay a live turn to be told again what the record
+        already records.
+        """
+        self.mark_complete_flag = bool(complete)
+
     def set_record_id_counters(self, counters):
         """Load the per-entity next-index bookkeeping (from run.json on resume).
 

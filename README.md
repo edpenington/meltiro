@@ -210,13 +210,19 @@ axis of a run against the code in front of them without opening Python.
 (`--max-tool-calls`, `--max-checks-per-field`), `--final-review` /
 `--no-final-review`, and `--diagnostics {minimal,standard,full}`.
 
-**Resuming.** A run that hits its tool-call cap pauses rather than failing, and
-can be continued: `--resume SESSION_DIR` continues a named session, and
-`--auto-resume` finds the newest in-progress session whose config still
-matches. A resume is refused if the config has drifted, because continuing
-under a changed instrument would produce a run no fingerprint describes. The
-tool-call cap itself is deliberately in no fingerprint, so raising the cap and
-resuming is accepted rather than refused as drift.
+**Resuming.** Two things pause a run rather than failing it, and both can be
+continued: hitting the tool-call cap, and a provider refusing over the account
+or the credential rather than the request (an exhausted balance or spend cap, a
+key absent, revoked, or not entitled to the model). The second leaves the
+extraction untouched and is fixed outside the process, so the session waits
+instead of repaying work that succeeded — a run whose extraction had finished
+resumes into the reviewer without re-running the expensive half. `--resume
+SESSION_DIR` continues a named session, and `--auto-resume` finds the newest
+in-progress session whose config still matches. A resume is refused if the
+config has drifted, because continuing under a changed instrument would
+produce a run no fingerprint describes. The tool-call cap itself is
+deliberately in no fingerprint, so raising the cap and resuming is accepted
+rather than refused as drift.
 
 `transcript` re-renders a session as one Markdown document. Every run already
 writes that document itself whenever it stops; this reads an already-paid run
@@ -228,8 +234,11 @@ completed. Pass `--paper` to quote-check the evidence too.
 
 **Exit codes.** `0` — the run produced a session and an output, including a run
 that paused on its cap (`in_progress`) or finished `failed_validation`. `1` —
-status `error`, an invalid bundle, or any failure of the read-only subcommands.
-`2` — a usage error, or a resume refused for config drift.
+status `error`, a run paused on a provider-account refusal, an invalid bundle,
+or any failure of the read-only subcommands. A provider-account pause is
+resumable but still exits nonzero: nothing in the process can clear it, and
+every remaining paper in a batch will stop the same way. `2` — a usage error,
+or a resume refused for config drift.
 
 **Providers and keys.** Transport follows `direktoro`: its registry decides,
 per model, which endpoint the call goes to, whether it is called direct or
@@ -534,9 +543,10 @@ config bundle had not changed since, which nothing in the session records. A
 conversation; only the instrument is gone for good.
 
 **Run statuses.** `complete` — trust it (after your own checking).
-`in_progress` — it paused; resume it. `failed_validation` — it finished without
-a valid extraction; investigate. `error` — it broke; fix and re-run. When the
-reviewer is enabled, a run finalises `complete` only on the reviewer's
+`in_progress` — it paused on its tool-call cap or on a provider-account refusal
+(`pause_reason` says which); resume it. `failed_validation` — it finished
+without a valid extraction; investigate. `error` — it broke; fix and re-run.
+When the reviewer is enabled, a run finalises `complete` only on the reviewer's
 confirmation; the outcome mappings are exhaustive and default to failure, so
 nothing unrecognised can finalise as success.
 

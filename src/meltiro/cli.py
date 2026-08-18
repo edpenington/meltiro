@@ -821,7 +821,28 @@ def _print_run_summary(orch, status):
     # free when what actually happened is that nothing said what it cost.
     _print_total_cost(orch)
     meta = orch.session.meta
-    if status == "in_progress":
+    if status == "in_progress" and meta.get("pause_reason") == \
+            "provider_account":
+        # A PROVIDER-ACCOUNT pause. The session is in_progress and resumable,
+        # but unlike the cap it stopped on something the operator has to go
+        # and fix elsewhere, so the note names the fix rather than a flag to
+        # raise. The provider's own words are in the event log and were
+        # printed to stderr as the run stopped; they are not repeated here.
+        print()
+        print("  NOTE: the provider refused over the account or the "
+              "credential, not the")
+        print("  request, so the run PAUSED rather than failing "
+              "(pause_reason: "
+              f"{meta.get('pause_reason')}).")
+        print("  The extraction is untouched. Fix the account — top up the "
+              "balance, or")
+        print("  replace a revoked key, or grant the key access to the "
+              "model — then resume")
+        print("  the same session, which repays nothing it already spent:")
+        print()
+        print("    meltiro extract --config <config> --paper <bundle> \\")
+        print(f"      --resume {orch.session.session_dir}")
+    elif status == "in_progress":
         # A tool-call-cap PAUSE. The session is genuinely in_progress and its
         # meta says so, so --resume reattaches and continues the same
         # conversation once the cap is raised.
@@ -962,6 +983,35 @@ def _present_count(value):
     return "an unrecorded number of" if value is None else str(value)
 
 
+# The command failed, whatever the session says about itself. "error" is a
+# session status; the other is not — it is a pause the exit code must not
+# report as success, and `_command_status` is the only place it is minted.
+_FAILED_COMMAND_STATUSES = frozenset({"error", "provider_account_paused"})
+
+
+def _command_status(orch, status):
+    """What the COMMAND did, given what the session recorded.
+
+    The two answer the same question for every stop but one. A tool-call-cap
+    pause is a budget the operator set, reached: the command did what it was
+    asked and exits 0. A provider-account pause is a stop nothing here can
+    clear — the balance is spent, or the key is revoked — and every remaining
+    paper in a `--paper`-per-study batch will stop the same way. Reporting
+    that as success would tell a script the batch ran, so it is mapped to a
+    status of its own and exits 1, which is what this failure already did
+    before it became resumable.
+
+    Naming it here rather than on the session is deliberate: `in_progress`
+    with a `pause_reason` is the honest record of what the run IS, and a
+    consumer reading run.json must not find a status invented for an exit
+    code. This name never reaches disk.
+    """
+    if status == "in_progress" and \
+            orch.session.meta.get("pause_reason") == "provider_account":
+        return "provider_account_paused"
+    return status
+
+
 def _run_one(config, bundle, out_dir, loop_cfg, args):
     """Run one study. Returns the terminal status string, or "error" when the
     run raises or the study finalises in an error state.
@@ -1050,7 +1100,7 @@ def _run_one(config, bundle, out_dir, loop_cfg, args):
         print(f"  ERROR: {e}", file=sys.stderr)
         return "error"
     _print_run_summary(orch, status)
-    return status
+    return _command_status(orch, status)
 
 
 def _resume_one(config, bundle, out_dir, loop_cfg, args):
@@ -1115,7 +1165,7 @@ def _resume_one(config, bundle, out_dir, loop_cfg, args):
         print(f"  ERROR: {e}", file=sys.stderr)
         return "error"
     _print_run_summary(orch, status)
-    return status
+    return _command_status(orch, status)
 
 
 def _out_dir_problem(out_dir):
@@ -1244,22 +1294,25 @@ def _cmd_extract(args):
     # refused: the invocation is answerable as written.
     bundles = _without_duplicate_studies(bundles)
 
-    # Exit nonzero (1) only when a study raises or finalises in status
-    # "error"; every other terminal status exits 0. A paused run
-    # ("in_progress", the tool-call cap) and "failed_validation" (a
+    # Exit nonzero (1) when a study raises, finalises in status "error", or
+    # pauses on a provider-account refusal; every other outcome exits 0. A
+    # tool-call-cap pause ("in_progress") and "failed_validation" (a
     # produced-but-invalid extraction) each still leave a session and an
-    # extraction output, so only a hard "error" fails the command. (Usage and
-    # resume-refusal errors exit 2, handled in _resume_one / _cmd_extract
-    # argument checks.)
+    # extraction output that the command was asked for, so neither fails it.
+    # The account pause is the odd one: it leaves a resumable session, but it
+    # stopped on something outside this process that a person has to clear,
+    # and it exits 1 for the same reason it did when it was terminal (see
+    # `_command_status`). (Usage and resume-refusal errors exit 2, handled in
+    # _resume_one / _cmd_extract argument checks.)
     if args.resume:
         status = _resume_one(config, bundles[0], out_dir, loop_cfg, args)
-        return 1 if status == "error" else 0
+        return 1 if status in _FAILED_COMMAND_STATUSES else 0
 
     statuses = [
         _run_one(config, bundle, out_dir, loop_cfg, args)
         for bundle in bundles
     ]
-    return 1 if any(s == "error" for s in statuses) else 0
+    return 1 if any(s in _FAILED_COMMAND_STATUSES for s in statuses) else 0
 
 
 # ---------------------------------------------------------------------------

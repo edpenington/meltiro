@@ -900,11 +900,22 @@ class Session:
         # extraction resuming as though a report on the inputs had been made.
         # Written only when it changes, so this costs one extra meta write per
         # run rather than one per tool call.
-        if self.meta.get("initial_check_recorded") != \
-                extraction_record.initial_check_recorded:
-            self.meta["initial_check_recorded"] = \
-                extraction_record.initial_check_recorded
-            self.write_meta()
+        #
+        # The extractor's standing completion claim goes out here too, and for
+        # the same reason in the same direction: it is safe when it LAGS the
+        # output. A crash between the two writes leaves the claim absent over
+        # an output that carries it, costing a resumed run one extractor turn
+        # to restate what the record already holds. Claim-first would fail the
+        # other way — a resume sending an extraction to the reviewer as
+        # complete when the write that completed it never landed.
+        for key, value in (
+            ("initial_check_recorded",
+             extraction_record.initial_check_recorded),
+            ("mark_complete_flag", extraction_record.mark_complete_flag),
+        ):
+            if self.meta.get(key) != value:
+                self.meta[key] = value
+                self.write_meta()
 
     def append_event(self, event):
         """Append one JSON line to tool_calls.jsonl. `event` is a dict; a
@@ -1039,6 +1050,13 @@ class Session:
         record.set_record_id_counters(self.meta.get("record_id_counters", {}))
         record.set_initial_check_recorded(
             self.meta.get("initial_check_recorded", False))
+        # The extractor's standing completion claim, on the same terms as the
+        # gate above: session bookkeeping that run.json holds because the
+        # consumer-facing output does not. Absent in a session written before
+        # the field existed, which reads as no claim and costs such a resume
+        # nothing it was not already paying.
+        record.set_mark_complete_flag(
+            self.meta.get("mark_complete_flag", False))
         return record
 
     def max_turn_id(self):
