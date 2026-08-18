@@ -1054,6 +1054,23 @@ class TestTheUnhappyPaths:
         assert ("| Stated surrender reason | the paper reports no usable "
                 "outcome |") in document
 
+    @pytest.mark.parametrize("dirty,expected", [
+        (True, "| git working tree | dirty at session start |"),
+        (False, "| git working tree | clean at session start |"),
+        (None, "| git working tree | *(not recorded)* |"),
+    ])
+    def test_the_engine_table_reports_the_tree_state_it_was_given(
+            self, tmp_path, dirty, expected):
+        # All three arms pinned, not only the absent one: with the asserting
+        # arms unpinned the labels could be swapped — a dirty tree rendering
+        # as clean — and the suite would not notice.
+        session_dir = _hand_built_session(
+            tmp_path,
+            [{"ts": "T0", "event": "terminate",
+              "status": "failed_validation"}],
+            meta={"git_commit": "9f21ab7", "git_dirty": dirty})
+        assert expected in render_transcript(session_dir)
+
     def test_an_unrecorded_tree_state_is_not_reported_as_clean(
             self, tmp_path):
         # An installed copy knows its commit and has no working tree to call

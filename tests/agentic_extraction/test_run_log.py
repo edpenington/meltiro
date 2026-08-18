@@ -233,14 +233,30 @@ def test_git_state_graceful_when_git_unavailable(monkeypatch):
     assert run_log.git_state() == (None, None)
 
 
+def _git_commit_argv(message):
+    """`git commit` argv that answers to this suite and not to the developer.
+
+    Identity is supplied because a machine may have none. Signing is disabled
+    because a machine may have one it cannot use: `commit.gpgsign` is on in
+    this project's own author's global config, and a signing key that is
+    absent, locked, or unreachable — a container, an SSH session, an agent
+    that has dropped its identities — turns every test that builds a
+    repository into an error about a secret key. Hooks are silenced for the
+    same reason: a global `core.hooksPath` would run somebody's pre-commit
+    against a three-file fixture.
+    """
+    return ["git",
+            "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+            "commit", "-q", "-m", message]
+
+
 def _repo_with_commit(path):
     """A git repository at `path` holding whatever `path` already contains."""
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-         "commit", "-q", "-m", "initial"], cwd=path, check=True)
+    subprocess.run(_git_commit_argv("initial"), cwd=path, check=True)
     return path
 
 
@@ -303,9 +319,7 @@ def test_the_dirty_flag_describes_the_package_not_the_whole_repo(
     # exists to stop making, arriving through a different door.
     consumer, anchor = _installed_layout(tmp_path)
     subprocess.run(["git", "add", "-A"], cwd=consumer, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-         "commit", "-q", "-m", "vendored"], cwd=consumer, check=True)
+    subprocess.run(_git_commit_argv("vendored"), cwd=consumer, check=True)
     monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor)
     monkeypatch.setattr(run_log, "_installed_commit", lambda: None)
 
@@ -329,9 +343,7 @@ def test_a_tracked_install_still_has_its_tree_measured(
     # that have been patched.
     consumer, anchor = _installed_layout(tmp_path)
     subprocess.run(["git", "add", "-A"], cwd=consumer, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-         "commit", "-q", "-m", "vendored"], cwd=consumer, check=True)
+    subprocess.run(_git_commit_argv("vendored"), cwd=consumer, check=True)
     monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor)
     monkeypatch.setattr(run_log, "_installed_commit", lambda: "abc1234")
 

@@ -65,15 +65,38 @@ class TestVersion:
 
     def test_version_reports_the_working_tree_state(self, capsys):
         # A dirty tree makes the commit an incomplete description of the code
-        # that ran, which is why engine_fp folds the flag in. Whichever state
-        # this copy is in — a checkout with a tree to read, an installed copy
-        # with none, or one whose origin nothing records — --version must name
-        # it rather than stay silent.
+        # that ran; `engine_fp` is what tells the two apart, since the flag
+        # reaches no fingerprint preimage. Whichever state this copy is in — a
+        # checkout with a tree to read, an installed copy with none, or one
+        # whose origin nothing records — --version must name it rather than
+        # stay silent.
         _run(["--version"])
         out = capsys.readouterr().out
         assert any(s in out for s in
                    ("clean tree", "dirty tree", "no working tree",
                     "origin not recorded"))
+
+    @pytest.mark.parametrize("state,expected,forbidden", [
+        (("abc1234", True), "commit abc1234, dirty tree", "clean"),
+        (("abc1234", False), "commit abc1234, clean tree", "dirty"),
+        # The case this whole line exists for: a commit is known and no
+        # working tree exists to be either. Naming one would be an assertion
+        # about files nothing examined.
+        (("abc1234", None), "commit abc1234, no working tree", "clean tree"),
+        ((None, None), "origin not recorded", "commit"),
+    ])
+    def test_version_never_names_a_tree_state_nothing_examined(
+            self, capsys, monkeypatch, state, expected, forbidden):
+        # Pinning the ASSERTING arms, not just the absent one. Without this
+        # the installed-copy arm could be reverted to "clean tree" — an
+        # affirmative claim about a tree that does not exist — and the whole
+        # suite would still pass.
+        from meltiro import run_log
+        monkeypatch.setattr(run_log, "git_state", lambda: state)
+        _run(["--version"])
+        out = capsys.readouterr().out
+        assert expected in out
+        assert forbidden not in out.replace(expected, "")
 
 
 class TestValidateBundle:

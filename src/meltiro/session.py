@@ -438,9 +438,9 @@ class Session:
             "started_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
             # The engine's identity, human-readable half: the versions say
-            # which releases asked the question, the commit says which
-            # checkout they came from, and `engine_fp` below identifies the
-            # code itself. `meltiro_version` is always present, including in
+            # which releases asked the question, the commit says where
+            # they came from — a checkout, or an installed copy's own record
+            # — and `engine_fp` below identifies the code itself. `meltiro_version` is always present, including in
             # an installed copy with no repository around it;
             # `direktoro_version` and `alteksto_version` are null only when
             # those packages are absent.

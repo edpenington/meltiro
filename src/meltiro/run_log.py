@@ -436,9 +436,9 @@ def engine_identity():
     installed.
 
     The git commit and dirty flag are NOT here. They are recorded with every
-    run by `git_state()` beside this, because they say which checkout the code
-    came from, which a reader wants; the axis itself is content, so what
-    identifies the code is the digests above.
+    run by `git_state()` beside this, because they say where the code came
+    from, which a reader wants; the axis itself is content, so what identifies
+    the code is the digests above.
 
     Like `git_state()`, this takes a reading at the moment it is called. A
     session, each of its resumed segments and its run-log entry read it

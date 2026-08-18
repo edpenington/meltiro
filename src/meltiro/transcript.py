@@ -736,7 +736,10 @@ class _Renderer:
             "dispatcher returns to a model). `engine_fp` does: it hashes both "
             "engine packages' versions together with a digest of each one's "
             "source, so it names the code that asked the question. The commit "
-            "beside it names the checkout that code was read from."
+            "beside it names where that code came from — the checkout it "
+            "was read from, or, for an installed copy, what the installer "
+            "recorded fetching. An installed copy has no working tree, "
+            "which is what the row below says rather than calling it clean."
         )
         self._p()
         dirty = meta.get("git_dirty")
