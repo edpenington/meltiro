@@ -86,15 +86,27 @@ dependencies = [
     # in each run-log entry, folded into `engine_fp`), so the declaration here
     # and the artefact agree on which direktoro produced a given run.
     #
-    # 0.4.2 raises it, and unlike the fingerprint reasoning above this is a
-    # feature floor: `ProviderAccountError` arrives there, and the orchestrator
-    # imports it by name to decide which provider refusals pause a run and
-    # which end it (see `Orchestrator._pause_on_provider_account`). Below the
-    # floor that import raises, so the floor is declared rather than guarded —
-    # a run that silently finalised `error` where a newer install would have
-    # paused and kept the extraction is the failure worth an install-time
-    # refusal to avoid.
-    "direktoro>=0.4.2",
+    # 0.4.3 raises it, and unlike the fingerprint reasoning above this is a
+    # feature floor — and a SEMANTIC one, which is the stricter thing to be.
+    # `ProviderAccountError` decides which provider refusals pause a run and
+    # which end it (see `Orchestrator._pause_on_provider_account`), so the
+    # floor does not merely say the name imports: it says what the name means.
+    #
+    # 0.4.2 is where the class arrives, and it is excluded deliberately. There
+    # every 403 is that class, and a 403 is not one thing — OpenRouter, a
+    # transport direktoro registers, documents it as a permission denial OR a
+    # guardrail block OR a moderation flag. The last two are refusals about
+    # what was ASKED, and pausing on one strands a run waiting for an account
+    # nobody needs to touch, resuming into the same block for as long as
+    # anyone keeps resuming it. 0.4.3 reads the body's markers and leaves
+    # those a plain `ProviderError`; it also admits 402, so a gateway balance
+    # running dry pauses as a direct one already did.
+    #
+    # Declared rather than guarded, because the failure it prevents is silent
+    # in both directions: an older install pauses on a blocked prompt, and
+    # nothing in a run record would say why the operator was sent to look at
+    # a balance.
+    "direktoro>=0.4.3",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
 ]

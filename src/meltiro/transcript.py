@@ -2222,12 +2222,17 @@ def _describe_run_event(event):
                 "failing; the provider's words are on the "
                 "`provider_account_refused` note below.")
     if name == "provider_account_refused":
+        # The provider's own sentence where there is one, the SDK's whole
+        # rendering otherwise. Both are on the event; a reader wants the
+        # sentence, and the envelope is what they fall back to when no
+        # provider spoke.
+        said = event.get("provider_message") or event.get("message") or ""
         return (
             "the provider refused over the account or the credential rather "
             "than the request — an exhausted balance or spend cap, or a key "
-            "absent, revoked, or not entitled to the model. The extraction is "
-            "untouched and the session paused resumable. The provider said: "
-            + json.dumps(event.get("message") or "", ensure_ascii=False))
+            "absent, revoked, or not entitled to the model. Nothing about the "
+            "extraction is wrong and the session paused resumable. The "
+            "provider said: " + json.dumps(said, ensure_ascii=False))
     if name == "error":
         return ("the run raised: "
                 + json.dumps(event.get("message") or "", ensure_ascii=False))

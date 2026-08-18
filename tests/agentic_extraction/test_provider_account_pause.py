@@ -196,6 +196,52 @@ def test_an_ordinary_review_failure_still_ends_the_run(
 # What the pause is worth: re-entry
 # ---------------------------------------------------------------------------
 
+def test_the_operator_reads_the_providers_sentence_not_the_envelope(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch, capsys):
+    # direktoro parses the body once, in the place that holds it, so the note
+    # can name the instruction rather than an SDK envelope wrapped round a
+    # stringified dict. The event keeps both: the envelope carries the status
+    # and the type/code a methods record may want, and it can be THINNER than
+    # the sentence beside it, so neither subsumes the other.
+    out = tmp_path / "runs"
+    orch = _orch(config_dir, bundle_minimal_dir, out)
+    orch.prepare_new_session()
+
+    sentence = "You have no credits remaining. Add credits to continue."
+    error = ProviderAccountError("Error code: 402")
+    error.provider_message = sentence
+
+    def _refused():
+        raise error
+    monkeypatch.setattr(orch, "_extractor_loop", _refused)
+    assert orch.run() == "in_progress"
+
+    assert sentence in capsys.readouterr().err
+    refusal, = [e for e in _events(orch.session.session_dir)
+                if e.get("event") == "provider_account_refused"]
+    assert refusal["provider_message"] == sentence
+    assert refusal["message"] == "Error code: 402"
+
+
+def test_a_refusal_no_provider_spoke_falls_back_to_the_envelope(
+        config_dir, bundle_minimal_dir, tmp_path, monkeypatch, capsys):
+    # `provider_message` is None whenever no provider actually said anything.
+    # A note with a blank where the reason goes would be worse than an ugly
+    # one, so the fallback is load-bearing rather than defensive.
+    out = tmp_path / "runs"
+    orch = _orch(config_dir, bundle_minimal_dir, out)
+    orch.prepare_new_session()
+
+    error = ProviderAccountError(SPENT)
+    assert error.provider_message is None
+
+    def _refused():
+        raise error
+    monkeypatch.setattr(orch, "_extractor_loop", _refused)
+    assert orch.run() == "in_progress"
+    assert SPENT in capsys.readouterr().err
+
+
 def _pause_in_review(orch, monkeypatch, *, edit=False):
     """Drive `orch` to a real account pause inside the final-review stage.
 

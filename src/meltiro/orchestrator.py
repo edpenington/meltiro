@@ -1557,17 +1557,22 @@ class Orchestrator:
         because a check fires on a field being written and a correct field is
         not rewritten.
 
-        `str(error)` is recorded and printed verbatim, whatever shape it has.
-        For a translated SDK exception it is the SDK's own rendering of the
-        provider's response — an `Error code: 429 - {...}` wrapper around the
-        body dict, with the provider's instruction inside it. That is not a
-        tidy sentence and is not presented as one: it is what the provider
-        said, complete with the `type` and `code` that a support conversation
-        or a methods record may need, and the alternative to printing it whole
-        is parsing it, which would break on the first wrapper change. Every
-        other provider failure is reported through `_report_run_error` on the
-        same terms, so the pause note shows an operator no less than the error
-        note would have.
+        WHAT THE OPERATOR IS TOLD, and it is two different things on purpose.
+        The note names `provider_message` — the provider's own sentence,
+        parsed once by direktoro in the place that holds the parsed body — so
+        an operator reads "You have no credits remaining. Add credits to
+        continue using the API" rather than an SDK envelope wrapped around a
+        stringified dict. The fallback to `str(error)` is not decoration:
+        `provider_message` is None whenever no provider actually spoke, as for
+        a refusal direktoro raises on its own authority, and a note with a
+        blank where the reason goes would be worse than an ugly one.
+
+        The EVENT keeps both. `str(error)` is the SDK's whole rendering,
+        carrying the status and the `type`/`code` a support conversation or a
+        methods record may want, and it can be thinner than the sentence
+        beside it, so neither subsumes the other. A record that a reader may
+        come to years later should hold what was said and how it arrived; the
+        line printed at the moment of the stop should hold only what to do.
         """
         message = (
             "the provider refused this call over the account or the "
@@ -1575,7 +1580,7 @@ class Orchestrator:
             "spend cap, or a key that is absent, revoked, or not entitled "
             "to this model). Nothing about the extraction is wrong and the "
             "session is resumable once the account is fixed. The provider "
-            f"said: {error}")
+            f"said: {error.provider_message or error}")
         # The event log is where the provider's words live, not run.json:
         # `_pause` writes only what makes the pause durable and resumable, and
         # the sentence is neither. The transcript renders it from here (see
@@ -1584,6 +1589,7 @@ class Orchestrator:
         self.session.append_event({
             "event": "provider_account_refused",
             "message": str(error),
+            "provider_message": error.provider_message,
         })
         print(f"  PAUSED: {message}", file=sys.stderr)
         return self._pause("provider_account")
