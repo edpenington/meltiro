@@ -1567,12 +1567,19 @@ class Orchestrator:
         a refusal direktoro raises on its own authority, and a note with a
         blank where the reason goes would be worse than an ugly one.
 
-        The EVENT keeps both. `str(error)` is the SDK's whole rendering,
-        carrying the status and the `type`/`code` a support conversation or a
-        methods record may want, and it can be thinner than the sentence
-        beside it, so neither subsumes the other. A record that a reader may
-        come to years later should hold what was said and how it arrived; the
-        line printed at the moment of the stop should hold only what to do.
+        The EVENT keeps both, and not because either is fuller than the
+        other. Where the sentence exists it is a SUBSTRING of `str(error)` —
+        the same text with the machinery still on: the status, and the raw
+        body it was unwrapped from. What the record gains by keeping the
+        envelope is that machinery, which a support conversation or a methods
+        record may need and which the sentence alone cannot reconstruct; what
+        the note gains by dropping it is a line an operator can act on.
+
+        The two places `str(error)` really is thin — a response with an empty
+        body, or one whose body is not JSON — are exactly the two where
+        `provider_message` is None, because there was nothing to unwrap. So
+        the fallback never trades a sentence for an envelope; it fires only
+        where no sentence was ever available.
         """
         message = (
             "the provider refused this call over the account or the "

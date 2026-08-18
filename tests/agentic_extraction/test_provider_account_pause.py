@@ -207,8 +207,15 @@ def test_the_operator_reads_the_providers_sentence_not_the_envelope(
     orch = _orch(config_dir, bundle_minimal_dir, out)
     orch.prepare_new_session()
 
+    # The envelope is the shape the SDK really builds — `f"Error code:
+    # {status} - {body}"` — so the sentence is a substring of it rather than
+    # an alternative to it. A hand-made message here would test a string no
+    # provider produces.
     sentence = "You have no credits remaining. Add credits to continue."
-    error = ProviderAccountError("Error code: 402")
+    envelope = ("Error code: 402 - {'error': {'message': " + repr(sentence)
+                + ", 'code': 402}}")
+    assert sentence in envelope
+    error = ProviderAccountError(envelope)
     error.provider_message = sentence
 
     def _refused():
@@ -216,11 +223,15 @@ def test_the_operator_reads_the_providers_sentence_not_the_envelope(
     monkeypatch.setattr(orch, "_extractor_loop", _refused)
     assert orch.run() == "in_progress"
 
-    assert sentence in capsys.readouterr().err
+    # The note names the sentence and drops the machinery around it.
+    printed = capsys.readouterr().err
+    assert sentence in printed
+    assert "Error code: 402 - {" not in printed
+    # The record keeps the machinery, which the sentence cannot reconstruct.
     refusal, = [e for e in _events(orch.session.session_dir)
                 if e.get("event") == "provider_account_refused"]
     assert refusal["provider_message"] == sentence
-    assert refusal["message"] == "Error code: 402"
+    assert refusal["message"] == envelope
 
 
 def test_a_refusal_no_provider_spoke_falls_back_to_the_envelope(
