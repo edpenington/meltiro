@@ -66,12 +66,14 @@ class TestVersion:
     def test_version_reports_the_working_tree_state(self, capsys):
         # A dirty tree makes the commit an incomplete description of the code
         # that ran, which is why engine_fp folds the flag in. Whichever state
-        # this checkout is in, --version must name it rather than stay silent.
+        # this copy is in — a checkout with a tree to read, an installed copy
+        # with none, or one whose origin nothing records — --version must name
+        # it rather than stay silent.
         _run(["--version"])
         out = capsys.readouterr().out
         assert any(s in out for s in
-                   ("clean tree", "dirty tree", "tree not examined",
-                    "no git repository"))
+                   ("clean tree", "dirty tree", "no working tree",
+                    "origin not recorded"))
 
 
 class TestValidateBundle:

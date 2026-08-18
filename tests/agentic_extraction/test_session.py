@@ -144,6 +144,9 @@ class TestCreate:
         def _no_git(*a, **k):
             raise FileNotFoundError("git")
         monkeypatch.setattr(subprocess, "run", _no_git)
+        # And no install record either, so the assertion is about git's
+        # degradation rather than how meltiro reached this machine.
+        monkeypatch.setattr(run_log, "_installed_commit", lambda: None)
         s = Session.create(
             "999", config_fp="config_fp:aaa", checker_fp=None, review_fp=None,
             instrument_fp="instrument_fp:inst", extractor_call_fp="call_fp:ext",

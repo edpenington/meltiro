@@ -409,14 +409,16 @@ class Session:
         session_dir = runs_dir / str(study_id) / "sessions" / session_id
         session_dir.mkdir(parents=True, exist_ok=False)
 
-        # Checkout anchor for provenance: the short git commit of the repo
-        # holding the meltiro package (not the operator's cwd) at session
-        # start, plus whether its tree had uncommitted changes. It says where
-        # the running code was read from; `engine_fp` below identifies the
-        # code itself. Both None when git is unavailable. This reading is
-        # taken at session start; the run-log entry takes its own at append
-        # time, so the two can legitimately differ if the code changes
-        # mid-run (see run_log.git_state).
+        # Origin anchor for provenance: the short git commit the running
+        # meltiro package came from (not the operator's cwd) at session
+        # start, plus whether the tree carrying it had uncommitted changes.
+        # It says where the running code was read from; `engine_fp` below
+        # identifies the code itself. The dirty flag alone is None for an
+        # installed copy, which has no working tree; both are None when
+        # nothing on disk records the origin (see run_log.git_state). This
+        # reading is taken at session start; the run-log entry takes its own
+        # at append time, so the two can legitimately differ if the code
+        # changes mid-run (see run_log.git_state).
         git_commit, git_dirty = git_state()
         # The other half of the engine: direktoro builds the provider-call
         # identity block leading every stage fingerprint and resolves what is

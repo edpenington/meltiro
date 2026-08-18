@@ -96,9 +96,12 @@ def _version_text():
     it hashes both packages' versions and both their source digests, so an
     operator holding a run record compares that one line and knows whether
     this tree made it — which versions alone cannot answer for a working
-    tree. The checkout (commit, clean/dirty) is printed under it: that says
+    tree. The origin (commit, clean/dirty) is printed under it: that says
     WHERE this copy came from once the fingerprint has said whether it
-    matches.
+    matches. An installed copy names the commit it was installed from and has
+    no working tree to call clean or dirty; a copy whose origin nothing on
+    disk records says so rather than borrowing a nearby repository's (see
+    `run_log.git_state`).
 
     The first line is the conventional `<prog> <version>` and is what a
     script should read; everything after it is detail for a human.
@@ -109,11 +112,11 @@ def _version_text():
     version, direktoro = identity[0], identity[2]
     commit, dirty = git_state()
     if commit is None:
-        tree = "no git repository"
+        origin = "origin not recorded"
     elif dirty is None:
-        tree = f"commit {commit}, tree not examined"
+        origin = f"commit {commit}, no working tree"
     else:
-        tree = f"commit {commit}, {'dirty' if dirty else 'clean'} tree"
+        origin = f"commit {commit}, {'dirty' if dirty else 'clean'} tree"
     return (
         f"meltiro {version}\n"
         # Through the one expression of "which engine is this", the same call a
@@ -121,7 +124,7 @@ def _version_text():
         # line printed to be compared against a run record has to be built the
         # way the record was.
         f"{current_engine_fp(identity)}\n"
-        f"  {tree}\n"
+        f"  {origin}\n"
         f"  direktoro {direktoro if direktoro else '(not installed)'}"
     )
 
