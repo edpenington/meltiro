@@ -1567,19 +1567,28 @@ class Orchestrator:
         a refusal direktoro raises on its own authority, and a note with a
         blank where the reason goes would be worse than an ugly one.
 
-        The EVENT keeps both, and not because either is fuller than the
-        other. Where the sentence exists it is a SUBSTRING of `str(error)` —
-        the same text with the machinery still on: the status, and the raw
-        body it was unwrapped from. What the record gains by keeping the
-        envelope is that machinery, which a support conversation or a methods
-        record may need and which the sentence alone cannot reconstruct; what
-        the note gains by dropping it is a line an operator can act on.
+        The EVENT keeps both, and the reason does not depend on how the two
+        strings relate. The envelope carries machinery the sentence does not:
+        the status, and the raw body it was read out of. A support
+        conversation or a methods record may need those, and the sentence
+        cannot reconstruct them. That is the whole of why the record holds it,
+        and it stays true whatever a future direktoro does to either value.
 
-        The two places `str(error)` really is thin — a response with an empty
-        body, or one whose body is not JSON — are exactly the two where
-        `provider_message` is None, because there was nothing to unwrap. So
-        the fallback never trades a sentence for an envelope; it fires only
-        where no sentence was ever available.
+        Observed at the 0.4.3 floor, and deliberately NOT relied on: where the
+        sentence is set it is a substring of the envelope, which is direktoro's
+        own documented account of it. Nothing here breaks if that stops being
+        so — the note would simply be showing a sentence the record states
+        another way, which is what the two fields are for. It is recorded as
+        an observation rather than an invariant because no test on either side
+        of the boundary pins it, and a cross-package claim nobody checks is
+        the kind that quietly becomes fiction.
+
+        The fallback is safe under the same indifference. `provider_message`
+        is None where the response carried nothing to unwrap — an empty body,
+        a body that is not JSON — and those are exactly the cases where the
+        envelope is all there ever was. Even if a sentence were somehow
+        withheld while the body held one, the envelope printed in its place
+        would still contain it.
         """
         message = (
             "the provider refused this call over the account or the "
