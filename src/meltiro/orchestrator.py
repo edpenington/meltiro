@@ -1567,12 +1567,28 @@ class Orchestrator:
         a refusal direktoro raises on its own authority, and a note with a
         blank where the reason goes would be worse than an ugly one.
 
-        The EVENT keeps both. `str(error)` is the SDK's whole rendering,
-        carrying the status and the `type`/`code` a support conversation or a
-        methods record may want, and it can be thinner than the sentence
-        beside it, so neither subsumes the other. A record that a reader may
-        come to years later should hold what was said and how it arrived; the
-        line printed at the moment of the stop should hold only what to do.
+        The EVENT keeps both, and the reason does not depend on how the two
+        strings relate. The envelope carries machinery the sentence does not:
+        the status, and the raw body it was read out of. A support
+        conversation or a methods record may need those, and the sentence
+        cannot reconstruct them. That is the whole of why the record holds it,
+        and it stays true whatever a future direktoro does to either value.
+
+        Observed at the 0.4.3 floor, and deliberately NOT relied on: where the
+        sentence is set it is a substring of the envelope, which is direktoro's
+        own documented account of it. Nothing here breaks if that stops being
+        so — the note would simply be showing a sentence the record states
+        another way, which is what the two fields are for. It is recorded as
+        an observation rather than an invariant because no test on either side
+        of the boundary pins it, and a cross-package claim nobody checks is
+        the kind that quietly becomes fiction.
+
+        The fallback is safe under the same indifference. `provider_message`
+        is None where the response carried nothing to unwrap — an empty body,
+        a body that is not JSON — and those are exactly the cases where the
+        envelope is all there ever was. Even if a sentence were somehow
+        withheld while the body held one, the envelope printed in its place
+        would still contain it.
         """
         message = (
             "the provider refused this call over the account or the "
