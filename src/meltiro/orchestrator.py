@@ -79,6 +79,15 @@ from meltiro.fingerprint import (
 from meltiro.instrument import Instrument
 from direktoro import (
     create_message_with_retry, is_known_model, resolved_decoding_params)
+# The refusal that is about the CALLER rather than the call: an exhausted
+# balance or spend cap, a key that is absent, wrong or revoked, a key not
+# entitled to this model or endpoint. It is the one provider failure a run can
+# pause on, because it is the one whose fix is outside the process and leaves
+# the extraction untouched. Everything else direktoro raises stays a plain
+# `ProviderError` and stays terminal — a malformed request is equally
+# unfixable by waiting, and a run that paused on one would resume into it for
+# ever. See `_pause_on_provider_account`.
+from direktoro import ProviderAccountError
 from meltiro.rates import cache_write_split
 from meltiro.prompt_builder import (
     EMPTY_ASSISTANT_PLACEHOLDER, EXTRACTOR_TOOL_REPROMPT,
@@ -1433,6 +1442,13 @@ class Orchestrator:
 
         The returned status is therefore always the one on disk, rendering
         fault or not.
+
+        Two things reach (a) as a PAUSE rather than a finalisation, and both
+        leave the session `in_progress` and resumable with no run-log entry:
+        the tool-call cap, raised from inside the extractor loop, and a
+        provider refusing over the account, caught here (see
+        `_pause_on_provider_account`). Every other provider failure, and every
+        other exception, finalises `error` through the handlers below.
         """
         if self.dry_run:
             # A dry run never enters the live loop: the CLI routes it through
@@ -1445,6 +1461,14 @@ class Orchestrator:
 
         try:
             status = self._run_to_stop()
+        except ProviderAccountError as e:
+            # Ordered first: the one provider refusal that PAUSES. It is about
+            # who is asking rather than what was asked, so the extraction is
+            # untouched and the fix is outside the process — the same shape as
+            # the tool-call cap, and resumable on the same terms. Every other
+            # provider failure falls through to the handlers below and ends
+            # the run.
+            status = self._pause_on_provider_account(e)
         except AgenticExtractionError as e:
             self._report_run_error(str(e))
             status = self._finalise("error")
@@ -1458,6 +1482,117 @@ class Orchestrator:
             status = self._finalise("error")
         self._render_artefacts()
         return status
+
+    def _pause_on_provider_account(self, error):
+        """Pause the run on a provider refusal about the ACCOUNT, and record
+        what the provider said. Returns "in_progress", from `_pause`.
+
+        The second thing that pauses rather than terminates, and it pauses for
+        the same reason the tool-call cap does: nothing about the extraction is
+        wrong, and the fix is a thing a person does outside this process — top
+        up a balance, replace a revoked key, grant a key access to the model.
+        Once they have, the same session continues; re-running from scratch
+        would repay work that succeeded, which for a run that had already
+        finished extracting is the entire expensive half.
+
+        What a resume repays is the stage it stopped in, not the run. An
+        extractor pause continues the same conversation from where it
+        stopped. A REVIEW pause repays the whole review: the reviewer builds
+        its context fresh from the finished extraction every time and holds no
+        cross-segment state, so the paper, the figures and every review turn
+        already made are sent again, and `max_review_tool_calls` is a fresh
+        budget for the new conversation rather than a running total. The
+        extraction itself is never re-extracted, which is the half worth
+        keeping — but a reviewer that had already edited it leaves those
+        edits in place, so "nothing is repaid" would be false and is not
+        claimed.
+
+        The refusal is `direktoro.ProviderAccountError` and nothing else. That
+        class means the provider refused over WHO IS ASKING rather than what
+        was asked, which is exactly the property that makes a pause safe: an
+        outside fix changes the answer. The plain `ProviderError` beside it
+        covers malformed requests and direktoro's own refusals of a served
+        response, and those must stay terminal — a run that paused on a
+        malformed request would resume into it for ever, since a resume sends
+        the same inputs to the same provider. Waiting is NOT the axis: a 400
+        is as unfixable by waiting as an empty balance.
+
+        WHAT THIS DEPENDS ON, AND WHERE THE DEPENDENCE LIVES. The pause means
+        whatever the class means, and the class is defined in another package.
+        Nothing is caught here to be logged: it is caught to stop a run in a
+        way that can be RESUMED, on the promise that a human fixes something
+        outside this process and the same call then succeeds. So a release
+        that admits a new failure into `ProviderAccountError` adds it to what
+        this pauses on, in a version bump, with no line of this file changing.
+
+        There is no defence from here. The class carries no discriminator, by
+        a decision this package asked for and would ask for again — telling
+        its members apart from outside would mean reading the exception's
+        message text, which is the thing the taxonomy exists to spare a
+        consumer and which would break the first time a provider reworded a
+        sentence. The declared floor in `pyproject.toml` is therefore the
+        whole of the defence, which makes raising it a semantic act rather
+        than routine maintenance: the question to answer before raising it is
+        not whether the new version is compatible but whether every failure it
+        newly admits satisfies "would a human fixing something outside the
+        process make this same call succeed". A refusal that is about the
+        REQUEST fails that test however credential-shaped its status looks,
+        and pausing on one would strand a run waiting for an account nobody
+        needs to touch.
+
+        THREE legs reach a provider and only two of them pause. The
+        extractor's refusal and the reviewer's both raise into `run()`; the
+        CHECKER's does not, and deliberately so. `checker.py` turns every
+        provider failure into a degraded, error-origin verdict on the one
+        field it was asked about, because the fan-out runs a batch and letting
+        one field's refusal escape `fut.result()` would discard the verdicts
+        its siblings had already been billed for. So an account that empties
+        during a checker fan-out leaves those fields unchecked rather than
+        pausing, the run continues, and `meta.checker_diagnostics
+        .checker_errors` records exactly which fields ended with no verdict —
+        which `cli._print_checker_health` prints at every status, `complete`
+        included, on its own terms: an absence of checking is not an objection
+        to a value, and it is louder than a checker that found one thing to
+        say. A field left unchecked that way is not re-checked by a resume,
+        because a check fires on a field being written and a correct field is
+        not rewritten.
+
+        WHAT THE OPERATOR IS TOLD, and it is two different things on purpose.
+        The note names `provider_message` — the provider's own sentence,
+        parsed once by direktoro in the place that holds the parsed body — so
+        an operator reads "You have no credits remaining. Add credits to
+        continue using the API" rather than an SDK envelope wrapped around a
+        stringified dict. The fallback to `str(error)` is not decoration:
+        `provider_message` is None whenever no provider actually spoke, as for
+        a refusal direktoro raises on its own authority, and a note with a
+        blank where the reason goes would be worse than an ugly one.
+
+        The EVENT keeps both. `str(error)` is the SDK's whole rendering,
+        carrying the status and the `type`/`code` a support conversation or a
+        methods record may want, and it can be thinner than the sentence
+        beside it, so neither subsumes the other. A record that a reader may
+        come to years later should hold what was said and how it arrived; the
+        line printed at the moment of the stop should hold only what to do.
+        """
+        message = (
+            "the provider refused this call over the account or the "
+            "credential rather than the request (an exhausted balance or "
+            "spend cap, or a key that is absent, revoked, or not entitled "
+            "to this model). Nothing about the extraction is wrong and the "
+            "session is resumable once the account is fixed. The provider "
+            f"said: {error.provider_message or error}")
+        # The event log is where the provider's words live, not run.json:
+        # `_pause` writes only what makes the pause durable and resumable, and
+        # the sentence is neither. The transcript renders it from here (see
+        # `_describe_run_event`), which is also where a reader finds the
+        # `provider_retry` events that preceded it on a leg that retried.
+        self.session.append_event({
+            "event": "provider_account_refused",
+            "message": str(error),
+            "provider_message": error.provider_message,
+        })
+        print(f"  PAUSED: {message}", file=sys.stderr)
+        return self._pause("provider_account")
 
     def _report_run_error(self, message, *, traceback=None):
         """Record the failure that ended the run: an `error` event carrying the
@@ -1522,25 +1657,62 @@ class Orchestrator:
         # key degrades every field to a challenge only after the extractor
         # has fully spent.
         self._preflight_keys()
-        extractor_status = self._extractor_loop()
-        stop = self._finalise_loop_stop(extractor_status)
-        if stop is not None:
-            return stop
-        if extractor_status != "mark_complete_validated":
-            # `_finalise_loop_stop` answers None both for the one outcome
-            # the run continues past and for any it does not recognise, so
-            # None alone does not mean "the extractor finished". An
-            # outcome added or renamed later raises here and finalises
-            # `error` rather than drifting through to `complete`.
-            raise AgenticExtractionError(
-                f"unrecognised extractor loop outcome "
-                f"{extractor_status!r}: it is neither a mapped stop nor "
-                f"the completion signal, so the run cannot continue. Map "
-                f"it in _finalise_loop_stop.")
+        # A resumed session that had already reached the reviewer re-enters
+        # THERE, not at the extractor. The question is which STAGE the run got
+        # to, and `current_phase` is the only thing that records it: the
+        # extractor's completion claim looks like the same fact and is not,
+        # because the reviewer's job is to edit and every edit it makes clears
+        # that claim. Routing on the claim would send the common case — a
+        # reviewer that changed something, then met a refusal — back into the
+        # extractor, which is precisely the trip this exists to avoid, and
+        # would hand the extractor a record the reviewer had altered
+        # underneath it, invisible in the extractor's own conversation.
+        #
+        # Re-entering the extractor on a finished extraction is not merely a
+        # wasted turn. It replays the whole conversation, pays for it, applies
+        # the EXTRACTOR's completeness gate to an extraction the reviewer has
+        # already approved — a reviewer that deliberately removed a record
+        # would have the extractor told to put it back — and a model handed
+        # its own finished work can revise it. A resumed run has to be the run
+        # it would have been uninterrupted.
+        #
+        # `current_phase` is "extracting" for a fresh session and for any
+        # pause the extractor took, so this costs a first run nothing and
+        # leaves the tool-call-cap pause exactly as it was.
+        if self.session.meta.get("current_phase") != "final_review":
+            extractor_status = self._extractor_loop()
+            stop = self._finalise_loop_stop(extractor_status)
+            if stop is not None:
+                return stop
+            if extractor_status != "mark_complete_validated":
+                # `_finalise_loop_stop` answers None both for the one outcome
+                # the run continues past and for any it does not recognise, so
+                # None alone does not mean "the extractor finished". An
+                # outcome added or renamed later raises here and finalises
+                # `error` rather than drifting through to `complete`.
+                raise AgenticExtractionError(
+                    f"unrecognised extractor loop outcome "
+                    f"{extractor_status!r}: it is neither a mapped stop nor "
+                    f"the completion signal, so the run cannot continue. Map "
+                    f"it in _finalise_loop_stop.")
 
         # Extractor signalled mark_complete. Challenges are advisory (see
         # module docstring); anything still challenged is recorded in
         # meta.checker_diagnostics at finalisation.
+
+        elif not self.final_review:
+            # Resumed into a review stage this run does not have. The drift
+            # gate should make it unreachable — `final_review` rides in
+            # `structure_hash` and so in `config_fp`, so turning the reviewer
+            # off refuses the resume — but the two facts are recorded in
+            # different files, and the one outcome that must not follow from
+            # them disagreeing is shipping `complete` an extraction that
+            # skipped BOTH stages.
+            raise AgenticExtractionError(
+                "this session stopped in the final-review phase but the "
+                "reviewer is off for this run, so neither stage would run "
+                "and nothing would examine the extraction. Resume with the "
+                "configuration the session was started under.")
 
         # Final review (optional per run: off when final_review is False).
         # When off the run finalises directly after the extractor.
@@ -2052,6 +2224,22 @@ class Orchestrator:
             try:
                 response = self._call_review(
                     adapter, tool_defs, messages, system_text, turn_id)
+            except ProviderAccountError:
+                # Ordered ahead of the catch-all deliberately, and it RAISES
+                # rather than returning an outcome. Every other per-turn
+                # failure here is a fact about this run that the review is
+                # entitled to end on; this one is a fact about the account,
+                # and flattening it into "error" would discard the one piece
+                # of information that makes the session resumable. run()
+                # pauses on it (see `_pause_on_provider_account`), which is
+                # why this leg needs the exception itself rather than a status
+                # word — and why the recording below is a plain event with no
+                # return.
+                self.session.append_event({
+                    "event": "review_provider_account_refused",
+                    "turn_id": turn_id,
+                })
+                raise
             except Exception as e:
                 self.session.append_event({
                     "event": "review_error", "message": str(e),

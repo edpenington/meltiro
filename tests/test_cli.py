@@ -445,10 +445,36 @@ class TestExtractDryRun:
         ])
         assert code == 1
 
+    def test_a_provider_account_pause_exits_1(self, tmp_path, config_dir,
+                                              bundle_minimal_dir, monkeypatch):
+        # The other pause. The session is resumable exactly like a cap pause,
+        # but it stopped on something no rerun clears — a spent balance, a
+        # revoked key — and every remaining paper in a batch will stop the
+        # same way. Reporting that to a script as success would be worse than
+        # what this failure did when it was terminal, so it keeps exit 1.
+        def _pause(self):
+            self.session.meta["pause_reason"] = "provider_account"
+            self.session.write_meta()
+            return "in_progress"
+        monkeypatch.setattr(Orchestrator, "run", _pause)
+
+        def _boom(self, role):
+            raise AssertionError("must not resolve a provider adapter")
+        monkeypatch.setattr(Orchestrator, "_adapter_for_role", _boom)
+        code = _run([
+            "extract",
+            "--config", str(config_dir),
+            "--paper", str(bundle_minimal_dir),
+            "--out", str(tmp_path / "runs"),
+        ])
+        assert code == 1
+
     def test_paused_status_exit_0(self, tmp_path, config_dir,
                                   bundle_minimal_dir, monkeypatch):
         # B3: a paused run produced a session and an extraction output, so it
-        # stays exit 0. Only a hard "error" fails the command.
+        # stays exit 0. Only a hard "error" fails the command. The tool-call
+        # cap is a budget the operator SET, reached; nothing outside the
+        # process needs fixing before the next paper can run.
         monkeypatch.setattr(
             Orchestrator, "run", lambda self: "in_progress")
 

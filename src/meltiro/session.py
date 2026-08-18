@@ -1041,6 +1041,13 @@ class Session:
         record.set_record_id_counters(self.meta.get("record_id_counters", {}))
         record.set_initial_check_recorded(
             self.meta.get("initial_check_recorded", False))
+        # The completion claim is deliberately NOT restored. It is a
+        # content-staleness bit — cleared by every write, including the
+        # reviewer's — not a record of which stage the run reached, and a
+        # resume needs the latter. `meta.current_phase` carries that, and
+        # `Orchestrator._run_to_stop` routes on it. Restoring the claim would
+        # let a resumed extractor treat a record the reviewer had since edited
+        # as its own finished work.
         return record
 
     def max_turn_id(self):

@@ -4,9 +4,16 @@ One vocabulary shared by session state, the orchestrator's provenance flag,
 CLI exit codes, and the run log. Each status answers one question: what
 should a consumer do with this session?
 
-* ``in_progress``: resume it (it is live, or paused on the tool-call cap). A
-  paused session records a ``pause_reason`` in run.json and is the only
-  status ``Session.resume`` accepts.
+* ``in_progress``: resume it (it is live, or paused). A paused session records
+  a ``pause_reason`` in run.json and is the only status ``Session.resume``
+  accepts. Two things pause. ``tool_cap_hit`` is a budget the operator set,
+  reached; raise the cap and resume. ``provider_account`` is the provider
+  refusing over WHO IS ASKING rather than what was asked — an exhausted
+  balance or spend cap, a key absent, revoked, or not entitled to the model —
+  where the extraction is untouched and the fix is outside the process; fix
+  the account and resume. Both leave the same resumable session, and the CLI
+  distinguishes them only in what it exits: a cap pause is the command doing
+  what it was asked, an account pause is not (see ``cli._command_status``).
 * ``complete``: trust it. The extraction is the canonical, usable answer.
 * ``failed_validation``: the extraction genuinely failed on this paper; do
   not resume, investigate. ``meta.failure_reason`` records the mechanism
