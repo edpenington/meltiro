@@ -9,6 +9,7 @@ supplied by the caller; there is no CWD-relative default.
 import fcntl
 import hashlib
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,23 @@ from pathlib import Path
 _CODE_ANCHOR = Path(__file__).resolve().parent
 
 
+# Git's own environment overrides, dropped from the subprocess environment
+# rather than inherited. `GIT_DIR` is the dangerous one: set without
+# `GIT_WORK_TREE`, it makes git treat the process CWD as that repository's
+# work tree, so `git ls-files` anchored at this package would list an
+# unrelated repository's index and every check below would answer for it. Git
+# exports these into anything it spawns — hooks, `git bisect run`, `git rebase
+# --exec`, `git submodule foreach` — so a run started from inside one of those
+# would otherwise attribute this code to whatever repository invoked it. The
+# anchor is the whole of what decides which repository answers; an environment
+# variable must not be able to move it.
+_GIT_ENV_OVERRIDES = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
 def _git(*args):
     """Stdout of one git command run against `_CODE_ANCHOR`, or None when it
     could not answer.
@@ -40,12 +58,26 @@ def _git(*args):
     None covers every way the question goes unanswered — git absent from PATH,
     an invocation that hangs, a non-zero exit (no enclosing repository, most
     often) — because they leave the same gap: nothing can be said about this
-    copy's checkout, and a guess would be written down as provenance.
+    copy's origin, and a guess would be written down as provenance.
+
+    Decoded with `errors="replace"`, which is not belt-and-braces: `git
+    ls-files` streams tracked path NAMES, and a repository may hold a name
+    that is not valid in the process encoding — bytes from another platform,
+    or any non-ASCII name under an ASCII locale. Strict decoding would raise
+    `UnicodeDecodeError` out of a helper whose whole contract is that it
+    answers or returns None, and it would do so from `append_run`, after a
+    completed extraction, taking the run-log entry with it. A path this cannot
+    spell is not a reason to lose a run: every caller reads these bytes to ask
+    whether there is output at all, or to take a hex commit, and a replacement
+    character changes neither answer.
     """
     try:
         result = subprocess.run(
             ["git", *args],
-            capture_output=True, text=True, timeout=5, cwd=_CODE_ANCHOR,
+            capture_output=True, text=True, errors="replace",
+            timeout=5, cwd=_CODE_ANCHOR,
+            env={k: v for k, v in os.environ.items()
+                 if k not in _GIT_ENV_OVERRIDES},
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -82,24 +114,41 @@ def _installed_commit():
     common case for a consumer, who pins the engine and installs it rather
     than working in it.
 
-    The metadata is read only when it belongs to the package that is actually
-    imported — `locate_file` has to point back at `_CODE_ANCHOR` — because a
-    distribution installed in the environment and a source tree ahead of it on
-    `sys.path` can both answer to the name `meltiro`, and only one of them is
-    running. An editable install fails that check by construction, its
-    `locate_file` naming the link rather than the tree, and an editable
-    install is precisely the case where the tree can be asked directly.
+    Two things have to hold before the record is believed, because
+    `Distribution.from_name` returns the FIRST distribution matching the name
+    and expresses no preference between several.
 
-    None when the check fails, when the install carries no VCS record (a wheel
-    from an index, an editable install, a plain directory install), or when
-    the file is unreadable or malformed, leaving `git_state()` to ask the
-    repository instead. The commit is abbreviated to seven characters, so the
-    field carries one shape whichever source answered.
+    The metadata must belong to the package that is actually imported:
+    `locate_file` has to point back at `_CODE_ANCHOR`. A distribution
+    installed in the environment and a source tree ahead of it on `sys.path`
+    can both answer to the name `meltiro`, and only one of them is running.
+
+    And its version must be the version that is running. That is not
+    redundant: `locate_file` resolves through the dist-info's PARENT
+    directory, so every distribution in one site-packages passes the first
+    check identically and it cannot discriminate between them at all. Two
+    `meltiro-*.dist-info` directories side by side is not exotic — `pip
+    install --target` twice leaves both, and an interrupted uninstall leaves
+    one — and without this check the older one's commit can be recorded
+    beside the newer one's version, which is a run record that contradicts
+    itself.
+
+    None when either check fails, when the install carries no VCS record (a
+    wheel from an index, an editable install, a plain directory install), or
+    when the file is unreadable or malformed, leaving `git_state()` to ask the
+    repository instead. The commit is abbreviated to seven characters; a
+    commit read from a repository instead honours that repository's
+    `core.abbrev` and may be longer, so the two sources agree on the prefix
+    rather than on the width.
     """
+    from meltiro import __version__
+
     try:
         from importlib.metadata import Distribution
         dist = Distribution.from_name("meltiro")
         if Path(dist.locate_file("meltiro")).resolve() != _CODE_ANCHOR:
+            return None
+        if dist.version != __version__:
             return None
         raw = dist.read_text("direct_url.json")
         record = json.loads(raw) if raw else None
@@ -126,14 +175,25 @@ def _get_git_commit():
 
 
 def _git_tree_dirty():
-    """Whether the enclosing repository's working tree has uncommitted
-    changes, or None if there is no such repository.
+    """Whether the package's own files have uncommitted changes, or None if
+    no repository tracks them.
 
-    A raw reading, taken with `cwd` at the package directory. True on ANY
-    porcelain output (staged, unstaged, or untracked files), so a checkout
-    that is not exactly its commit never reports as one that is.
+    Scoped to `_CODE_ANCHOR` by the pathspec, not asked of the whole
+    repository, because the flag is read as a statement about the CODE THAT
+    RAN: a reader who sees it set concludes the recorded commit does not fully
+    describe the engine. Asked of the whole repository it would be set by an
+    edit to a file the engine never loads, which for a copy vendored into a
+    consumer's tree means their unrelated work marks this package modified —
+    the exact false claim this module exists to stop making, arriving through
+    a different door. Scoped, it aligns with what `source_hash()` digests: the
+    package directory, which is where an edit to the engine has to land to
+    change what ran.
+
+    True on ANY porcelain output under the anchor (staged, unstaged, or
+    untracked), so a package directory that is not exactly its commit never
+    reports as one that is.
     """
-    status = _git("status", "--porcelain")
+    status = _git("status", "--porcelain", "--", ".")
     return bool(status.strip()) if status is not None else None
 
 
@@ -181,15 +241,27 @@ def git_state():
     consumer that needs the whole history reads the events rather than
     inferring it from two endpoints that happen to disagree.
     """
-    # The install's own record first: where it exists it is the direct answer
-    # for a copy that has no repository to be asked about, and where it does
-    # not the enclosing repository is asked — but only once it has shown, by
-    # tracking these files, that it is this code's repository and not the
-    # tree an installed copy happens to be sitting in.
+    # The two questions are answered separately, because the sources that can
+    # answer them are not the same.
+    #
+    # The COMMIT: the install's own record first, where it exists. It names a
+    # meltiro commit, which is the answer to "which meltiro is this"; a
+    # repository that merely tracks these files answers with ITS commit, which
+    # for a copy vendored into a consumer's tree is a commit in their project.
+    # Both describe the bytes, and the one that describes them AS A MELTIRO
+    # VERSION is the better provenance.
+    #
+    # The DIRTY FLAG: only a repository tracking these files can measure it,
+    # and it can do so whichever source named the commit. An installed copy
+    # inside a tree that tracks it — a vendored dependency, committed — has a
+    # working tree to read, so reporting None there would deny a fact git will
+    # state on request. None is reserved for a copy nothing tracks, where
+    # there genuinely is no tree to be clean or dirty.
     installed = _installed_commit()
+    tracked = _anchor_tracked_in_repo()
     if installed is not None:
-        return installed, None
-    if not _anchor_tracked_in_repo():
+        return installed, (_git_tree_dirty() if tracked else None)
+    if not tracked:
         return None, None
     return _get_git_commit(), _git_tree_dirty()
 

@@ -294,6 +294,96 @@ def test_git_state_reports_the_repo_that_tracks_the_package(
     assert run_log.git_state() == (commit, True)
 
 
+def test_the_dirty_flag_describes_the_package_not_the_whole_repo(
+        tmp_path, monkeypatch):
+    # The flag is read as a statement about the CODE THAT RAN. Asked of the
+    # whole repository it is set by an edit to a file the engine never loads,
+    # which for a copy vendored into a consumer's tree means their unrelated
+    # work marks this package modified — the same false claim this module
+    # exists to stop making, arriving through a different door.
+    consumer, anchor = _installed_layout(tmp_path)
+    subprocess.run(["git", "add", "-A"], cwd=consumer, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+         "commit", "-q", "-m", "vendored"], cwd=consumer, check=True)
+    monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor)
+    monkeypatch.setattr(run_log, "_installed_commit", lambda: None)
+
+    commit, dirty = run_log.git_state()
+    assert commit and dirty is False
+    # The consumer's own work, touching nothing of this package's.
+    (consumer / "notes" / "protocol.md").write_text("revised\n")
+    assert run_log.git_state() == (commit, False)
+    # An edit to the package itself is what the flag is for.
+    (anchor / "run_log.py").write_text("# patched after install\n")
+    assert run_log.git_state() == (commit, True)
+
+
+def test_a_tracked_install_still_has_its_tree_measured(
+        tmp_path, monkeypatch):
+    # The install record names a meltiro commit, which is the better answer to
+    # "which meltiro is this" than a consumer repo's own HEAD. But a vendored
+    # copy that the consumer committed HAS a working tree, so reporting the
+    # tree unknown beside that commit would deny a fact git will state on
+    # request — and would read as "installed, therefore pristine" over files
+    # that have been patched.
+    consumer, anchor = _installed_layout(tmp_path)
+    subprocess.run(["git", "add", "-A"], cwd=consumer, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+         "commit", "-q", "-m", "vendored"], cwd=consumer, check=True)
+    monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor)
+    monkeypatch.setattr(run_log, "_installed_commit", lambda: "abc1234")
+
+    assert run_log.git_state() == ("abc1234", False)
+    (anchor / "run_log.py").write_text("# patched after install\n")
+    assert run_log.git_state() == ("abc1234", True)
+
+
+def test_git_env_overrides_cannot_move_the_anchor(tmp_path, monkeypatch):
+    # `GIT_DIR` without `GIT_WORK_TREE` makes git treat the process cwd as
+    # that repository's work tree, so an unrelated repo would answer for this
+    # package's files. Git exports it into everything it spawns — hooks,
+    # `git bisect run`, `git rebase --exec` — so a run started from inside one
+    # would otherwise attribute this code to whatever repository invoked it.
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir(parents=True)
+    (unrelated / "somebody-elses-work.md").write_text("not this package\n")
+    _repo_with_commit(unrelated)
+    anchor = tmp_path / "site-packages" / "meltiro"
+    anchor.mkdir(parents=True)
+    (anchor / "run_log.py").write_text("# installed copy\n")
+    monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor)
+    monkeypatch.setattr(run_log, "_installed_commit", lambda: None)
+    monkeypatch.setenv("GIT_DIR", str(unrelated / ".git"))
+
+    assert run_log.git_state() == (None, None)
+
+
+def test_an_undecodable_path_name_degrades_rather_than_raising(
+        tmp_path, monkeypatch):
+    # `git ls-files` streams tracked path NAMES, so unlike `git status
+    # --porcelain` on a clean tree it prints something on every call. A name
+    # that is not valid in the process encoding must not raise out of a helper
+    # whose contract is that it answers or returns None — least of all from
+    # `append_run`, which runs after a completed extraction and would take the
+    # run-log entry down with it.
+    checkout = tmp_path / "meltiro"
+    anchor = checkout / "src" / "meltiro"
+    anchor.mkdir(parents=True)
+    (anchor / "run_log.py").write_text("# source\n")
+    (anchor / "caf\u00e9.py").write_text("# non-ascii name\n")
+    _repo_with_commit(checkout)
+    monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor)
+    monkeypatch.setattr(run_log, "_installed_commit", lambda: None)
+    # An ASCII locale, which is what a stripped-down container gives a run.
+    monkeypatch.setenv("LC_ALL", "C")
+    monkeypatch.setenv("PYTHONUTF8", "0")
+
+    commit, dirty = run_log.git_state()
+    assert commit and dirty is False
+
+
 def test_git_state_prefers_the_installs_own_record(tmp_path, monkeypatch):
     # Where the installer wrote down what it fetched, that is the answer, and
     # the enclosing repository is not consulted at all. No working tree exists
@@ -305,16 +395,24 @@ def test_git_state_prefers_the_installs_own_record(tmp_path, monkeypatch):
     assert run_log.git_state() == ("abc1234", None)
 
 
-def _fake_distribution(monkeypatch, located, payload):
+def _fake_distribution(monkeypatch, located, payload, version=None):
     """Stand in for the installed distribution's metadata.
 
-    `located` is what `locate_file` reports the package directory to be, and
+    `located` is what `locate_file` reports the package directory to be,
     `payload` the text of `direct_url.json` (None for an install that has
-    none, as a wheel from an index does).
+    none, as a wheel from an index does), and `version` what the dist-info
+    declares — defaulting to the running version, since that is the ordinary
+    case and the mismatch is what a test has to ask for.
     """
     import importlib.metadata
 
+    from meltiro import __version__
+
+    declared = __version__ if version is None else version
+
     class _Dist:
+        version = declared
+
         def locate_file(self, name):
             return located
 
@@ -372,6 +470,24 @@ def test_installed_commit_none_without_a_vcs_record(tmp_path, monkeypatch):
                     _direct_url(vcs="git", commit_id="")):
         _fake_distribution(monkeypatch, anchor, payload)
         assert run_log._installed_commit() is None
+
+
+def test_installed_commit_ignores_a_dist_info_for_another_version(
+        tmp_path, monkeypatch):
+    # `Distribution.from_name` returns the FIRST match and prefers no version,
+    # and `locate_file` resolves through the dist-info's parent, so every
+    # distribution in one site-packages passes that guard identically. Two
+    # `meltiro-*.dist-info` side by side is what `pip install --target` twice
+    # leaves behind; without the version check the older one's commit would be
+    # recorded beside the running version, a record contradicting itself.
+    anchor = tmp_path / "site-packages" / "meltiro"
+    anchor.mkdir(parents=True)
+    monkeypatch.setattr(run_log, "_CODE_ANCHOR", anchor.resolve())
+    _fake_distribution(monkeypatch, anchor, _direct_url(
+        vcs="git",
+        commit_id="0123456789abcdef0123456789abcdef01234567"),
+        version="0.0.1-not-the-running-version")
+    assert run_log._installed_commit() is None
 
 
 def test_installed_commit_none_when_the_package_is_not_installed(monkeypatch):
