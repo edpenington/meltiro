@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from alteksto.bundle import figure_files, validate_bundle
+from alteksto.bundle import SCHEMA_VERSION, figure_files, validate_bundle
 
 from meltiro.bundle import PaperBundle, load_bundle
 from meltiro.errors import BundleError
@@ -45,9 +45,14 @@ def _base_manifest():
     manifest declares the one image the fixture carries; a test that changes
     the figure set changes this too. No `doi`, `summary` or exhibit `notes`:
     the optional keys are added by the tests that are about them.
+
+    The declared version is the format's own `SCHEMA_VERSION` rather than a
+    number written down here. Every test built on this manifest is about some
+    other key, so a hand-copied version would put all of them one format bump
+    away from failing for a reason none of them is testing.
     """
     return {
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "id": "demo-001",
         "title": "A title",
         "exhibits": [
@@ -97,16 +102,21 @@ class TestTheVerdictIsTheFormats:
     @pytest.mark.parametrize("manifest", [
         pytest.param("{not json", id="not-json"),
         pytest.param('["a", "list"]', id="not-an-object"),
-        pytest.param('{"schema_version": 2, "title": "T", "exhibits": []}',
-                     id="no-id"),
-        pytest.param('{"schema_version": 2, "id": "x", "exhibits": []}',
-                     id="no-title"),
-        pytest.param('{"schema_version": 2, "id": "x", "title": "T"}',
-                     id="no-exhibits"),
-        pytest.param('{"schema_version": 2, "id": "x", "title": "T", '
-                     '"exhibits": [{"caption": "T1."}]}', id="no-label"),
-        pytest.param('{"schema_version": 2, "id": "x", "title": "T", '
-                     '"exhibits": {"table_01": "T1."}}', id="exhibits-a-dict"),
+        pytest.param(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "title": "T", "exhibits": []}),
+            id="no-id"),
+        pytest.param(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "id": "x", "exhibits": []}),
+            id="no-title"),
+        pytest.param(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "id": "x", "title": "T"}),
+            id="no-exhibits"),
+        pytest.param(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "id": "x", "title": "T",
+             "exhibits": [{"caption": "T1."}]}), id="no-label"),
+        pytest.param(json.dumps(
+            {"schema_version": SCHEMA_VERSION, "id": "x", "title": "T",
+             "exhibits": {"table_01": "T1."}}), id="exhibits-a-dict"),
     ])
     def test_a_refusal_is_always_a_BundleError(self, good_bundle, manifest):
         """Whatever is wrong with the directory, the caller catches one thing.

@@ -20,6 +20,7 @@ import shutil
 from types import SimpleNamespace
 
 import pytest
+from alteksto.bundle import SCHEMA_VERSION
 
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
@@ -85,9 +86,13 @@ def _no_figures_bundle(tmp_path):
     # no tables and no figures, which is what makes this a no-figures bundle
     # rather than a bundle whose crops were forgotten.
     (root / "manifest.json").write_text(
-        '{"schema_version": 2, "id": "nofig-001", "title": "T", '
-        '"exhibits": [], '
-        '"summary": "A synthetic study used only to exercise the suite."}',
+        json.dumps({
+            "schema_version": SCHEMA_VERSION,
+            "id": "nofig-001",
+            "title": "T",
+            "exhibits": [],
+            "summary": "A synthetic study used only to exercise the suite.",
+        }),
         encoding="utf-8")
     (root / "text.md").write_text("Methods. N=10.", encoding="utf-8")
     return root

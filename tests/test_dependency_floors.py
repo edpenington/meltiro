@@ -45,6 +45,7 @@ Offline: signature inspection and file reads only, no client, no network.
 """
 
 import inspect
+import json
 import re
 import tomllib
 from importlib import metadata
@@ -227,6 +228,37 @@ def test_installed_alteksto_satisfies_the_declared_floor():
     assert _version_tuple(alteksto.__version__) >= _version_tuple(floor), (
         f"alteksto {alteksto.__version__} is below meltiro's declared floor "
         f"of {floor}; the enumeration `load_bundle` calls is not there")
+
+
+def test_the_fixture_bundles_declare_the_resolved_formats_version():
+    # The floor above is satisfied by ANY alteksto at or past it, and the
+    # format moves faster than the floor: alteksto validates a manifest
+    # against the one schema version its release declares, so a fixture built
+    # to a superseded version stops being a bundle the moment the format
+    # moves, while the floor still resolves and still passes its own check.
+    #
+    # That failure is not self-describing. It arrives as a manifest error on
+    # every fixture at once, in whatever test happened to load one, saying a
+    # number is wrong and nothing about why it moved or what to do. So it is
+    # asserted here instead, once, against the version actually resolved: the
+    # fixtures either declare the format this tree reads, or this says so and
+    # names the bump.
+    from alteksto.bundle import SCHEMA_VERSION
+
+    fixtures = sorted((REPO_ROOT / "tests" / "fixtures").glob(
+        "*/manifest.json"))
+    assert fixtures, "no fixture bundles found to check"
+    declared = {
+        path.parent.name: json.loads(path.read_text(
+            encoding="utf-8")).get("schema_version")
+        for path in fixtures
+    }
+    stale = {name: v for name, v in declared.items() if v != SCHEMA_VERSION}
+    assert not stale, (
+        f"fixture bundles {stale} declare a schema version the resolved "
+        f"alteksto ({SCHEMA_VERSION}) does not accept; the format has moved, "
+        f"so raise the alteksto floor in pyproject.toml and rebuild these "
+        f"fixtures to what the new version specifies")
 
 
 def test_the_loader_states_no_rule_of_the_bundle_format():
