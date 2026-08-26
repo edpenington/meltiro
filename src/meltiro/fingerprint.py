@@ -508,7 +508,7 @@ def engine_fingerprint(meltiro_version, meltiro_source_hash,
 def bundle_fingerprint(bundle):
     """Fingerprint the PAPER: which input this run was given.
 
-    Returns the four self-prefixed values a run records, as a dict:
+    Returns the five self-prefixed values a run records, as a dict:
 
       - `text_fp`: SHA-256 of `text.md`'s bytes, the whole text the models
         were shown.
@@ -520,7 +520,15 @@ def bundle_fingerprint(bundle):
       - `manifest_fp`: SHA-256 of `manifest.json`'s canonical JSON, so an
         edited title, id, summary or exhibit caption moves it while a
         reformat or a key reordering does not.
-      - `bundle_fp`: SHA-256 over the three above, joined by `|` in that fixed
+      - `tables_fp`: SHA-256 over the bundle's table transcriptions as sorted
+        `(label, sha256-of-bytes)` pairs, on exactly `figures_fp`'s terms, so
+        a re-transcribed cell, a transcription added to an exhibit that had
+        none, or one withdrawn all move it. A bundle transcribing nothing
+        folds in `ABSENT_STAGE`, making "this paper supplies no
+        transcriptions" a hashed fact rather than the digest of an empty
+        payload — and telling that apart from a bundle whose transcriptions
+        happen to hash to nothing.
+      - `bundle_fp`: SHA-256 over the four above, joined by `|` in that fixed
         order, each hashed verbatim as its full self-prefixed string.
 
     This is folded into NOTHING — not `config_fp`, not `instrument_fp`, not
@@ -539,15 +547,26 @@ def bundle_fingerprint(bundle):
     figures_fp = "figures_fp:" + _sha256(
         canonical_json(pairs) if pairs else ABSENT_STAGE)
 
+    # The transcriptions, by the same recipe. `figure_hashes` keys on the
+    # file's stem, which is the label for a transcription exactly as it is for
+    # a crop, so the two directories are read by one function rather than by
+    # two that could come to disagree about what a label is.
+    table_digests = figure_hashes(bundle.tables.values())
+    table_pairs = sorted(
+        (label, table_digests[label]["sha256"]) for label in table_digests)
+    tables_fp = "tables_fp:" + _sha256(
+        canonical_json(table_pairs) if table_pairs else ABSENT_STAGE)
+
     manifest = json.loads(
         (root / "manifest.json").read_text(encoding="utf-8"))
     manifest_fp = "manifest_fp:" + _sha256(canonical_json(manifest))
 
     bundle_fp = "bundle_fp:" + _sha256(
-        f"{text_fp}|{figures_fp}|{manifest_fp}")
+        f"{text_fp}|{figures_fp}|{manifest_fp}|{tables_fp}")
     return {
         "text_fp": text_fp,
         "figures_fp": figures_fp,
         "manifest_fp": manifest_fp,
+        "tables_fp": tables_fp,
         "bundle_fp": bundle_fp,
     }

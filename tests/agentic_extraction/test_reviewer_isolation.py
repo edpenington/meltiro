@@ -102,7 +102,8 @@ def _orch(tmp_path, template, paper_text, image_labels, *,
     orch.figures = []
     orch.image_labels = image_labels
     orch.image_notes = {}
-    orch.bundle = SimpleNamespace(figures={})
+    orch.image_tables = {}
+    orch.bundle = SimpleNamespace(figures={}, tables={})
     orch.config = SimpleNamespace(partials_dir="/unused",
                                   checker_system_path="/unused")
     orch.checker_config = SimpleNamespace(checker_model="claude-sonnet-4-6",
@@ -232,7 +233,7 @@ def test_build_review_user_blocks_has_no_challenge_parameter():
     params = inspect.signature(build_review_user_blocks).parameters
     assert list(params) == [
         "study_id", "paper_text", "figures", "extraction_record_dict",
-        "image_captions", "image_notes"]
+        "image_captions", "image_notes", "image_tables"]
 
 
 def test_final_review_passes_the_reviewer_nothing_but_the_output():

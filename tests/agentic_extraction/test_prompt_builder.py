@@ -540,8 +540,14 @@ def test_the_session_records_the_exhibits_the_message_carried(
     assert recorded == [
         {"label": "TABLE_01",
          "caption": "Exhibit TABLE_01. Depot readings",
-         "notes": "Note. Readings are depot means over the round."},
+         "notes": "Note. Readings are depot means over the round.",
+         # This bundle transcribes neither exhibit, so both record the
+         # absence. It is a fact about the MESSAGE, on the same terms as the
+         # caption beside it: what the model was shown, not what the bundle
+         # could have supplied.
+         "transcribed": False},
         {"label": "figure_01",
          "caption": "Exhibit figure_01. Depot readings",
-         "notes": None},
+         "notes": None,
+         "transcribed": False},
     ]

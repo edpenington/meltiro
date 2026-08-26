@@ -386,6 +386,10 @@ def _checker_orch(config_dir, bundle_dir, template, checker_model):
     orch.template = template
     orch.image_labels = {"table_01"}
     orch.image_notes = bundle.exhibit_notes
+    orch.image_tables = {
+        label: path.read_text(encoding="utf-8").strip()
+        for label, path in bundle.tables.items()
+    }
     orch.config = config
     orch.bundle = bundle  # figures={"table_01": Path(.../table_01.png)}
     # context_chars=0: this is the image-attachment path, which has no text

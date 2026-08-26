@@ -57,7 +57,11 @@ exhibit the paper bundle supplies. Three cases sit outside that guarantee:
   bundle declared and supplied. **Nothing reads the image.** A crop that clips
   its header row, or catches the wrong table, satisfies `evidence: required`
   for any value whatever. Whether the exhibit supports the extracted value
-  is only judged by the checker LLM.
+  is only judged by the checker LLM. That holds unchanged where the bundle
+  supplies the exhibit's content as text: the transcription is shown to every
+  role that is shown the crop, and it makes a cell legible without changing
+  what the citation is checked for. A value read from a table is a value
+  no deterministic check has verified.
 
 The two self-assessment blocks, `initial_check` and `quality_check`, are the
 roles' reports on how the run went rather than claims about the paper, so they
@@ -273,9 +277,11 @@ cropped tables and figures, and a manifest naming them.
 paper-bundle/
 ├── manifest.json      # required: identity and the exhibit declaration
 ├── text.md            # required: the paper's full text as markdown
-└── figures/           # optional: one PNG per declared exhibit
-    ├── table_01.png
-    └── figure_02.png
+├── figures/           # optional: one PNG per declared exhibit
+│   ├── table_01.png
+│   └── figure_02.png
+└── tables/            # optional: a table exhibit's content as text
+    └── table_01.html
 ```
 
 **The format belongs to [alteksto](https://github.com/edpenington/alteksto),
@@ -304,6 +310,16 @@ What the format leaves to you, this pipeline then leans on:
   human job.
   Nor can any check know the paper contains a table nobody cropped — that
   question goes to the Extractor, which reads the paper.
+- `tables/<label>.html` is that exhibit's content as text, and it arrives in
+  the message beside the crop, verbatim. `text.md` carries no table content —
+  only a marker where the exhibit sits — so without it every cell of every
+  table has to be read off pixels. It is passed through as the bundle wrote
+  it rather than reflowed: a pipe table cannot express a header that spans
+  columns or a stub that spans rows, and those are what say which column a
+  number belongs to. It changes no citation. The crop is still what the
+  exhibit is, so a fact read from either is `<img>label</img>`, and a cell is
+  never a verbatim quote. An exhibit with no file here is the ordinary case
+  and says only that the crop is the content.
 - `summary` is what the Checker is shown as the paper's short identity. Without
   it the Checker uses the extracted field the template marks `role: summary`,
   and failing that, title plus DOI.
@@ -612,13 +628,17 @@ own instead, recorded with the run and folded into nothing:
   recorded fact rather than an absent one.
 - `manifest_fp` — the manifest's content: id, title, doi, summary and the
   exhibit declarations, canonicalised, so a reformat moves nothing.
-- `bundle_fp` — the three above, folded into one.
+- `tables_fp` — the table transcriptions, as sorted (label, content-hash)
+  pairs, on the same terms as the crops: a paper transcribing nothing hashes
+  the same fixed token, so "no transcriptions" is a recorded fact too.
+- `bundle_fp` — the four above, folded into one.
 
 Each part moves only for its own input. Edit a line of `text.md` and `text_fp`
 and `bundle_fp` move. Swap a crop for a better one and `figures_fp` and
-`bundle_fp` move. Change the manifest's summary and `manifest_fp` and
-`bundle_fp` move. So `run_fp` says what was asked and `bundle_fp` says what it
-was asked of, and either can be compared while the other varies.
+`bundle_fp` move. Re-transcribe a cell and `tables_fp` and `bundle_fp` move.
+Change the manifest's summary and `manifest_fp` and `bundle_fp` move. So
+`run_fp` says what was asked and `bundle_fp` says what it was asked of, and
+either can be compared while the other varies.
 
 *meltiro*'s own prose — the engine prompts each role opens with, the framing the
 engine writes around your prompts, and every tool result and validation error it

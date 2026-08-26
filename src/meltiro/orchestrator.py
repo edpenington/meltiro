@@ -367,6 +367,16 @@ class Orchestrator:
         # carried separately because only some exhibits have one.
         self.image_notes = {label.strip().lower(): note
                             for label, note in bundle.exhibit_notes.items()}
+        # The transcription each exhibit carries, where the bundle supplies
+        # one, read once here and keyed the same way. Read at construction
+        # like the crops beside them, so one run reads each file once and the
+        # message, the recorded prompt and the checker's copy are the same
+        # bytes rather than three reads of a directory that could move under
+        # them.
+        self.image_tables = {
+            label.strip().lower(): path.read_text(encoding="utf-8").strip()
+            for label, path in bundle.tables.items()
+        }
 
         # Refuse a call the registry says cannot be made, in the constructor,
         # so every entry point (CLI, resume, programmatic) fails before a
@@ -850,7 +860,7 @@ class Orchestrator:
         # extractor gets no image blocks (ext_figures is empty).
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
-            self.image_notes,
+            self.image_notes, self.image_tables,
         )
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
@@ -1027,7 +1037,7 @@ class Orchestrator:
         self._warn_inert_decoding_params()
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
-            self.image_notes,
+            self.image_notes, self.image_tables,
         )
         replayed = self.session.replay_messages()
         self.messages = [
@@ -1088,7 +1098,8 @@ class Orchestrator:
         # the study.
         ext_figures, _ = self._extractor_image_inputs()
         attached_exhibits = [image_label_text(label, self.image_captions,
-                                              self.image_notes)
+                                              self.image_notes,
+                                              self.image_tables)
                              for label, _ in ext_figures]
 
         # The checker and review system prompts render with no API call, so a
@@ -2121,6 +2132,7 @@ class Orchestrator:
             self.extraction_record.to_dict(include_checks=False),
             self.image_captions,
             self.image_notes,
+            self.image_tables,
         )
         review_messages = [{"role": "user", "content": review_user_blocks}]
         tool_defs = get_tool_definitions(self.template, role=ROLE_REVIEW)
@@ -2600,8 +2612,9 @@ class Orchestrator:
 
         One entry per attachment, in the order the message attaches them,
         carrying the label an `<img>` citation must name, the caption the
-        paper prints beside it, and the footnote it prints under it. The two
-        texts are the half a label alone cannot supply: `table_02` says which
+        paper prints beside it, the footnote it prints under it, and whether
+        the exhibit's content rode with it as text. The two texts are the half
+        a label alone cannot supply: `table_02` says which
         crop was cited and nothing about which table it is or what its small
         print qualified, and no other capture holds the manifest's wording once
         the bundle directory has moved on. A crop the manifest gave neither of
@@ -2615,7 +2628,19 @@ class Orchestrator:
         return [{"label": label,
                  "caption": self.image_captions.get(
                      str(label).strip().lower()),
-                 "notes": self.image_notes.get(str(label).strip().lower())}
+                 "notes": self.image_notes.get(str(label).strip().lower()),
+                 # Whether the exhibit's content rode with it as text. A flag
+                 # rather than the markup: the transcription itself is in the
+                 # rendered prompt, and repeating it here would put a table in
+                 # meta once per attachment. What the flag is for is that the
+                 # rendered prompt is captured only from `--diagnostics
+                 # standard` up, while this record is kept at every level, so
+                 # without it the leanest run could not say afterwards whether
+                 # a cell was read as text or off pixels. `tables_fp` says
+                 # WHICH transcriptions the bundle held; this says which of
+                 # them the message actually carried.
+                 "transcribed": str(label).strip().lower()
+                 in self.image_tables}
                 for label, _ in figures]
 
     def _render_user_prompt_text(self):
@@ -2635,7 +2660,7 @@ class Orchestrator:
         return render_user_prompt_text(
             self.study_id, self.paper_text,
             [label for label, _ in ext_figures], self.image_captions,
-            self.image_notes,
+            self.image_notes, self.image_tables,
         )
 
     def _review_image_inputs(self):
@@ -3747,10 +3772,12 @@ class Orchestrator:
             checker_image_labels = self.image_labels
             checker_figures = self.bundle.figures
             checker_notes = self.image_notes
+            checker_tables = self.image_tables
         else:
             checker_image_labels = set()
             checker_figures = None
             checker_notes = None
+            checker_tables = None
 
         calls = []
         envelopes = {}
@@ -3783,6 +3810,15 @@ class Orchestrator:
                 # context to the checker's narrow view; it makes the smallest
                 # print on the exhibit legible without resolving it off pixels.
                 exhibit_notes=checker_notes,
+                # The content of each attached crop as text, where the bundle
+                # transcribes it. On the footnote's side of the checker's
+                # narrow view rather than the caption's: it is the exhibit's
+                # own content, which the crop already carries as pixels, and
+                # not a description of the exhibit from outside it. What it
+                # buys is that a cell can be read rather than resolved off an
+                # image, which is the whole of what a checker looking at a
+                # table is doing.
+                exhibit_tables=checker_tables,
                 # The paper text the quotes are windowed into, and how wide
                 # the window is. The paper is the run's INPUT and rides in no
                 # fingerprint; the width is config identity and rides in

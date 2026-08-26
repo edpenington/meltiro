@@ -73,10 +73,14 @@ from meltiro.statuses import TERMINAL_STATUSES
 
 # The paper's own axes, as `capture_bundle_fingerprint` records them and
 # `Session.resume` re-reads them. The composite `bundle_fp` is deliberately not
-# among them: it is a digest OF these three, so comparing it would refuse a
+# among them: it is a digest OF these four, so comparing it would refuse a
 # changed paper without being able to say which part of it changed, and
 # comparing both would report the same drift twice.
-BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp")
+#
+# `tables_fp` is an axis for the reason the others are: a transcription is
+# shown to the model, so re-transcribing a cell between a pause and a resume
+# changes what the run was reading as surely as re-cropping the exhibit does.
+BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp", "tables_fp")
 
 
 def _engine_label(meltiro_v, direktoro_v):
@@ -330,7 +334,8 @@ class Session:
     def capture_bundle_fingerprint(self, bundle):
         """At session start, record the PAPER's own fingerprint in meta.
 
-        Four values (`text_fp`, `figures_fp`, `manifest_fp`, `bundle_fp`; see
+        Five values (`text_fp`, `figures_fp`, `manifest_fp`, `tables_fp`,
+        `bundle_fp`; see
         `fingerprint.bundle_fingerprint`) naming the input this run was given.
         They are folded into no other fingerprint: the config axes describe the
         question and this describes what the question was asked of, so a reader

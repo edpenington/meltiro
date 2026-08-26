@@ -71,7 +71,8 @@ import json
 from pathlib import Path
 
 from meltiro.prompt_builder import (  # noqa: F401
-    EXHIBIT_FOOTNOTE_PREFIX, bundle_root_for_prompt, system_message_blocks)
+    EXHIBIT_FOOTNOTE_PREFIX, EXHIBIT_TRANSCRIPTION_PREFIX,
+    bundle_root_for_prompt, system_message_blocks)
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
     CHECKER_SYSTEM,
@@ -561,7 +562,7 @@ def _join_sections(sections):
     return "\n\n".join(s for s in sections if s)
 
 
-def _image_label_block(label, notes=None):
+def _image_label_block(label, notes=None, tables=None):
     """The text block that precedes an attached image, so the checker can
     correlate the PNG with the image reference in the text body.
 
@@ -572,14 +573,26 @@ def _image_label_block(label, notes=None):
     the exhibit — which is what keeps it on the right side of the checker's
     deliberately narrow view.
 
+    The transcription, where the bundle carries one, is on that same side of
+    the line and for the same reason: it is the exhibit's content, the very
+    thing the crop is a picture of, so supplying it as text lets the checker
+    read a cell instead of squinting at one. It adds nothing the exhibit does
+    not already say.
+
     The paper's caption stays out on that same reading: it describes the
     exhibit from the outside, and a description is the kind of thing that
     steers a verdict, where small print is something the checker would
     otherwise have to squint at.
     """
-    footnote = (notes or {}).get(str(label).strip().lower())
-    return (f"[{label}]\n{EXHIBIT_FOOTNOTE_PREFIX} {footnote}" if footnote
-            else f"[{label}]")
+    key = str(label).strip().lower()
+    block = f"[{label}]"
+    footnote = (notes or {}).get(key)
+    if footnote:
+        block = f"{block}\n{EXHIBIT_FOOTNOTE_PREFIX} {footnote}"
+    transcription = (tables or {}).get(key)
+    if transcription:
+        block = f"{block}\n{EXHIBIT_TRANSCRIPTION_PREFIX}\n{transcription}"
+    return block
 
 
 def _attach_image_block(label, figures):
@@ -617,6 +630,7 @@ def build_checker_user_message(
         partials_dir,
         figures=None,
         exhibit_notes=None,
+        exhibit_tables=None,
         paper_text=None,
         context_chars=0,
         predicates=None,
@@ -644,6 +658,8 @@ def build_checker_user_message(
             to attach the cropped PNG for image-cited evidence.
         exhibit_notes: label -> footnote map (`PaperBundle.exhibit_notes`),
             rendered under the label of each attached crop that prints one.
+        exhibit_tables: label -> transcription markup, rendered under the
+            label of each attached crop the bundle transcribes.
         paper_text: the paper's full text, used to window the surrounding
             context around each quote. None means no context is rendered.
         context_chars: characters of surrounding paper text shown on each
@@ -706,7 +722,8 @@ def build_checker_user_message(
             if img_block is not None:
                 image_blocks.extend([
                     {"type": "text",
-                     "text": _image_label_block(label, exhibit_notes)},
+                     "text": _image_label_block(label, exhibit_notes,
+                                                exhibit_tables)},
                     img_block,
                 ])
         blocks = image_blocks + blocks

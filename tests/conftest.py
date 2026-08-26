@@ -175,6 +175,12 @@ BUNDLE_MINIMAL_DIR = Path(__file__).resolve().parent / "fixtures" / \
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 BUNDLE_TABLES_DIR = _FIXTURES / "bundle_tables"    # tables + one figure
 BUNDLE_UNICODE_DIR = _FIXTURES / "bundle_unicode"  # unicode-heavy, no figures
+# The only fixture shaped the way the format actually specifies an exhibit:
+# a sentinel where the table sits in text.md, the content in tables/ beside
+# the crop. Its transcription carries the shapes a pipe table cannot — a
+# header spanning columns, a stub spanning rows, and cells the source leaves
+# empty.
+BUNDLE_TRANSCRIBED_DIR = _FIXTURES / "bundle_transcribed"
 
 
 @pytest.fixture
@@ -195,6 +201,11 @@ def bundle_tables_dir():
 @pytest.fixture
 def bundle_unicode_dir():
     return BUNDLE_UNICODE_DIR
+
+
+@pytest.fixture
+def bundle_transcribed_dir():
+    return BUNDLE_TRANSCRIBED_DIR
 
 
 @pytest.fixture

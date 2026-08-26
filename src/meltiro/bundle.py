@@ -28,6 +28,16 @@ What this module adds is what a valid bundle MEANS to a run:
   - each `figures/<label>.png` is attached to the message under its label,
     and that label is the token a model cites as `<img>label</img>`: the
     filename stem already IS the citation.
+  - each `tables/<label>.html` is the content of that exhibit as text, and it
+    rides in the message beside the crop under the same label. It is carried
+    verbatim: the markup a bundle passes validation with is the markup a
+    model reads, so the bytes shown are the bytes the producing route checked
+    against the page. Rendering it to a pipe table would flatten exactly what
+    the format chose HTML to keep, which is that a printed header can span
+    columns and a stub can span rows. It does not change what a citation is —
+    a fact taken from an exhibit is still cited `<img>label</img>`, because
+    the crop is still what the exhibit IS and the transcription is a reading
+    of it.
   - an exhibit's `caption` introduces its crop in the message, so a model
     reading `[table_01]` can tell which exhibit it is looking at, and its
     `notes` (the footnote the paper prints under the exhibit, which the crop
@@ -90,6 +100,14 @@ class PaperBundle:
     # The empty default carries that reading one step further: a bundle whose
     # exhibits print nothing constructs exactly as it always did.
     exhibit_notes: dict[str, str] = field(default_factory=dict)
+    # label -> the path of that exhibit's table transcription, for the
+    # exhibits that carry one. Absence is the format's only signal here and a
+    # strong one, so it is carried the way the footnote is: a missing key
+    # means the crop is the content, which is what every exhibit meant before
+    # the directory existed. A path rather than the markup, so this stays a
+    # description of the directory and the one read of each file happens
+    # where the message is built.
+    tables: dict[str, Path] = field(default_factory=dict)
 
 
 def load_bundle(path):
@@ -112,6 +130,10 @@ def load_bundle(path):
     # second reading could disagree with the one validation ran and put a
     # label in front of a model that no check ever saw.
     figures = paper_bundle_format.figure_files(root)
+    # And which are transcriptions, on the same terms and for the same
+    # reason. Unlike `figures/`, a label absent here is not a defect: a
+    # bundle may transcribe all, some or none of its exhibits.
+    tables = paper_bundle_format.table_files(root)
     # Validation has already established that these are exactly the labels
     # the manifest declares, so sorting both by label keeps them in lockstep.
     declared = sorted(manifest["exhibits"], key=lambda e: e["label"])
@@ -128,4 +150,5 @@ def load_bundle(path):
         figures=figures,
         exhibits=exhibits,
         exhibit_notes=exhibit_notes,
+        tables=tables,
     )
