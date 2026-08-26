@@ -30,6 +30,7 @@ from meltiro import __version__, prompt_builder
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
+from meltiro.fingerprint import bundle_fingerprint
 from meltiro.orchestrator import Orchestrator
 from meltiro.run_entry import build_entry
 
@@ -520,6 +521,46 @@ class TestPaperDoesNotMoveStageFingerprints:
             for i, b in enumerate([one_figure, many_figures, no_figures])
         ]
         assert fps[0] == fps[1] == fps[2]
+
+    def test_papers_differing_only_in_transcriptions_share_every_fingerprint(
+            self, config_dir, bundle_transcribed_dir, tmp_path):
+        # A transcription is per-paper prompt content, like the caption and
+        # the crop beside it, so it must move the PAPER's identity and none of
+        # the stage fingerprints. It is the newest thing to ride in the user
+        # message, and the one most easily wired into a hash by accident,
+        # because unlike a crop it IS text.
+        with_it = tmp_path / "b_transcribed"
+        shutil.copytree(bundle_transcribed_dir, with_it)
+
+        without = tmp_path / "b_plain"
+        shutil.copytree(bundle_transcribed_dir, without)
+        shutil.rmtree(without / "tables")
+
+        edited = tmp_path / "b_edited"
+        shutil.copytree(bundle_transcribed_dir, edited)
+        path = edited / "tables" / "table_01.html"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Weekday", "Midweek"),
+            encoding="utf-8")
+
+        # Sanity: the three really do differ in what they transcribe.
+        assert load_bundle(without).tables == {}
+        assert load_bundle(with_it).tables != {}
+        assert (load_bundle(edited).tables["table_01"].read_text("utf-8")
+                != load_bundle(with_it).tables["table_01"].read_text("utf-8"))
+
+        fps = [
+            _fps(_prepared_orch(config_dir, b, tmp_path / f"tout_{i}"))
+            for i, b in enumerate([with_it, without, edited])
+        ]
+        assert fps[0] == fps[1] == fps[2]
+
+        # And the other half of the same claim: the paper's own identity DOES
+        # tell all three apart, so "moves no stage fingerprint" is not being
+        # bought by the transcription reaching no fingerprint at all.
+        paper = [bundle_fingerprint(load_bundle(b))["bundle_fp"]
+                 for b in (with_it, without, edited)]
+        assert len(set(paper)) == 3
 
 
 # ---------------------------------------------------------------------------
