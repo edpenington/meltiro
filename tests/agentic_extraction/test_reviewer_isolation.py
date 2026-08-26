@@ -233,7 +233,8 @@ def test_build_review_user_blocks_has_no_challenge_parameter():
     params = inspect.signature(build_review_user_blocks).parameters
     assert list(params) == [
         "study_id", "paper_text", "figures", "extraction_record_dict",
-        "image_captions", "image_notes", "image_tables"]
+        "image_captions", "image_notes", "image_tables",
+            "supplements"]
 
 
 def test_final_review_passes_the_reviewer_nothing_but_the_output():

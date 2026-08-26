@@ -351,22 +351,36 @@ class Orchestrator:
         # (label, png_bytes) list the prompt builders consume; image_labels
         # is the lower-cased stem set used for image-citation matching.
         self.paper_text = bundle.text
+        # The ARTICLE's crops, in label order. A supplement's are attached in
+        # its own section rather than here (see `self.supplements`), because
+        # the message has to say which document an exhibit came out of.
         self.figures = [(label, path.read_bytes())
                         for label, path in bundle.figures.items()]
+        # The maps below are the WHOLE bundle's, article and supplements
+        # together. A label is unique across a bundle by the format's own
+        # rule, so one flat map resolves any citation without ambiguity, and
+        # every consumer of them — the dispatcher validating `<img>`, the
+        # checker attaching the crop it names — asks only which file a label
+        # is, never which document it sits in. Grouping is the message's job
+        # and it is done there.
+        #
         # Normalise exactly as the tool dispatcher does (strip + lower) so
         # image-citation matching agrees on both sides.
-        self.image_labels = {label.strip().lower() for label in bundle.figures}
+        self.image_labels = {label.strip().lower()
+                             for label in bundle.all_figures()}
         # Exhibit captions, keyed the same normalised way. Paper input, like
         # the labels: rides in the prompts, and in no fingerprint (prompt_hash
         # and review_fp render an empty label list, so two papers under one
         # config share a fingerprint).
-        self.image_captions = {label.strip().lower(): caption
-                               for label, caption in bundle.exhibits.items()}
+        self.image_captions = {
+            label.strip().lower(): caption
+            for label, caption in bundle.all_exhibits().items()}
         # The footnote each exhibit prints, where the manifest records one, on
         # the same key. Paper input on the same terms as the captions, and
         # carried separately because only some exhibits have one.
-        self.image_notes = {label.strip().lower(): note
-                            for label, note in bundle.exhibit_notes.items()}
+        self.image_notes = {
+            label.strip().lower(): note
+            for label, note in bundle.all_exhibit_notes().items()}
         # The transcription each exhibit carries, where the bundle supplies
         # one, read once here and keyed the same way. Read at construction
         # like the crops beside them, so one run reads each file once and the
@@ -375,8 +389,21 @@ class Orchestrator:
         # them.
         self.image_tables = {
             label.strip().lower(): path.read_text(encoding="utf-8").strip()
-            for label, path in bundle.tables.items()
+            for label, path in bundle.all_tables().items()
         }
+        # Each supplement as the message builders take one: its name, the
+        # title the paper prints for it, its prose where it printed any, and
+        # its own crops read here beside the article's. Built once, in name
+        # order, so the sections a message carries and the sections a
+        # recorded prompt renders are the same list in the same order.
+        self.supplements = [
+            {"name": supplement.name,
+             "title": supplement.title,
+             "text": supplement.text,
+             "figures": [(label, path.read_bytes())
+                         for label, path in supplement.figures.items()]}
+            for supplement in bundle.supplements.values()
+        ]
 
         # Refuse a call the registry says cannot be made, in the constructor,
         # so every entry point (CLI, resume, programmatic) fails before a
@@ -596,6 +623,21 @@ class Orchestrator:
         if self.extractor_supports_images:
             return self.figures, self.image_labels
         return [], set()
+
+    def _supplements_for(self, supports_images):
+        """The supplement sections a role is sent.
+
+        Guarded on the role's image capability, and so on exactly what
+        decides its crops. A supplement reaches a role as a document: its
+        prose, its crops and its transcriptions together. A text-only role is
+        sent no crops, so every exhibit in that document would arrive as a
+        label it cannot cite — its `<img>` set is empty — and the prose
+        beside them is not quotable either, because `text.md` is the only
+        thing a `<q>` is checked against. What it could do with the section
+        is therefore nothing, and what it could be tempted into is evidence
+        it cannot supply.
+        """
+        return self.supplements if supports_images else []
 
     def _image_omitted_roles(self):
         """`(role, model)` for every ENABLED stage whose model cannot accept
@@ -861,6 +903,7 @@ class Orchestrator:
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
             self.image_notes, self.image_tables,
+            self._supplements_for(self.extractor_supports_images),
         )
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
@@ -1038,6 +1081,7 @@ class Orchestrator:
         self.initial_user_blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
             self.image_notes, self.image_tables,
+            self._supplements_for(self.extractor_supports_images),
         )
         replayed = self.session.replay_messages()
         self.messages = [
@@ -2133,6 +2177,7 @@ class Orchestrator:
             self.image_captions,
             self.image_notes,
             self.image_tables,
+            self._supplements_for(model_supports_images(self.review_model)),
         )
         review_messages = [{"role": "user", "content": review_user_blocks}]
         tool_defs = get_tool_definitions(self.template, role=ROLE_REVIEW)
@@ -2661,6 +2706,7 @@ class Orchestrator:
             self.study_id, self.paper_text,
             [label for label, _ in ext_figures], self.image_captions,
             self.image_notes, self.image_tables,
+            self._supplements_for(self.extractor_supports_images),
         )
 
     def _review_image_inputs(self):

@@ -125,6 +125,7 @@ def _review_orch(tmp_path, template, paper_text, image_labels, response,
     orch.image_captions = {}
     orch.image_notes = {}
     orch.image_tables = {}
+    orch.supplements = []
     orch.reference_lists = {}
     orch.config = SimpleNamespace(review_system_path=None)
     orch.max_tool_calls = 100

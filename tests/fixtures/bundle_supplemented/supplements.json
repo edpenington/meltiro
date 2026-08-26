@@ -1,0 +1,16 @@
+{
+  "id": "syn-supplemented",
+  "supplements": [
+    {
+      "name": "supplement_a",
+      "title": "Supplement A. Turnaround time by shift, for each site and rota period",
+      "exhibits": [
+        {
+          "label": "supplement_a_table_01",
+          "caption": "Table S1. Median turnaround time by shift, site and rota period",
+          "notes": "IQR, interquartile range. The night shift at Site B was introduced with the revised rota, so it has no before figure."
+        }
+      ]
+    }
+  ]
+}

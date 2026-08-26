@@ -181,6 +181,10 @@ BUNDLE_UNICODE_DIR = _FIXTURES / "bundle_unicode"  # unicode-heavy, no figures
 # header spanning columns, a stub spanning rows, and cells the source leaves
 # empty.
 BUNDLE_TRANSCRIBED_DIR = _FIXTURES / "bundle_transcribed"
+# The transcribed fixture plus one supplement, which carries its own prose,
+# its own crop and its own transcription, and whose exhibit labels are
+# prefixed with its name the way the format's convention keeps them apart.
+BUNDLE_SUPPLEMENTED_DIR = _FIXTURES / "bundle_supplemented"
 
 
 @pytest.fixture
@@ -206,6 +210,11 @@ def bundle_unicode_dir():
 @pytest.fixture
 def bundle_transcribed_dir():
     return BUNDLE_TRANSCRIBED_DIR
+
+
+@pytest.fixture
+def bundle_supplemented_dir():
+    return BUNDLE_SUPPLEMENTED_DIR
 
 
 @pytest.fixture

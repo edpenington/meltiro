@@ -6,9 +6,12 @@ them. Papers are copyrighted, so they are NEVER shipped with the code; a
 run is handed one at the moment it starts.
 
     my-paper/
-      manifest.json    identity and the exhibit declaration
-      text.md          the paper's full text as markdown
-      figures/         cropped tables and figures
+      manifest.json     identity and the exhibit declaration
+      text.md           the paper's full text as markdown
+      figures/          cropped tables and figures
+      tables/           table exhibits' content as text
+      supplements.json  what supplementary material is carried
+      supplements/      one directory per supplement
 
 The format belongs to *alteksto* (github.com/edpenington/alteksto), which
 specifies it in `docs/bundle.md`, produces bundles to it, and enforces it —
@@ -44,6 +47,27 @@ What this module adds is what a valid bundle MEANS to a run:
     normally carries as pixels and `text.md` does not carry at all) follows
     the caption as text, so small print does not have to be read off the
     image.
+  - a supplement is the paper's supplementary material, and a run is given
+    it the way it is given the article: its prose in the message under the
+    title the paper prints for it, its crops attached, its transcriptions
+    beside them. It arrives in a section of its own rather than merged into
+    the article, because the two are different artefacts — a supplement is
+    often not reviewed to the article's standard and can be revised after
+    publication — and a value read from one is a claim about that document.
+    The message is where that distinction is kept, since a label alone
+    cannot carry it.
+
+    A supplement's exhibits DO join the article's flat maps, because the
+    format makes an exhibit label unique across the whole bundle: one label
+    means one exhibit wherever it sits, so `<img>label</img>` resolves
+    without ambiguity and every consumer of those maps is untouched. What
+    the message groups, the citation does not have to.
+
+    A supplement's prose is NOT joined to `text.md`, and no `<q>` is ever
+    checked against it. `text.md` stays the article's, byte for byte, so a
+    consumer identifying the paper by it is unmoved by a supplement landing
+    — and so that a quote certified verbatim is always a claim about the
+    article. Reading a supplement is what `<img>` on its exhibits is for.
   - `summary` is the CHECKER's identity context for study-level fields (the
     checker never reads the paper). For a published paper that is the
     abstract; for grey literature an executive summary or a couple of
@@ -80,6 +104,34 @@ from meltiro.errors import BundleError
 
 
 @dataclass(frozen=True)
+class Supplement:
+    """One supplement of a bundle: a paper-like unit with no identity.
+
+    Shaped like the bundle around it minus the identity it does not have. A
+    supplement has no id, no DOI and no title page; `title` is what the
+    PAPER calls it ("Supplement 3. Characteristics of included studies"),
+    which is what a reader choosing between supplements chooses on, and
+    `name` is the directory and the token it is asked for by.
+
+    `text` is optional where the article's is required: a supplement that is
+    a run of data tables prints no prose, and inventing one would mean
+    inventing the prose. None means it printed none; it is never an empty
+    string.
+
+    The four exhibit maps are the article's four, on the article's terms, so
+    a caller that can read one can read the other.
+    """
+
+    name: str
+    title: str
+    text: str | None
+    figures: dict[str, Path]
+    exhibits: dict[str, str]
+    exhibit_notes: dict[str, str] = field(default_factory=dict)
+    tables: dict[str, Path] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class PaperBundle:
     """A validated, loaded paper bundle. Immutable."""
 
@@ -108,6 +160,96 @@ class PaperBundle:
     # description of the directory and the one read of each file happens
     # where the message is built.
     tables: dict[str, Path] = field(default_factory=dict)
+    # name -> Supplement, ordered by name. Empty for the ordinary paper,
+    # which carries the article alone. Kept as its own map rather than
+    # merged into the four above: the maps say what an `<img>` label
+    # resolves to, and this says which document each exhibit came out of,
+    # which is what the message has to keep apart.
+    supplements: dict[str, "Supplement"] = field(default_factory=dict)
+
+    def all_figures(self):
+        """Every crop in the bundle, article and supplements, label to path.
+
+        The format makes a label unique across the whole bundle, so this is
+        a merge and never a resolution: no key here can be claimed twice.
+        It is what an `<img>` citation is validated against and what the
+        checker attaches from, both of which ask only "which file is this
+        label", never "which document is it in".
+        """
+        return _merged(self.figures, "figures", self.supplements)
+
+    def all_exhibits(self):
+        """Every exhibit's caption, article and supplements."""
+        return _merged(self.exhibits, "exhibits", self.supplements)
+
+    def all_exhibit_notes(self):
+        """Every exhibit's printed footnote, article and supplements."""
+        return _merged(self.exhibit_notes, "exhibit_notes", self.supplements)
+
+    def all_tables(self):
+        """Every transcription's path, article and supplements."""
+        return _merged(self.tables, "tables", self.supplements)
+
+
+def _merged(article_map, attr, supplements):
+    """`article_map` plus the same map from every supplement, by label.
+
+    Supplements are merged in name order, and the article goes first, so one
+    bundle enumerates identically every time. Nothing is overwritten in
+    practice — validation has established that no label repeats anywhere in
+    the bundle — so the order is for determinism rather than precedence.
+    """
+    merged = dict(article_map)
+    for name in sorted(supplements):
+        merged.update(getattr(supplements[name], attr))
+    return {label: merged[label] for label in sorted(merged)}
+
+
+def _load_supplements(root):
+    """`{name: Supplement}` for the bundle at `root`, ordered by name.
+
+    Empty for the ordinary paper: no `supplements.json` means the bundle
+    carries the article alone, which is what every bundle carried before the
+    file existed. Reached only after `validate_bundle` has passed, so the
+    declaration parses, its every entry has its directory, and each
+    directory's contents are bound to what that entry declares — none of
+    which is re-checked here.
+
+    Which directories are supplements is `supplement_dirs`' answer, and each
+    one's assets are read by handing its path back to the same two functions
+    the article's are read with. That is the whole reason a supplement
+    directory is shaped like the bundle around it, and it is why nothing
+    here restates a rule about what lives where.
+    """
+    declaration = root / "supplements.json"
+    if not declaration.is_file():
+        return {}
+
+    declared = json.loads(declaration.read_text(encoding="utf-8"))
+    dirs = paper_bundle_format.supplement_dirs(root)
+
+    supplements = {}
+    for entry in sorted(declared["supplements"], key=lambda e: e["name"]):
+        name = entry["name"]
+        path = dirs[name]
+        exhibits = sorted(entry["exhibits"], key=lambda e: e["label"])
+        # Optional here where the article's is required: a supplement that is
+        # a run of data tables prints no prose. Absent is None, never "", so a
+        # caller reads "printed none" as a missing thing rather than as an
+        # empty one it has to test for.
+        text_path = path / "text.md"
+        supplements[name] = Supplement(
+            name=name,
+            title=entry["title"],
+            text=(text_path.read_text(encoding="utf-8")
+                  if text_path.is_file() else None),
+            figures=paper_bundle_format.figure_files(path),
+            tables=paper_bundle_format.table_files(path),
+            exhibits={e["label"]: e["caption"] for e in exhibits},
+            exhibit_notes={e["label"]: e["notes"] for e in exhibits
+                           if "notes" in e},
+        )
+    return {name: supplements[name] for name in sorted(supplements)}
 
 
 def load_bundle(path):
@@ -141,6 +283,7 @@ def load_bundle(path):
     exhibit_notes = {e["label"]: e["notes"] for e in declared if "notes" in e}
 
     return PaperBundle(
+        supplements=_load_supplements(root),
         root=root,
         study_id=manifest["id"],
         title=manifest["title"],

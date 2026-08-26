@@ -80,7 +80,8 @@ from meltiro.statuses import TERMINAL_STATUSES
 # `tables_fp` is an axis for the reason the others are: a transcription is
 # shown to the model, so re-transcribing a cell between a pause and a resume
 # changes what the run was reading as surely as re-cropping the exhibit does.
-BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp", "tables_fp")
+BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp", "tables_fp",
+               "supplements_fp")
 
 
 def _engine_label(meltiro_v, direktoro_v):
@@ -334,8 +335,8 @@ class Session:
     def capture_bundle_fingerprint(self, bundle):
         """At session start, record the PAPER's own fingerprint in meta.
 
-        Five values (`text_fp`, `figures_fp`, `manifest_fp`, `tables_fp`,
-        `bundle_fp`; see
+        Six values (`text_fp`, `figures_fp`, `manifest_fp`, `tables_fp`,
+        `supplements_fp`, `bundle_fp`; see
         `fingerprint.bundle_fingerprint`) naming the input this run was given.
         They are folded into no other fingerprint: the config axes describe the
         question and this describes what the question was asked of, so a reader

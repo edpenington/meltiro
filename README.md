@@ -271,7 +271,8 @@ identically under any shell.
 ## The paper bundle
 
 *meltiro* consumes a directory per paper: the full text as markdown, the
-cropped tables and figures, and a manifest naming them.
+cropped tables and figures, a manifest naming them, and any supplementary
+material the paper carries.
 
 ```
 paper-bundle/
@@ -280,8 +281,11 @@ paper-bundle/
 ├── figures/           # optional: one PNG per declared exhibit
 │   ├── table_01.png
 │   └── figure_02.png
-└── tables/            # optional: a table exhibit's content as text
-    └── table_01.html
+├── tables/            # optional: a table exhibit's content as text
+│   └── table_01.html
+├── supplements.json   # optional: what supplementary material is carried
+└── supplements/       # optional: one directory per supplement
+    └── supplement_a/  #   shaped like the bundle around it
 ```
 
 **The format belongs to [alteksto](https://github.com/edpenington/alteksto),
@@ -320,6 +324,17 @@ What the format leaves to you, this pipeline then leans on:
   exhibit is, so a fact read from either is `<img>label</img>`, and a cell is
   never a verbatim quote. An exhibit with no file here is the ordinary case
   and says only that the crop is the content.
+- Supplementary material is carried as its own document and reaches a run
+  that way. Each supplement arrives after the paper in a delimited section of
+  its own, carrying the title the paper prints for it, its prose, and its own
+  exhibits attached like the paper's. The section is what says which document
+  a value was read from: a supplement is often not reviewed to the article's
+  standard and can be revised after publication, so that distinction is part
+  of the claim. Exhibit labels are unique across the whole bundle, so an
+  `<img>` citation resolves without knowing which document it names. A
+  supplement's prose is **not** the paper text and no `<q>` resolves against
+  it — a quote certified verbatim is always a claim about the article, which
+  is also why a supplement landing moves neither `text_fp` nor `manifest_fp`.
 - `summary` is what the Checker is shown as the paper's short identity. Without
   it the Checker uses the extracted field the template marks `role: summary`,
   and failing that, title plus DOI.
@@ -631,11 +646,16 @@ own instead, recorded with the run and folded into nothing:
 - `tables_fp` — the table transcriptions, as sorted (label, content-hash)
   pairs, on the same terms as the crops: a paper transcribing nothing hashes
   the same fixed token, so "no transcriptions" is a recorded fact too.
-- `bundle_fp` — the four above, folded into one.
+- `supplements_fp` — the supplementary material: each supplement's name,
+  printed title, prose and assets. Separate from the axes above so that a
+  consumer identifying a paper by the article's own bytes is untouched when a
+  supplement lands, while one reading the whole bundle sees it.
+- `bundle_fp` — the five above, folded into one.
 
 Each part moves only for its own input. Edit a line of `text.md` and `text_fp`
 and `bundle_fp` move. Swap a crop for a better one and `figures_fp` and
-`bundle_fp` move. Re-transcribe a cell and `tables_fp` and `bundle_fp` move.
+`bundle_fp` move. Re-transcribe a cell and `tables_fp` and `bundle_fp` move. Add a supplement
+and `supplements_fp` and `bundle_fp` move, and nothing else does.
 Change the manifest's summary and `manifest_fp` and `bundle_fp` move. So
 `run_fp` says what was asked and `bundle_fp` says what it was asked of, and
 either can be compared while the other varies.

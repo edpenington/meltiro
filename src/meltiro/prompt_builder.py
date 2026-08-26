@@ -152,6 +152,101 @@ EXHIBIT_FOOTNOTE_PREFIX = "Footnote:"
 EXHIBIT_TRANSCRIPTION_PREFIX = "Content as text:"
 
 
+# What opens and closes a supplement's section of the message. A supplement is
+# a separate document from the article and often not reviewed to its standard,
+# so which document a value was read from is part of the claim; the message is
+# where that is kept, because an `<img>` label carries no such mark. The
+# section is delimited on both sides for the reason the paper text is: a role
+# has to be able to tell where the article stops without inferring it from a
+# change of subject.
+def supplement_open(name, title):
+    """The line that opens one supplement's section."""
+    return f"--- SUPPLEMENT {name}: {title} ---"
+
+
+def supplement_close(name):
+    """The line that closes it, naming the same supplement."""
+    return f"--- END SUPPLEMENT {name} ---"
+
+
+# What a supplement's own prose is wrapped in, inside its section. Distinct
+# from the article's `PAPER TEXT` markers by name, so a role reading a quote
+# back can tell which of the two it came out of — and so that "the paper
+# text" means one thing in this message.
+SUPPLEMENT_TEXT_OPEN = "--- SUPPLEMENT TEXT ---"
+SUPPLEMENT_TEXT_CLOSE = "--- END SUPPLEMENT TEXT ---"
+
+# What stands in a supplement's section where its prose would be. A
+# supplement that is a run of data tables prints none, and the format lets it
+# say so by carrying no text.md; stating it keeps the section's shape the same
+# either way, on the terms `NO_EXHIBITS_NOTICE` is stated on.
+NO_SUPPLEMENT_TEXT_NOTICE = (
+    "(this supplement prints no prose; its exhibits follow)")
+
+
+def supplement_blocks(supplement, captions=None, notes=None, tables=None):
+    """The content blocks for one supplement's section of a message.
+
+    `supplement` is a mapping carrying `name`, `title`, `text` (or None) and
+    `figures`, a list of `(label, png_bytes)` in the order they attach. Its
+    exhibits are introduced by exactly the helper the article's are, and
+    looked up in the same flat maps, because a label means one exhibit
+    across the whole bundle: what the section keeps apart is the DOCUMENT,
+    not the citation.
+    """
+    blocks = [{"type": "text",
+               "text": supplement_open(supplement["name"],
+                                       supplement["title"])}]
+    text = supplement.get("text")
+    if text:
+        blocks.append({
+            "type": "text",
+            "text": (SUPPLEMENT_TEXT_OPEN + "\n" + text + "\n"
+                     + SUPPLEMENT_TEXT_CLOSE),
+        })
+    else:
+        blocks.append({"type": "text", "text": NO_SUPPLEMENT_TEXT_NOTICE})
+
+    for label, png_bytes in supplement.get("figures") or []:
+        blocks.append({"type": "text",
+                       "text": image_label_text(label, captions, notes,
+                                                tables)})
+        blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(png_bytes).decode("ascii"),
+            },
+        })
+
+    blocks.append({"type": "text",
+                   "text": supplement_close(supplement["name"])})
+    return blocks
+
+
+def supplement_render_text(supplement, captions=None, notes=None,
+                           tables=None):
+    """The text-only render of one supplement's section.
+
+    The blocks above minus the base64 bytes, on the terms
+    `render_user_prompt_text` renders the article's, so the recorded prompt
+    and the message cannot drift.
+    """
+    parts = [supplement_open(supplement["name"], supplement["title"])]
+    text = supplement.get("text")
+    if text:
+        parts.append(SUPPLEMENT_TEXT_OPEN + "\n" + text + "\n"
+                     + SUPPLEMENT_TEXT_CLOSE)
+    else:
+        parts.append(NO_SUPPLEMENT_TEXT_NOTICE)
+    for label, _ in supplement.get("figures") or []:
+        parts.append(image_label_text(label, captions, notes, tables))
+        parts.append(f"(image: {label}.png)")
+    parts.append(supplement_close(supplement["name"]))
+    return parts
+
+
 def image_label_text(label, captions=None, notes=None, tables=None):
     """The text block that introduces one attached exhibit.
 
@@ -370,7 +465,7 @@ def system_message_blocks(text):
 
 def render_user_prompt_text(study_id, paper_text, image_labels,
                             image_captions=None, image_notes=None,
-                            image_tables=None):
+                            image_tables=None, supplements=None):
     """Render the text-only view of the initial user message.
 
     Mirrors `build_initial_user_blocks` minus the base64 image bytes,
@@ -397,12 +492,15 @@ def render_user_prompt_text(study_id, paper_text, image_labels,
         parts.append(image_label_text(label, image_captions, image_notes,
                                       image_tables))
         parts.append(f"(image: {label}.png)")
+    for supplement in supplements or []:
+        parts.extend(supplement_render_text(
+            supplement, image_captions, image_notes, image_tables))
     return "\n\n".join(parts)
 
 
 def build_initial_user_blocks(study_id, paper_text, figures,
                               image_captions=None, image_notes=None,
-                              image_tables=None):
+                              image_tables=None, supplements=None):
     """Build the initial user message content blocks.
 
     Args:
@@ -417,6 +515,11 @@ def build_initial_user_blocks(study_id, paper_text, figures,
         image_tables: label -> transcription markup, for the exhibits whose
             content the bundle carries as text. Emitted verbatim beside the
             crop; a label absent from it means the crop is the content.
+        supplements: the supplementary material, in the order it is carried;
+            each a mapping of `name`, `title`, `text` (or None) and
+            `figures`. Each gets a delimited section of its own after the
+            article, because a value read from a supplement is a claim about
+            that document rather than about the paper.
 
     Returns a list of content blocks. The LAST block carries
     cache_control: ephemeral so the whole user message caches.
@@ -450,6 +553,14 @@ def build_initial_user_blocks(study_id, paper_text, figures,
                 "data": base64.b64encode(png_bytes).decode("ascii"),
             },
         })
+
+    # Every supplement, each in its own delimited section after the article.
+    # They sit inside the cached prefix, so a bundle carrying supplementary
+    # material pays for it once and reads it at the cache rate on every turn
+    # after the first.
+    for supplement in supplements or []:
+        blocks.extend(supplement_blocks(
+            supplement, image_captions, image_notes, image_tables))
 
     # Attach cache_control to the last block; caches the whole user
     # prefix up to and including it.
@@ -492,7 +603,8 @@ def build_review_system_message(*,
 
 def build_review_user_blocks(study_id, paper_text, figures,
                              extraction_record_dict, image_captions=None,
-                             image_notes=None, image_tables=None):
+                             image_notes=None, image_tables=None,
+                             supplements=None):
     """Build the user content blocks for the final-review pass.
 
     The reviewer sees the paper text + all cropped images, each under its
@@ -547,6 +659,12 @@ def build_review_user_blocks(study_id, paper_text, figures,
                 "data": base64.b64encode(png_bytes).decode("ascii"),
             },
         })
+
+    # Before the extraction output, so the reviewer has read every document
+    # the extractor was given by the time it is shown what to review.
+    for supplement in supplements or []:
+        blocks.extend(supplement_blocks(
+            supplement, image_captions, image_notes, image_tables))
 
     extraction_record_text = json.dumps(
         extraction_record_dict, indent=2, ensure_ascii=False)

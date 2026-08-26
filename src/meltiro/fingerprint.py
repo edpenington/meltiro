@@ -508,7 +508,7 @@ def engine_fingerprint(meltiro_version, meltiro_source_hash,
 def bundle_fingerprint(bundle):
     """Fingerprint the PAPER: which input this run was given.
 
-    Returns the five self-prefixed values a run records, as a dict:
+    Returns the six self-prefixed values a run records, as a dict:
 
       - `text_fp`: SHA-256 of `text.md`'s bytes, the whole text the models
         were shown.
@@ -528,7 +528,18 @@ def bundle_fingerprint(bundle):
         transcriptions" a hashed fact rather than the digest of an empty
         payload — and telling that apart from a bundle whose transcriptions
         happen to hash to nothing.
-      - `bundle_fp`: SHA-256 over the four above, joined by `|` in that fixed
+      - `supplements_fp`: SHA-256 over the supplementary material as sorted
+        `(name, title, text-digest, crops, transcriptions)` entries, so a
+        supplement arriving, a supplement withdrawn, a re-crop inside one, a
+        re-transcription inside one, or an edit to its prose or its printed
+        title all move it. A bundle carrying none folds in `ABSENT_STAGE`.
+        It is a SEPARATE component rather than a contribution to the three
+        above, and that is the whole point of the shape: `text_fp` and
+        `manifest_fp` stay the article's, byte for byte, so a consumer that
+        identifies a paper by them — the screening side does — is untouched
+        by supplementary material landing later, while a consumer that reads
+        the whole bundle sees the addition in `bundle_fp`.
+      - `bundle_fp`: SHA-256 over the five above, joined by `|` in that fixed
         order, each hashed verbatim as its full self-prefixed string.
 
     This is folded into NOTHING — not `config_fp`, not `instrument_fp`, not
@@ -561,12 +572,50 @@ def bundle_fingerprint(bundle):
         (root / "manifest.json").read_text(encoding="utf-8"))
     manifest_fp = "manifest_fp:" + _sha256(canonical_json(manifest))
 
+    supplements_fp = "supplements_fp:" + _sha256(
+        canonical_json(_supplement_payload(bundle))
+        if bundle.supplements else ABSENT_STAGE)
+
     bundle_fp = "bundle_fp:" + _sha256(
-        f"{text_fp}|{figures_fp}|{manifest_fp}|{tables_fp}")
+        f"{text_fp}|{figures_fp}|{manifest_fp}|{tables_fp}"
+        f"|{supplements_fp}")
     return {
         "text_fp": text_fp,
         "figures_fp": figures_fp,
         "manifest_fp": manifest_fp,
         "tables_fp": tables_fp,
+        "supplements_fp": supplements_fp,
         "bundle_fp": bundle_fp,
     }
+
+
+def _supplement_payload(bundle):
+    """The hashable description of a bundle's supplementary material.
+
+    One entry per supplement, in name order, carrying everything a run is
+    shown out of it: the name and the printed title, a digest of the prose
+    (a digest rather than the prose itself, so the preimage stays a fixed
+    size whatever a supplement runs to), and its crops and transcriptions as
+    `figures_fp`'s own (label, digest) pairs.
+
+    `None` for a supplement that prints no prose, which is a different fact
+    from an empty one and hashes differently from it.
+    """
+    entries = []
+    for name in sorted(bundle.supplements):
+        supplement = bundle.supplements[name]
+        entries.append({
+            "name": name,
+            "title": supplement.title,
+            "text": (_sha256(supplement.text)
+                     if supplement.text is not None else None),
+            "figures": _label_digests(supplement.figures),
+            "tables": _label_digests(supplement.tables),
+        })
+    return entries
+
+
+def _label_digests(paths):
+    """Sorted `(label, sha256)` pairs for one map of label -> path."""
+    digests = figure_hashes(paths.values())
+    return sorted((label, digests[label]["sha256"]) for label in digests)

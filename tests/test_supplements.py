@@ -1,0 +1,347 @@
+"""Supplementary material as a document of its own, carried into a run.
+
+The format keeps a supplement out of the article: its prose never joins
+`text.md`, its exhibits never join the manifest, and it is declared in a file
+of its own. That separation is the thing this has to preserve, because it is
+what the format bought — a paper's identity does not move when a supplement
+lands, and a value quoted out of a supplement is a claim about a document
+that is often not reviewed to the article's standard and can be revised after
+publication.
+
+So two claims are tested together, and they pull against each other:
+
+  - a supplement REACHES a run. Its prose, its crops and its transcriptions
+    are all in the message, in a section of its own that says which document
+    they belong to.
+  - it stays SEPARATE. `text.md` is untouched, no `<q>` is ever checked
+    against a supplement's prose, and the article's own fingerprint axes do
+    not move when a supplement arrives.
+
+Between them sits the one thing that IS shared: the exhibit maps. A label is
+unique across a whole bundle by the format's rule, so `<img>label</img>`
+resolves to one exhibit wherever it sits, and the dispatcher and the checker
+read one flat map. What the message groups, the citation does not have to.
+"""
+
+import shutil
+
+import pytest
+from alteksto.bundle import validate_bundle
+
+from meltiro.bundle import load_bundle
+from meltiro.fingerprint import bundle_fingerprint
+from meltiro.prompt_builder import (
+    NO_SUPPLEMENT_TEXT_NOTICE,
+    build_initial_user_blocks,
+    build_review_user_blocks,
+    render_user_prompt_text,
+    supplement_close,
+    supplement_open,
+)
+from meltiro.quote_check import find_quote
+
+
+def _text_blocks(blocks):
+    return [b["text"] for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text"]
+
+
+def _joined(blocks):
+    return "\n".join(_text_blocks(blocks))
+
+
+@pytest.fixture
+def supplemented(bundle_supplemented_dir):
+    return load_bundle(bundle_supplemented_dir)
+
+
+@pytest.fixture
+def sections(supplemented):
+    """The supplement payloads the message builders take."""
+    return [
+        {"name": s.name, "title": s.title, "text": s.text,
+         "figures": [(label, b"png") for label in s.figures]}
+        for s in supplemented.supplements.values()
+    ]
+
+
+class TestTheFixtureIsWhatItClaims:
+    def test_it_is_a_bundle(self, bundle_supplemented_dir):
+        assert validate_bundle(bundle_supplemented_dir) == []
+
+    def test_the_supplement_carries_prose_a_crop_and_a_transcription(
+            self, supplemented):
+        s = supplemented.supplements["supplement_a"]
+        assert s.text is not None
+        assert set(s.figures) == {"supplement_a_table_01"}
+        assert set(s.tables) == {"supplement_a_table_01"}
+
+
+class TestTheLoaderCarriesIt:
+    def test_supplements_are_keyed_by_name_in_order(self, supplemented):
+        assert list(supplemented.supplements) == ["supplement_a"]
+
+    def test_the_title_is_the_one_the_paper_prints(self, supplemented):
+        # `name` is a directory and a token; `title` is what a reader
+        # choosing between supplements chooses on, so it is what the message
+        # shows.
+        assert supplemented.supplements["supplement_a"].title.startswith(
+            "Supplement A.")
+
+    def test_an_ordinary_paper_carries_none(self, bundle_transcribed_dir):
+        assert load_bundle(bundle_transcribed_dir).supplements == {}
+
+    def test_a_supplement_that_prints_no_prose_carries_None(
+            self, bundle_supplemented_dir, tmp_path):
+        # Optional here where the article's is required, and absent is None
+        # rather than "": a supplement that is a run of data tables prints no
+        # prose, and inventing one would mean inventing the prose.
+        dst = tmp_path / "no_prose"
+        shutil.copytree(bundle_supplemented_dir, dst)
+        (dst / "supplements" / "supplement_a" / "text.md").unlink()
+
+        assert validate_bundle(dst) == []
+        assert load_bundle(dst).supplements["supplement_a"].text is None
+
+
+class TestTheExhibitMapsAreTheWholeBundles:
+    """One flat map, because one label means one exhibit bundle-wide."""
+
+    def test_all_figures_carries_both_documents(self, supplemented):
+        assert set(supplemented.all_figures()) == {
+            "table_01", "supplement_a_table_01"}
+
+    def test_the_article_maps_stay_the_articles(self, supplemented):
+        # The merged view is a view. The article's own map is still the
+        # article's, which is what lets the message attach each document's
+        # exhibits in its own section.
+        assert set(supplemented.figures) == {"table_01"}
+
+    def test_captions_notes_and_tables_merge_the_same_way(self, supplemented):
+        for view in (supplemented.all_exhibits(),
+                     supplemented.all_exhibit_notes(),
+                     supplemented.all_tables()):
+            assert set(view) == {"table_01", "supplement_a_table_01"}
+
+    def test_a_citation_resolves_without_knowing_the_document(
+            self, supplemented):
+        # What the flat map is for: the dispatcher validates `<img>` against
+        # labels alone and never asks which document an exhibit sits in.
+        labels = {label.lower() for label in supplemented.all_figures()}
+        assert "supplement_a_table_01" in labels
+
+
+class TestItReachesTheMessageAsItsOwnDocument:
+    def test_the_extractor_gets_a_delimited_section(
+            self, supplemented, sections):
+        blocks = build_initial_user_blocks(
+            supplemented.study_id, supplemented.text,
+            [("table_01", b"png")], supplemented.all_exhibits(),
+            supplemented.all_exhibit_notes(), {}, sections)
+        joined = _joined(blocks)
+        assert supplement_open(
+            "supplement_a",
+            supplemented.supplements["supplement_a"].title) in joined
+        assert supplement_close("supplement_a") in joined
+
+    def test_the_supplements_prose_is_inside_that_section(
+            self, supplemented, sections):
+        blocks = build_initial_user_blocks(
+            supplemented.study_id, supplemented.text,
+            [("table_01", b"png")], supplemented.all_exhibits(),
+            supplemented.all_exhibit_notes(), {}, sections)
+        joined = _joined(blocks)
+        prose = supplemented.supplements["supplement_a"].text.strip()
+        opening = joined.index(supplement_open(
+            "supplement_a", supplemented.supplements["supplement_a"].title))
+        closing = joined.index(supplement_close("supplement_a"))
+        assert opening < joined.index(prose.splitlines()[-1]) < closing
+
+    def test_its_crop_attaches_inside_the_section_too(
+            self, supplemented, sections):
+        # An exhibit's document is a fact about the message, so the crop sits
+        # between the delimiters rather than among the article's.
+        blocks = build_initial_user_blocks(
+            supplemented.study_id, supplemented.text,
+            [("table_01", b"png")], supplemented.all_exhibits(),
+            supplemented.all_exhibit_notes(), {}, sections)
+        texts = _text_blocks(blocks)
+        opening = next(i for i, t in enumerate(texts)
+                       if t.startswith("--- SUPPLEMENT supplement_a:"))
+        closing = next(i for i, t in enumerate(texts)
+                       if t.startswith("--- END SUPPLEMENT supplement_a"))
+        label_at = next(i for i, t in enumerate(texts)
+                        if t.startswith("[supplement_a_table_01]"))
+        assert opening < label_at < closing
+        # And the article's own exhibit is NOT inside it.
+        article_at = next(i for i, t in enumerate(texts)
+                          if t.startswith("[table_01]"))
+        assert article_at < opening
+
+    def test_the_reviewer_gets_it_before_the_output_it_reviews(
+            self, supplemented, sections):
+        blocks = build_review_user_blocks(
+            supplemented.study_id, supplemented.text,
+            [("table_01", b"png")], {"study": {}},
+            supplemented.all_exhibits(), supplemented.all_exhibit_notes(),
+            {}, sections)
+        joined = _joined(blocks)
+        assert joined.index(supplement_close("supplement_a")) < joined.index(
+            "--- ASSEMBLED EXTRACTION OUTPUT (to review) ---")
+
+    def test_a_supplement_with_no_prose_says_so(self, supplemented):
+        section = {"name": "supplement_a", "title": "S A", "text": None,
+                   "figures": []}
+        blocks = build_initial_user_blocks(
+            supplemented.study_id, supplemented.text, [("table_01", b"png")],
+            {}, {}, {}, [section])
+        assert NO_SUPPLEMENT_TEXT_NOTICE in _joined(blocks)
+
+    def test_the_recorded_prompt_matches_the_message(
+            self, supplemented, sections):
+        sent = build_initial_user_blocks(
+            supplemented.study_id, supplemented.text,
+            [("table_01", b"png")], supplemented.all_exhibits(),
+            supplemented.all_exhibit_notes(), {}, sections)
+        recorded = render_user_prompt_text(
+            supplemented.study_id, supplemented.text, ["table_01"],
+            supplemented.all_exhibits(), supplemented.all_exhibit_notes(),
+            {}, sections)
+        for block in _text_blocks(sent):
+            assert block in recorded
+
+
+class TestItStaysSeparateFromTheArticle:
+    def test_the_articles_text_is_untouched(
+            self, supplemented, bundle_transcribed_dir):
+        # `text.md` stays the article's, byte for byte. The two fixtures share
+        # one, so a supplement landing must not have changed it.
+        assert supplemented.text == load_bundle(bundle_transcribed_dir).text
+
+    def test_the_supplements_prose_is_not_quotable(self, supplemented):
+        # The claim that makes "verbatim" mean something: a quote certified
+        # against the paper is always a claim about the ARTICLE. Reading a
+        # supplement is what `<img>` on its exhibits is for.
+        prose = supplemented.supplements["supplement_a"].text
+        sentence = "Turnaround is given per shift rather than pooled"
+        assert sentence in prose
+        assert not find_quote(sentence, supplemented.text)
+
+    def test_a_supplements_cell_is_not_quotable_either(self, supplemented):
+        markup = supplemented.supplements["supplement_a"].tables[
+            "supplement_a_table_01"].read_text(encoding="utf-8")
+        assert "7.2 (5.1-9.8)" in markup
+        assert not find_quote("7.2 (5.1-9.8)", supplemented.text)
+
+
+class TestThePapersIdentity:
+    def test_supplements_fp_is_reported(self, supplemented):
+        assert bundle_fingerprint(supplemented)["supplements_fp"].startswith(
+            "supplements_fp:")
+
+    def test_a_paper_with_none_still_reports_one(self, bundle_transcribed_dir):
+        fp = bundle_fingerprint(load_bundle(bundle_transcribed_dir))
+        assert fp["supplements_fp"].startswith("supplements_fp:")
+
+    def test_a_supplement_landing_moves_no_article_axis(
+            self, supplemented, bundle_transcribed_dir):
+        # The property the whole shape was built for: a consumer that
+        # identifies a paper by the article's own bytes — the screening side
+        # does — is untouched by supplementary material arriving later, while
+        # one that reads the whole bundle sees it.
+        article = bundle_fingerprint(load_bundle(bundle_transcribed_dir))
+        withsupp = bundle_fingerprint(supplemented)
+
+        assert withsupp["text_fp"] == article["text_fp"]
+        assert withsupp["figures_fp"] == article["figures_fp"]
+        assert withsupp["tables_fp"] == article["tables_fp"]
+        assert withsupp["supplements_fp"] != article["supplements_fp"]
+        assert withsupp["bundle_fp"] != article["bundle_fp"]
+
+    def test_the_manifest_axis_moves_only_because_the_id_differs(
+            self, supplemented, bundle_transcribed_dir):
+        # The two fixtures are the same article under different ids, so
+        # manifest_fp is expected to differ. Asserted rather than left
+        # ambiguous, so the test above is not read as proving more than it
+        # does.
+        assert supplemented.study_id != load_bundle(
+            bundle_transcribed_dir).study_id
+
+    @pytest.mark.parametrize("edit", ["prose", "crop", "transcription",
+                                      "title", "withdrawn"])
+    def test_every_part_of_a_supplement_moves_it(
+            self, bundle_supplemented_dir, tmp_path, edit):
+        import json
+
+        dst = tmp_path / edit
+        shutil.copytree(bundle_supplemented_dir, dst)
+        supp = dst / "supplements" / "supplement_a"
+
+        if edit == "prose":
+            path = supp / "text.md"
+            path.write_text(path.read_text(encoding="utf-8").replace(
+                "per shift", "per rota shift"), encoding="utf-8")
+        elif edit == "crop":
+            path = supp / "figures" / "supplement_a_table_01.png"
+            path.write_bytes(path.read_bytes() + b"\x00")
+        elif edit == "transcription":
+            path = supp / "tables" / "supplement_a_table_01.html"
+            path.write_text(path.read_text(encoding="utf-8").replace(
+                "<td>7.2 (5.1-9.8)</td>", "<td>7.3 (5.1-9.8)</td>"),
+                encoding="utf-8")
+        elif edit == "title":
+            path = dst / "supplements.json"
+            declared = json.loads(path.read_text(encoding="utf-8"))
+            declared["supplements"][0]["title"] = "Supplement A. Renamed"
+            path.write_text(json.dumps(declared), encoding="utf-8")
+        elif edit == "withdrawn":
+            shutil.rmtree(dst / "supplements")
+            (dst / "supplements.json").unlink()
+
+        before = bundle_fingerprint(load_bundle(bundle_supplemented_dir))
+        after = bundle_fingerprint(load_bundle(dst))
+        assert after["supplements_fp"] != before["supplements_fp"], edit
+        assert after["bundle_fp"] != before["bundle_fp"], edit
+        # And none of it is mistaken for an edit to the article.
+        assert after["text_fp"] == before["text_fp"], edit
+        assert after["figures_fp"] == before["figures_fp"], edit
+        assert after["tables_fp"] == before["tables_fp"], edit
+
+    def test_it_is_a_resume_axis(self):
+        from meltiro.session import BUNDLE_AXES
+
+        assert "supplements_fp" in BUNDLE_AXES
+
+
+class TestTheTextOnlyRoleIsSentNone:
+    def test_no_section_reaches_a_role_sent_no_crops(
+            self, supplemented, sections):
+        # A supplement reaches a role as a document: prose, crops and
+        # transcriptions together. With no crops its exhibits are labels the
+        # role cannot cite, and its prose is not quotable, so the section
+        # could only invite evidence the role cannot supply.
+        blocks = build_initial_user_blocks(
+            supplemented.study_id, supplemented.text, [],
+            supplemented.all_exhibits(), supplemented.all_exhibit_notes(),
+            {}, [])
+        joined = _joined(blocks)
+        assert "--- SUPPLEMENT" not in joined
+
+    def test_the_orchestrator_withholds_them(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir),
+            load_bundle(bundle_supplemented_dir), tmp_path / "runs",
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        assert orch._supplements_for(True) == orch.supplements
+        assert orch._supplements_for(True) != []
+        assert orch._supplements_for(False) == []
