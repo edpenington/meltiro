@@ -1140,11 +1140,27 @@ class Orchestrator:
         # that lower-cased form; and it is the whole bundle's, so a text-only
         # extractor would preview crops its message states do not accompany
         # the study.
+        #
+        # Every crop the message attaches, which is the article's followed by
+        # each supplement's, in the order the sections are built. Previewing
+        # the article's alone would under-count a supplemented study and say
+        # so in a headline count, which is the one number a reader of this
+        # report takes on trust.
         ext_figures, _ = self._extractor_image_inputs()
+        ext_supplements = self._supplements_for(self.extractor_supports_images)
         attached_exhibits = [image_label_text(label, self.image_captions,
                                               self.image_notes,
                                               self.image_tables)
                              for label, _ in ext_figures]
+        for supplement in ext_supplements:
+            # Named by the supplement it belongs to, because the message puts
+            # it in that supplement's section and a label alone does not say
+            # which document a crop came out of.
+            for label, _ in supplement["figures"]:
+                attached_exhibits.append(
+                    f"({supplement['name']}) "
+                    + image_label_text(label, self.image_captions,
+                                       self.image_notes, self.image_tables))
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.

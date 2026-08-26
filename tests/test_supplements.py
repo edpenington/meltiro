@@ -313,6 +313,48 @@ class TestThePapersIdentity:
         assert "supplements_fp" in BUNDLE_AXES
 
 
+class TestTheDryRunPreviewIsTheMessage:
+    """The preview's headline count is the one number a reader trusts."""
+
+    def _orch(self, config_dir, bundle_dir, out_dir):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        return Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+            dry_run=True,
+        )
+
+    def test_it_previews_every_crop_the_message_attaches(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        orch.dry_run_report()
+        out = capsys.readouterr().out
+
+        # Two crops: the article's and the supplement's. Counting the
+        # article's alone would under-report a supplemented study.
+        assert "=== ATTACHED EXHIBITS (2) ===" in out
+        assert "[table_01]" in out
+        assert "[supplement_a_table_01]" in out
+
+    def test_a_supplements_crop_is_previewed_under_its_supplement(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        # The message puts it in that supplement's section, and a label alone
+        # does not say which document a crop came out of.
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        orch.dry_run_report()
+        out = capsys.readouterr().out
+        assert "(supplement_a) [supplement_a_table_01]" in out
+
+
 class TestTheTextOnlyRoleIsSentNone:
     def test_no_section_reaches_a_role_sent_no_crops(
             self, supplemented, sections):
