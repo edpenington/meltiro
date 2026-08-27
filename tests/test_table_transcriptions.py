@@ -31,12 +31,19 @@ import pytest
 from alteksto.bundle import validate_bundle
 
 from meltiro.bundle import load_bundle
-from meltiro.checker_prompts import build_checker_user_message
+from meltiro.checker_prompts import (
+    build_checker_system_text,
+    build_checker_user_message,
+)
+from meltiro.config_bundle import load_config_bundle
 from meltiro.fingerprint import bundle_fingerprint
+from meltiro.prompt_partials import stage_predicates
 from meltiro.prompt_builder import (
     EXHIBIT_TRANSCRIPTION_PREFIX,
     build_initial_user_blocks,
+    build_review_system_message,
     build_review_user_blocks,
+    build_system_message,
     image_label_text,
     render_user_prompt_text,
 )
@@ -320,3 +327,53 @@ class TestTheTextOnlyRoleIsUnchanged:
         joined = "\n".join(_text_blocks(blocks))
         assert markup not in joined
         assert EXHIBIT_TRANSCRIPTION_PREFIX not in joined
+
+
+class TestEveryRoleShownOneIsBriefedOnIt:
+    """A role sent the markup is told in its own briefing that it arrives.
+
+    Three roles are shown the transcription by three different builders, and
+    the parity is what is asserted here rather than any one role's wording: a
+    role shown a table's content under a label its briefing describes as a
+    crop and a footnote has to infer what the extra markup is, and the reading
+    nearest to hand is that a cell has become quotable.
+
+    The rule against that inference is asserted only for the two roles that
+    WRITE evidence. The checker writes none — it reads one field's evidence
+    and answers whether it supports the value — so a rule about what may go
+    in a `<q>` is not its business, and its briefing frames the content as the
+    exhibit's own words instead.
+    """
+
+    @pytest.fixture
+    def briefings(self, config_dir):
+        bundle = load_config_bundle(config_dir)
+        return {
+            "extractor": build_system_message(
+                system_prompt_path=bundle.extractor_system_path,
+                reference_lists=bundle.reference_lists),
+            "reviewer": build_review_system_message(
+                system_prompt_path=bundle.review_system_path,
+                reference_lists=bundle.reference_lists),
+            "checker": build_checker_system_text(
+                system_prompt_path=bundle.checker_system_path,
+                reference_lists=bundle.reference_lists,
+                predicates=stage_predicates(2, True, False),
+                max_checks_per_field=2),
+        }
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer", "checker"])
+    def test_the_briefing_says_the_content_arrives_as_text(
+            self, briefings, role):
+        text = briefings[role].lower()
+        assert "content as text" in text, (
+            f"the {role} is sent an exhibit's transcription but its briefing "
+            "does not say the content arrives")
+        assert "html table" in text, (
+            f"the {role} is not told what form the content arrives in")
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer"])
+    def test_the_briefing_keeps_a_cell_out_of_a_quote(self, briefings, role):
+        assert "a cell is never a verbatim quote" in briefings[role], (
+            f"the {role} writes evidence and is shown a table's content as "
+            "text, so it has to be told the content is not quotable")

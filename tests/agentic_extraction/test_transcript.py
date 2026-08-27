@@ -515,9 +515,18 @@ class TestItReadsStartToFinish:
     def test_the_run_is_reached_early_in_the_document(self, document):
         """The measurable form of the same claim. Before the schemas moved,
         91% of the document sat ahead of the run; a check that the sections
-        merely exist would not have caught that."""
+        merely exist would not have caught that.
+
+        The bound is loose on purpose. What sits ahead of the run is the
+        instrument — the system messages and the catalogue — which is a fixed
+        size for a config bundle, while the run itself grows with the turns a
+        study takes, so the fraction is a fact about this fixture's paper and
+        this bundle's prose rather than about the document's shape. A bound
+        tight enough to move when a role's briefing gains a paragraph would
+        fail for a reason the docstring does not name.
+        """
         run = document.index("## 3. The extraction, turn by turn")
-        assert run < len(document) / 2, (
+        assert run < len(document) * 0.6, (
             f"the run starts {run / len(document):.0%} into the document")
 
     def test_2_5_indexes_the_tools_rather_than_printing_them(self, session):

@@ -29,11 +29,16 @@ import pytest
 from alteksto.bundle import validate_bundle
 
 from meltiro.bundle import load_bundle
+from meltiro.checker_prompts import build_checker_system_text
+from meltiro.config_bundle import load_config_bundle
 from meltiro.fingerprint import bundle_fingerprint
+from meltiro.prompt_partials import stage_predicates
 from meltiro.prompt_builder import (
     NO_SUPPLEMENT_TEXT_NOTICE,
     build_initial_user_blocks,
+    build_review_system_message,
     build_review_user_blocks,
+    build_system_message,
     render_user_prompt_text,
     supplement_close,
     supplement_open,
@@ -387,3 +392,66 @@ class TestTheTextOnlyRoleIsSentNone:
         assert orch._supplements_for(True) == orch.supplements
         assert orch._supplements_for(True) != []
         assert orch._supplements_for(False) == []
+
+
+class TestEveryRoleShownASectionIsBriefedOnIt:
+    """The briefing parity, and its other half: the role shown none is told
+    none.
+
+    The extractor and the reviewer are both sent supplement sections, so both
+    have to be told what a section is and what a value read out of one is a
+    claim about — a delimited block naming a document is exactly the shape a
+    role will otherwise read as more paper text.
+
+    The checker is sent no section. It is shown one exhibit at a time, looked
+    up in a flat map that spans the whole bundle, so its narrow view never
+    reaches a supplement's prose and never has to place a crop in a document.
+    Naming supplementary material to it would describe a part of the message
+    it cannot see, which is the silence the engine's prompts keep everywhere
+    else.
+    """
+
+    @pytest.fixture
+    def briefings(self, config_dir):
+        bundle = load_config_bundle(config_dir)
+        return {
+            "extractor": build_system_message(
+                system_prompt_path=bundle.extractor_system_path,
+                reference_lists=bundle.reference_lists),
+            "reviewer": build_review_system_message(
+                system_prompt_path=bundle.review_system_path,
+                reference_lists=bundle.reference_lists),
+            "checker": build_checker_system_text(
+                system_prompt_path=bundle.checker_system_path,
+                reference_lists=bundle.reference_lists,
+                predicates=stage_predicates(2, True, False),
+                max_checks_per_field=2),
+        }
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer"])
+    def test_the_briefing_says_a_supplement_arrives_in_its_own_section(
+            self, briefings, role):
+        text = briefings[role].lower()
+        assert "supplementary material" in text, (
+            f"the {role} is sent supplement sections but its briefing does "
+            "not say supplementary material arrives")
+        assert "follows the paper" in text and "section" in text, (
+            f"the {role} is not told where a supplement sits in the message "
+            "or that it is delimited")
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer"])
+    def test_the_briefing_keeps_a_supplement_out_of_a_quote(
+            self, briefings, role):
+        # The one rule a role cannot discover except by a refusal: a `<q>` is
+        # checked against `text.md` alone, so a supplement's prose supports a
+        # field through `notes` or through `<img>` on one of its exhibits.
+        text = briefings[role].lower()
+        assert "not the paper text" in text, (
+            f"the {role} is not told a supplement's prose is not the paper "
+            "text, so it will quote from it and be refused")
+        assert "<q>" in briefings[role]
+
+    def test_the_checker_is_told_nothing_about_supplements(self, briefings):
+        assert "supplement" not in briefings["checker"].lower(), (
+            "the checker is shown no supplement section, so naming one to it "
+            "describes a part of the message it cannot see")
