@@ -47,6 +47,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from meltiro.bundle import normalise_label
 from meltiro import framing
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
@@ -302,7 +303,7 @@ def image_label_text(label, captions=None, notes=None, tables=None):
     the session captures, so the recorded prompt cannot drift from the
     message.
     """
-    key = str(label).strip().lower()
+    key = normalise_label(label)
     caption = (captions or {}).get(key)
     line = f"[{label}] {caption}" if caption else f"[{label}]"
     footnote = (notes or {}).get(key)

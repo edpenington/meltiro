@@ -60,7 +60,7 @@ import yaml
 from dotenv import load_dotenv
 
 from alteksto.bundle import validate_bundle
-from meltiro.bundle import load_bundle
+from meltiro.bundle import bundle_problems, load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, DIAGNOSTICS_LEVELS
@@ -1371,20 +1371,18 @@ def _cmd_validate_bundle(args):
     """
     any_invalid = False
     for path in args.bundle:
-        problems = [("format", problem) for problem in validate_bundle(path)]
-        if not problems:
-            # `load_bundle` is what refuses, so it is what is asked: a check
-            # run here beside it could answer differently from the one a run
-            # will hit.
-            try:
-                load_bundle(path)
-            except BundleError as exc:
-                problems = [("meltiro", problem) for problem in exc.problems]
+        problems = bundle_problems(path)
         if problems:
             any_invalid = True
             print(f"INVALID: {path}")
             for source, problem in problems:
                 print(f"  - [{source}] {problem}")
+            if all(source == "format" for source, _ in problems):
+                # Said rather than implied: a directory the format rejects
+                # cannot be read far enough to ask this pipeline's own two
+                # questions of it, so silence here is not a clean bill.
+                print("  (this pipeline's own checks did not run: fix the "
+                      "format problems above and validate again)")
         else:
             print(f"OK: {path}")
     return 1 if any_invalid else 0

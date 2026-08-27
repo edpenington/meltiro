@@ -70,6 +70,7 @@ import base64
 import json
 from pathlib import Path
 
+from meltiro.bundle import normalise_label
 from meltiro.prompt_builder import (  # noqa: F401
     EXHIBIT_FOOTNOTE_PREFIX, EXHIBIT_TRANSCRIPTION_PREFIX,
     bundle_root_for_prompt, system_message_blocks)
@@ -533,7 +534,7 @@ def _render_evidence_block(evidence, image_labels, paper_text=None,
         if images:
             valid_imgs = [
                 img.strip() for img in images
-                if img.strip().lower() in image_labels
+                if normalise_label(img) in image_labels
             ]
             if len(valid_imgs) == 1:
                 sections.append(
@@ -545,8 +546,13 @@ def _render_evidence_block(evidence, image_labels, paper_text=None,
                     "Image references (cropped images attached below): "
                     + ", ".join(f"`{img}`" for img in valid_imgs)
                 )
+        # The labels AS THE EVIDENCE SPELLS THEM. The lookup that finds each
+        # crop normalises (see `_attach_image_block`), so lower-casing here
+        # only changes what the label block PRINTS — and printing
+        # `[table_01]` under an evidence line that says `Table_01` puts two
+        # spellings of one label in one message.
         return (_join_sections(sections) or "(no evidence provided)",
-                [img.lower() for img in valid_imgs])
+                list(valid_imgs))
 
     # Untagged, prose-only evidence is a live shape, not a fault: a model may
     # answer with bare prose. Treat the whole string as a single quote.
@@ -584,7 +590,7 @@ def _image_label_block(label, notes=None, tables=None):
     steers a verdict, where small print is something the checker would
     otherwise have to squint at.
     """
-    key = str(label).strip().lower()
+    key = normalise_label(label)
     block = f"[{label}]"
     footnote = (notes or {}).get(key)
     if footnote:

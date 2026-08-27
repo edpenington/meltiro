@@ -481,5 +481,8 @@ class TestCliDryRunOverRealBundle:
         assert (report / "extractor_system.md").exists()
         # A figure-less bundle still renders an (empty) exhibit file, and
         # no session is created.
-        assert (report / "attached_exhibits.txt").exists()
+        # A study supplying no crops gets no exhibit manifest: an absent
+        # file says nothing was attached, where an empty one reads as a
+        # report that failed to write.
+        assert not (report / "attached_exhibits.txt").exists()
         assert not (out_dir / "syn-degradation" / "sessions").exists()

@@ -264,7 +264,36 @@ def load_bundle(path):
     problems = paper_bundle_format.validate_bundle(root)
     if problems:
         raise BundleError(problems, path=root)
+    bundle = _assemble(root)
+    problems = consumer_problems(bundle)
+    if problems:
+        raise BundleError(problems, path=root)
+    return bundle
 
+
+def bundle_problems(path):
+    """Every problem with a directory, each labelled by which side found it.
+
+    `("format", …)` for the paper bundle format's own rules, which are
+    alteksto's and every consumer's; `("meltiro", …)` for the two this
+    pipeline adds (see `consumer_problems`). One pass: the format's validator
+    runs once here rather than once for the report and again inside
+    `load_bundle`.
+
+    A directory the format rejects cannot be read far enough to ask anything
+    else of it, so its problems come back alone — the caller says so rather
+    than implying this pipeline had no complaints.
+    """
+    root = Path(path)
+    problems = paper_bundle_format.validate_bundle(root)
+    if problems:
+        return [("format", problem) for problem in problems]
+    return [("meltiro", problem)
+            for problem in consumer_problems(_assemble(root))]
+
+
+def _assemble(root):
+    """Build the `PaperBundle` for a directory the format has accepted."""
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     text = (root / "text.md").read_text(encoding="utf-8")
 
@@ -283,7 +312,7 @@ def load_bundle(path):
     exhibits = {e["label"]: e["caption"] for e in declared}
     exhibit_notes = {e["label"]: e["notes"] for e in declared if "notes" in e}
 
-    bundle = PaperBundle(
+    return PaperBundle(
         supplements=_load_supplements(root),
         root=root,
         study_id=manifest["id"],
@@ -296,10 +325,6 @@ def load_bundle(path):
         exhibit_notes=exhibit_notes,
         tables=tables,
     )
-    problems = consumer_problems(bundle)
-    if problems:
-        raise BundleError(problems, path=root)
-    return bundle
 
 
 def read_transcription(path):
@@ -384,7 +409,8 @@ def consumer_problems(bundle):
     # `text.md`.
     sources = [("text.md", bundle.text),
                ("manifest.json title", bundle.title),
-               ("manifest.json summary", bundle.summary)]
+               ("manifest.json summary", bundle.summary),
+               ("manifest.json doi", bundle.doi)]
     for label, caption in sorted(bundle.exhibits.items()):
         sources.append((f"manifest.json caption for {label!r}", caption))
     for label, note in sorted(bundle.exhibit_notes.items()):

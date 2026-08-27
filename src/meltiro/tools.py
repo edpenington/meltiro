@@ -80,6 +80,7 @@ from meltiro.extraction_record import (
     ROLE_REVIEW,
     ROLES,
 )
+from meltiro.bundle import normalise_label
 from meltiro.template import iter_fields, required_field_names
 
 from meltiro.validators import (
@@ -1089,7 +1090,7 @@ class ToolDispatcher:
         self.template = template
         self.paper_text = paper_text
         self.image_labels = set(
-            lbl.strip().lower() for lbl in image_labels
+            normalise_label(lbl) for lbl in image_labels
         )
         # Per-list resolution indexes for canonical_reference fields, built
         # once and reused for every dispatch. Reviewer edits on resume go

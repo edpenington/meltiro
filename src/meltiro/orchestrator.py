@@ -369,27 +369,29 @@ class Orchestrator:
         #
         # Normalise exactly as the tool dispatcher does (strip + lower) so
         # image-citation matching agrees on both sides.
-        self.image_labels = {label.strip().lower()
+        self.image_labels = {normalise_label(label)
                              for label in bundle.all_figures()}
         # Exhibit captions, keyed the same normalised way. Paper input, like
         # the labels: rides in the prompts, and in no fingerprint (prompt_hash
         # and review_fp render an empty label list, so two papers under one
         # config share a fingerprint).
         self.image_captions = {
-            label.strip().lower(): caption
+            normalise_label(label): caption
             for label, caption in bundle.all_exhibits().items()}
         # The footnote each exhibit prints, where the manifest records one, on
         # the same key. Paper input on the same terms as the captions, and
         # carried separately because only some exhibits have one.
         self.image_notes = {
-            label.strip().lower(): note
+            normalise_label(label): note
             for label, note in bundle.all_exhibit_notes().items()}
         # The transcription each exhibit carries, where the bundle supplies
-        # one, read once here and keyed the same way. Read at construction
-        # like the crops beside them, so one run reads each file once and the
-        # message, the recorded prompt and the checker's copy are the same
-        # bytes rather than three reads of a directory that could move under
-        # them.
+        # one, read here and keyed the same way. Read at construction like the
+        # crops beside them, so the message, the recorded prompt and the
+        # checker's copy are the same bytes rather than three reads of a
+        # directory that could move under them. The loader's refusal and
+        # `tables_fp` each read for their own question, through the one
+        # reader (`bundle.read_transcription`), which is what makes the
+        # strings comparable.
         self.image_tables = {
             normalise_label(label): read_transcription(path)
             for label, path in bundle.all_tables().items()
@@ -403,7 +405,7 @@ class Orchestrator:
         # nothing, because the label set and the file map disagreed about
         # which document they covered.
         self.image_figures = {
-            label.strip().lower(): path
+            normalise_label(label): path
             for label, path in bundle.all_figures().items()}
         # Each supplement as the message builders take one: its name, the
         # title the paper prints for it, its prose where it printed any, and
@@ -1423,10 +1425,15 @@ class Orchestrator:
                 tool_catalogue, encoding="utf-8")
             # One line per exhibit, so the file is a list a reader or a
             # script can take a line at a time. What each exhibit arrives
-            # with is in `user_message.md`, in the block it belongs to.
-            (tmp_dir / "attached_exhibits.txt").write_text(
-                "".join(f"{entry}\n" for entry in attached_exhibits),
-                encoding="utf-8")
+            # with is in `user_message.md`, in the block it belongs to. A
+            # study supplying no crops gets no file, on the terms an empty
+            # `api_calls.jsonl` is not written: an absent file says nothing
+            # was attached, where an empty one reads as a report that failed
+            # to write.
+            if attached_exhibits:
+                (tmp_dir / "attached_exhibits.txt").write_text(
+                    "".join(f"{entry}\n" for entry in attached_exhibits),
+                    encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",
                 encoding="utf-8")
