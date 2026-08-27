@@ -187,3 +187,71 @@ class TestAnAxisTheSessionNeverRecorded:
         message = str(caught.value)
         assert "the paper bundle changed" in message
         assert "text_fp" in message
+
+
+class TestTheTwoNewestAxesAreCompared:
+    """A re-transcribed cell and an edited supplement each refuse a resume.
+
+    Both were asserted only as membership of the `BUNDLE_AXES` tuple — the
+    constant, not the comparison — so excluding them from the comparison
+    itself passed the whole suite. Both are shown to the model, which is why
+    they are axes at all: the conversation being replayed was read against
+    them.
+    """
+
+    @pytest.fixture
+    def supplemented_paper(self, tmp_path, bundle_supplemented_dir):
+        dst = tmp_path / "supplemented"
+        shutil.copytree(bundle_supplemented_dir, dst)
+        return dst
+
+    def test_a_re_transcribed_cell_refuses(
+            self, config_dir, supplemented_paper, tmp_path):
+        out = tmp_path / "runs"
+        session_dir = _paused(config_dir, supplemented_paper, out)
+
+        path = supplemented_paper / "tables" / "table_01.html"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "<td>5.8 (4.1-7.6)</td>", "<td>5.9 (4.1-7.6)</td>"),
+            encoding="utf-8")
+
+        orch = _orch(config_dir, supplemented_paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        assert "the paper bundle changed" in message
+        assert "tables_fp" in message
+        # And it names that axis alone: the article's text and crops did not
+        # move, so a reader is pointed at one file.
+        assert "text_fp" not in message
+        assert "figures_fp" not in message
+
+    def test_an_edited_supplement_refuses(
+            self, config_dir, supplemented_paper, tmp_path):
+        import json
+
+        out = tmp_path / "runs"
+        session_dir = _paused(config_dir, supplemented_paper, out)
+
+        path = supplemented_paper / "supplements.json"
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        declared["supplements"][0]["exhibits"][0]["caption"] = (
+            "Table S1. MEAN turnaround time by shift")
+        path.write_text(json.dumps(declared), encoding="utf-8")
+
+        orch = _orch(config_dir, supplemented_paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        assert "the paper bundle changed" in message
+        assert "supplements_fp" in message
+        assert "text_fp" not in message
+
+    def test_an_untouched_supplemented_bundle_resumes(
+            self, config_dir, supplemented_paper, tmp_path):
+        out = tmp_path / "runs"
+        session_dir = _paused(config_dir, supplemented_paper, out)
+        orch = _orch(config_dir, supplemented_paper, out)
+        orch.resume_session(session_dir)  # must not raise
+        assert orch.session.meta["status"] == "in_progress"

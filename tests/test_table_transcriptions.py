@@ -44,6 +44,7 @@ from meltiro.prompt_builder import (
     build_review_system_message,
     build_review_user_blocks,
     build_system_message,
+    render_message_text,
     image_label_text,
 )
 from meltiro.quote_check import find_quote
@@ -434,3 +435,166 @@ class TestTheHashCoversWhatTheRoleReads:
                    if b.get("type") == "text")
         assert _transcription_digests(bundle.tables) == [
             ("table_01", expected)]
+
+
+class TestEachRolesWiringIsPinnedAtTheRun:
+    """The markup reaches each role from the ORCHESTRATOR, not just from a
+    builder called with a hand-made map.
+
+    The builders are tested above with an `exhibit_tables` argument supplied by
+    the test. That proves the builder emits what it is given and says nothing
+    about whether a run gives it anything: dropping the map at any of the three
+    call sites left the whole suite green. These are the three call sites.
+    """
+
+    def _orch(self, config_dir, bundle_dir, out_dir):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            max_checks_per_field=2,
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        orch.prepare_new_session()
+        return orch
+
+    def test_the_extractor_is_sent_it(self, config_dir,
+                                     bundle_transcribed_dir, tmp_path, markup):
+        orch = self._orch(config_dir, bundle_transcribed_dir,
+                          tmp_path / "runs")
+        assert markup in "\n".join(
+            b.get("text", "") for b in orch.messages[0]["content"]
+            if isinstance(b, dict))
+
+    def test_the_reviewer_is_sent_it(self, config_dir, bundle_transcribed_dir,
+                                    tmp_path, markup):
+        orch = self._orch(config_dir, bundle_transcribed_dir,
+                          tmp_path / "runs")
+        blocks, _ = orch._review_message({"study": {}})
+        assert markup in "\n".join(
+            b.get("text", "") for b in blocks if isinstance(b, dict))
+
+    def test_the_checker_is_sent_it_for_the_exhibit_it_checks(
+            self, config_dir, bundle_transcribed_dir, tmp_path, markup):
+        from meltiro.extraction_record import ExtractionRecord
+
+        orch = self._orch(config_dir, bundle_transcribed_dir,
+                          tmp_path / "runs")
+        record = ExtractionRecord()
+        record.apply_update_study(study={
+            "sample_size": {"value": 402,
+                            "evidence": "<img>table_01</img>"},
+        })
+        orch.extraction_record = record
+        calls, _ = orch._build_checker_calls(["study.sample_size"])
+        assert markup in "\n".join(
+            b.get("text", "") for b in calls[0]["user_message_blocks"]
+            if isinstance(b, dict))
+
+    def test_the_briefings_name_the_marker_the_message_writes(
+            self, config_dir):
+        # The briefings tell a role the content arrives "under `Content as
+        # text:`". That is the constant the builder writes, and nothing tied
+        # the two: renaming the constant left every test passing while three
+        # briefings went on naming a marker no message contained.
+        from meltiro.config_bundle import load_config_bundle
+
+        bundle = load_config_bundle(config_dir)
+        for text in (
+            build_system_message(
+                system_prompt_path=bundle.extractor_system_path,
+                reference_lists=bundle.reference_lists),
+            build_review_system_message(
+                system_prompt_path=bundle.review_system_path,
+                reference_lists=bundle.reference_lists),
+        ):
+            assert EXHIBIT_TRANSCRIPTION_PREFIX in text
+
+
+class TestTheAbsentStageSentinelIsLoadBearing:
+    """"This paper supplies none" is a hashed FACT, not the digest of an empty
+    payload.
+
+    Removing the sentinel and hashing `canonical_json([])` instead passed
+    every test, because the only comparison was against a bundle that DOES
+    transcribe — and an empty list hashes differently from a full one either
+    way. What the sentinel is for is that "none" is stated rather than
+    computed, so the preimage is the same fixed token for every paper that
+    supplies nothing, whatever its shape.
+    """
+
+    def test_no_transcriptions_hashes_the_sentinel_itself(
+            self, bundle_minimal_dir):
+        import hashlib
+
+        from meltiro.fingerprint import ABSENT_STAGE
+
+        fps = bundle_fingerprint(load_bundle(bundle_minimal_dir))
+        assert load_bundle(bundle_minimal_dir).tables == {}
+        expected = hashlib.sha256(ABSENT_STAGE.encode()).hexdigest()
+        assert fps["tables_fp"] == f"tables_fp:{expected}"
+
+    def test_no_supplements_hashes_it_too(self, bundle_minimal_dir):
+        import hashlib
+
+        from meltiro.fingerprint import ABSENT_STAGE
+
+        fps = bundle_fingerprint(load_bundle(bundle_minimal_dir))
+        expected = hashlib.sha256(ABSENT_STAGE.encode()).hexdigest()
+        assert fps["supplements_fp"] == f"supplements_fp:{expected}"
+
+    def test_the_sentinel_is_not_what_an_empty_payload_hashes_to(self):
+        # The distinction the sentinel buys: the two preimages differ, so a
+        # bundle that supplies none can never collide with one whose payload
+        # happens to serialise to nothing.
+        import hashlib
+
+        from meltiro.fingerprint import ABSENT_STAGE, canonical_json
+
+        assert hashlib.sha256(ABSENT_STAGE.encode()).hexdigest() != \
+            hashlib.sha256(canonical_json([]).encode()).hexdigest()
+
+
+class TestTheProjectionRefusesAMismatchedPair:
+    """`render_message_text` pairs a label to each image block by position, so
+    a caller handing it the wrong sequence would name the wrong crop.
+
+    Both guards were deletable with the suite green: nothing called the
+    function directly, and no caller inside this package can supply a
+    mismatched pair — which is exactly why the guard is what stops the next
+    one from doing it silently. Without them a short sequence writes
+    `(image: None.png)`.
+    """
+
+    def _blocks(self, count):
+        return [{"type": "text", "text": "before"}] + [
+            {"type": "image",
+             "source": {"type": "base64", "media_type": "image/png",
+                        "data": ""}}
+            for _ in range(count)]
+
+    def test_too_few_labels_is_refused(self):
+        with pytest.raises(ValueError) as excinfo:
+            render_message_text(self._blocks(2), ["only_one"])
+        assert "more images than the figure sequence" in str(excinfo.value)
+
+    def test_leftover_labels_are_refused(self):
+        with pytest.raises(ValueError) as excinfo:
+            render_message_text(self._blocks(1), ["one", "two"])
+        assert "labels the message does not attach" in str(excinfo.value)
+
+    def test_an_unrenderable_block_is_refused(self):
+        with pytest.raises(ValueError) as excinfo:
+            render_message_text([{"type": "tool_use"}], [])
+        assert "unrenderable content block" in str(excinfo.value)
+
+    def test_a_matched_pair_names_each_crop_where_it_attaches(self):
+        text = render_message_text(self._blocks(2), ["first", "second"])
+        assert text.index("(image: first.png)") < text.index(
+            "(image: second.png)")

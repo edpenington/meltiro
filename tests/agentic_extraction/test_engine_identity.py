@@ -562,6 +562,47 @@ class TestPaperDoesNotMoveStageFingerprints:
                  for b in (with_it, without, edited)]
         assert len(set(paper)) == 3
 
+    def test_papers_differing_only_in_supplements_share_every_fingerprint(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        # The twin of the case above for the other thing the format added. A
+        # supplement is a whole document of per-paper prompt content — prose,
+        # captions, footnotes, crops, transcriptions — so it must move the
+        # paper's identity and no stage fingerprint. Folding a supplement's
+        # name into `prompt_hash` passed the suite while the identical
+        # mutation with a transcription was caught here.
+        import json
+
+        with_it = tmp_path / "s_with"
+        shutil.copytree(bundle_supplemented_dir, with_it)
+
+        without = tmp_path / "s_without"
+        shutil.copytree(bundle_supplemented_dir, without)
+        shutil.rmtree(without / "supplements")
+        (without / "supplements.json").unlink()
+
+        edited = tmp_path / "s_edited"
+        shutil.copytree(bundle_supplemented_dir, edited)
+        path = edited / "supplements.json"
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        declared["supplements"][0]["title"] = "Supplement A. Retitled"
+        path.write_text(json.dumps(declared), encoding="utf-8")
+
+        # Sanity: the three really do differ in their supplementary material.
+        assert load_bundle(without).supplements == {}
+        assert load_bundle(with_it).supplements != {}
+        assert (next(iter(load_bundle(edited).supplements.values())).title
+                != next(iter(load_bundle(with_it).supplements.values())).title)
+
+        fps = [
+            _fps(_prepared_orch(config_dir, b, tmp_path / f"sout_{i}"))
+            for i, b in enumerate([with_it, without, edited])
+        ]
+        assert fps[0] == fps[1] == fps[2]
+
+        paper = [bundle_fingerprint(load_bundle(b))["bundle_fp"]
+                 for b in (with_it, without, edited)]
+        assert len(set(paper)) == 3
+
 
 # ---------------------------------------------------------------------------
 # Consumer-pinned content hashes

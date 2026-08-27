@@ -28,7 +28,7 @@ import shutil
 import pytest
 from alteksto.bundle import validate_bundle
 
-from meltiro.bundle import load_bundle
+from meltiro.bundle import load_bundle, read_transcription
 from meltiro.checker_prompts import build_checker_system_text
 from meltiro.errors import BundleError
 from meltiro.config_bundle import load_config_bundle
@@ -37,6 +37,8 @@ from meltiro.prompt_partials import stage_predicates
 from meltiro.prompt_builder import (
     NO_SUPPLEMENT_CONTENT_NOTICE,
     NO_SUPPLEMENT_TEXT_NOTICE,
+    SUPPLEMENT_TEXT_CLOSE,
+    SUPPLEMENT_TEXT_OPEN,
     build_initial_user_blocks,
     build_review_system_message,
     build_review_user_blocks,
@@ -792,3 +794,126 @@ class TestASectionSaysWhatItHolds:
         joined = _joined(blocks)
         assert NO_SUPPLEMENT_CONTENT_NOTICE in joined
         assert NO_SUPPLEMENT_TEXT_NOTICE not in joined
+
+
+class TestASupplementsSectionCarriesEveryPart:
+    """What a supplement's section holds, asserted against the bundle's own
+    strings rather than through the helpers that write them.
+
+    Each part below was droppable with the whole suite green: the printed
+    title (every assertion went through `supplement_open`, so its presence was
+    tautological), the prose delimiters, each exhibit's caption and printed
+    footnote, and the transcription — the one the fixture actually carries and
+    no test read.
+    """
+
+    def _orch(self, config_dir, bundle_dir, out_dir):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        orch.prepare_new_session()
+        return orch
+
+    @pytest.fixture
+    def messages(self, config_dir, bundle_supplemented_dir, tmp_path):
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        return {
+            "extractor": _joined(orch.messages[0]["content"]),
+            "reviewer": _joined(orch._review_message({"study": {}})[0]),
+        }
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer"])
+    def test_the_printed_title_is_in_the_message(
+            self, messages, supplemented, role):
+        title = next(iter(supplemented.supplements.values())).title
+        assert title in messages[role]
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer"])
+    def test_the_prose_arrives_between_its_own_delimiters(
+            self, messages, supplemented, role):
+        # Named apart from the article's `PAPER TEXT` markers, which is what
+        # lets a role reading a quote back tell which document it came out of.
+        text = next(iter(supplemented.supplements.values())).text.strip()
+        section = messages[role].split(SUPPLEMENT_TEXT_OPEN)[1]
+        section = section.split(SUPPLEMENT_TEXT_CLOSE)[0]
+        assert text in section
+
+    @pytest.mark.parametrize("role", ["extractor", "reviewer"])
+    def test_its_exhibit_arrives_with_caption_footnote_and_content(
+            self, messages, supplemented, role):
+        supplement = next(iter(supplemented.supplements.values()))
+        label, path = next(iter(supplement.tables.items()))
+        assert supplement.exhibits[label] in messages[role]
+        assert supplement.exhibit_notes[label] in messages[role]
+        assert read_transcription(path) in messages[role]
+
+
+class TestSeveralSupplements:
+    """Order, and the message's agreement with the loader about it.
+
+    One supplement cannot test an order, and `bundle_supplemented` has one, so
+    unsorting the loader, unsorting the merged maps and reversing the
+    orchestrator's own list all passed.
+    """
+
+    @pytest.fixture
+    def multi(self, bundle_supplemented_dir, tmp_path):
+        import json
+
+        dst = tmp_path / "multi"
+        shutil.copytree(bundle_supplemented_dir, dst)
+        path = dst / "supplements.json"
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        # Two more, named so that declaration order, alphabetical order and
+        # directory order are three different orders.
+        for name, label in (("zeta_appendix", "zeta_table_01"),
+                            ("alpha_protocol", "alpha_table_01")):
+            declared["supplements"].append({
+                "name": name,
+                "title": f"Supplement for {name}",
+                "exhibits": [{"label": label, "caption": f"{label} caption"}],
+            })
+            room = dst / "supplements" / name
+            (room / "figures").mkdir(parents=True)
+            (room / "figures" / f"{label}.png").write_bytes(
+                (dst / "figures" / "table_01.png").read_bytes())
+            (room / "text.md").write_text(f"# {name}\n\nProse of {name}.\n",
+                                          encoding="utf-8")
+        path.write_text(json.dumps(declared), encoding="utf-8")
+        assert validate_bundle(dst) == []
+        return dst
+
+    def test_the_loader_keys_them_in_name_order(self, multi):
+        assert list(load_bundle(multi).supplements) == [
+            "alpha_protocol", "supplement_a", "zeta_appendix"]
+
+    def test_the_message_carries_the_sections_in_that_order(
+            self, config_dir, multi, tmp_path):
+        bundle = load_bundle(multi)
+        orch = TestASupplementsSectionCarriesEveryPart()._orch(
+            config_dir, multi, tmp_path / "runs")
+        message = _joined(orch.messages[0]["content"])
+        positions = [message.index(supplement_open(s.name, s.title))
+                     for s in bundle.supplements.values()]
+        assert positions == sorted(positions)
+
+    def test_every_crop_is_attached_and_citable(
+            self, config_dir, multi, tmp_path):
+        bundle = load_bundle(multi)
+        orch = TestASupplementsSectionCarriesEveryPart()._orch(
+            config_dir, multi, tmp_path / "runs")
+        attached = [b for b in orch.messages[0]["content"]
+                    if b.get("type") == "image"]
+        assert len(attached) == len(bundle.all_figures()) == 4
+        assert orch.dispatcher.image_labels == {
+            label.lower() for label in bundle.all_figures()}
