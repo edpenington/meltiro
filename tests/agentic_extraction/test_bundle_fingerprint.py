@@ -69,9 +69,11 @@ def _orch(config_dir, bundle_dir, out_dir):
 # ---------------------------------------------------------------------------
 
 class TestShape:
-    def test_it_returns_the_four_values_self_prefixed(self, bundle_minimal_dir):
+    def test_it_returns_the_six_values_self_prefixed(
+            self, bundle_minimal_dir):
         fp = _fp(bundle_minimal_dir)
-        assert set(fp) == {"text_fp", "figures_fp", "manifest_fp", "bundle_fp"}
+        assert set(fp) == {"text_fp", "figures_fp", "manifest_fp",
+                           "tables_fp", "supplements_fp", "bundle_fp"}
         for name, value in fp.items():
             prefix, _, digest = value.partition(":")
             assert prefix == name
@@ -250,7 +252,7 @@ class TestRecordedWithTheRun:
         assert orch.session.meta["bundle_fp"] == \
             _fp(bundle_unicode_dir)["bundle_fp"]
 
-    def test_the_run_log_row_carries_all_four(
+    def test_the_run_log_row_carries_all_six(
             self, config_dir, bundle_minimal_dir, tmp_path):
         # The run log is the cross-run index a consumer sweeps, so the paper's
         # identity has to be a column there and not only a file in a session

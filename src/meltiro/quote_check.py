@@ -47,6 +47,8 @@ from bisect import bisect_left
 from collections import namedtuple
 from functools import lru_cache
 
+from meltiro.bundle import normalise_label
+
 
 # Page-break markers inserted by the upstream text-extraction step. Removed before
 # normalisation so quotes that span a page boundary still match.
@@ -1287,7 +1289,7 @@ def validate_evidence(evidence, paper_text, image_labels, value,
                 "message": "Each <img>...</img> block must contain a label.",
             })
             continue
-        if img.strip().lower() not in image_labels:
+        if normalise_label(img) not in image_labels:
             labels_hint = ", ".join(sorted(image_labels)) or "(none available)"
             errors.append({
                 "path": f"{field_path}.evidence[<img>{i}]",

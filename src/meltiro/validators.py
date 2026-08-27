@@ -35,6 +35,7 @@ The verbatim-quote check is delegated to meltiro.quote_check.
 import re
 from dataclasses import dataclass
 
+from meltiro.bundle import normalise_label
 from meltiro.extraction_record import NOTES_KEY
 from meltiro.quote_check import validate_evidence
 from meltiro.reference_lists import resolve_reference_value
@@ -625,7 +626,7 @@ def validate_value(field_spec, value, reference_lists=None,
         reference_index = _reference_index_for_field(field_spec,
                                                      reference_lists)
 
-    image_set = {str(lbl).strip().lower() for lbl in (image_labels or [])}
+    image_set = {normalise_label(lbl) for lbl in (image_labels or [])}
     canonicalisations = []
 
     # Producer-conditional evidence policy. LLM producers always run the

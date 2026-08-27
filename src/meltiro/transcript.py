@@ -809,12 +809,16 @@ class _Renderer:
         self._block(_table(
             ["Role", "Configured", "Reported by the provider", "Decoding"],
             rows))
+        # Only a session recorded before image input became a requirement
+        # carries this: a run configured with a text-only model is refused at
+        # startup now, so no new session can populate it. Read here because a
+        # session that did record one is still rendered by this view.
         omitted = meta.get("images_omitted") or {}
         if omitted:
             roles = ", ".join(f"`{r}`" for r in sorted(omitted))
             self._p(
                 f"The paper's figures were withheld from {roles}: that role's "
-                "model is text-only, so it was sent no image parts and none "
+                "model was text-only, so it was sent no image parts and none "
                 "of the labels that introduce them."
             )
             self._p()
@@ -856,6 +860,24 @@ class _Renderer:
             ("`template_hash`", _code_cell(meta.get("template_hash"))),
             ("`prompt_hash`", _code_cell(meta.get("prompt_hash"))),
             ("`tool_set_hash`", _code_cell(meta.get("tool_set_hash"))),
+        ]))
+        # The other half of "the same fingerprint plus the same INPUT". The
+        # sentence above rests on the paper, and a reader could not see it
+        # here: these are what say which paper, and which part of it moved
+        # when a resume is refused. `bundle_fp` is the digest of the five
+        # beside it, printed first because it is what a consumer keys on.
+        self._p()
+        self._p(
+            "And the paper the run was asked of. `bundle_fp` folds the five "
+            "axes under it; each of those moves only for its own part of the "
+            "bundle, which is what lets a refused resume name one file."
+        )
+        self._p()
+        self._block(_kv_table(["Paper axis", "Value"], [
+            (f"`{axis}`", _code_cell(meta.get(axis))
+             if meta.get(axis) else "*(not recorded)*")
+            for axis in ("bundle_fp", "text_fp", "figures_fp", "manifest_fp",
+                         "tables_fp", "supplements_fp")
         ]))
 
     def _render_structure(self):
@@ -1363,9 +1385,11 @@ class _Renderer:
         labels = [e["label"] for e in exhibits]
         if not exhibits:
             self._p(
-                "No figures were attached to the extractor's prompt, either "
-                "because the paper bundle has none or because the extractor's "
-                "model is text-only (section 1 says which)."
+                "No figures were attached to the extractor's prompt: the "
+                "paper bundle supplies none. Every role in a run reads the "
+                "paper's exhibits, so a run configured with a model that "
+                "cannot is refused before it starts — there is no other "
+                "reason this section can be empty."
             )
             self._p()
         else:
@@ -1389,12 +1413,19 @@ class _Renderer:
                      # session that recorded none for any exhibit.
                      _cell(_present(e["notes"], absent="*(none printed)*")
                            if "notes" in e else _present(None)),
+                     # Whether the exhibit's content rode with the crop as
+                     # text. The record carries it at every diagnostics level
+                     # and nothing read it, so the one question it answers —
+                     # was this cell read as text or off pixels — could not be
+                     # answered from the document a reader is handed.
+                     ("yes" if e.get("transcribed") else "no")
+                     if "transcribed" in e else _present(None),
                      _code_cell((hashes.get(e["label"]) or {}).get("sha256")),
                      _present((hashes.get(e["label"]) or {}).get(
                          "byte_length"))]
                     for e in exhibits]
             self._block(_table(
-                ["Label", "Caption", "Footnote",
+                ["Label", "Caption", "Footnote", "Content as text",
                  "SHA-256 of the cropped PNG", "Bytes"],
                 rows))
         extra = sorted(set(hashes) - set(labels))

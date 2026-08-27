@@ -175,6 +175,16 @@ BUNDLE_MINIMAL_DIR = Path(__file__).resolve().parent / "fixtures" / \
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 BUNDLE_TABLES_DIR = _FIXTURES / "bundle_tables"    # tables + one figure
 BUNDLE_UNICODE_DIR = _FIXTURES / "bundle_unicode"  # unicode-heavy, no figures
+# The only fixture shaped the way the format actually specifies an exhibit:
+# a sentinel where the table sits in text.md, the content in tables/ beside
+# the crop. Its transcription carries the shapes a pipe table cannot — a
+# header spanning columns, a stub spanning rows, and cells the source leaves
+# empty.
+BUNDLE_TRANSCRIBED_DIR = _FIXTURES / "bundle_transcribed"
+# The transcribed fixture plus one supplement, which carries its own prose,
+# its own crop and its own transcription, and whose exhibit labels are
+# prefixed with its name the way the format's convention keeps them apart.
+BUNDLE_SUPPLEMENTED_DIR = _FIXTURES / "bundle_supplemented"
 
 
 @pytest.fixture
@@ -195,6 +205,16 @@ def bundle_tables_dir():
 @pytest.fixture
 def bundle_unicode_dir():
     return BUNDLE_UNICODE_DIR
+
+
+@pytest.fixture
+def bundle_transcribed_dir():
+    return BUNDLE_TRANSCRIBED_DIR
+
+
+@pytest.fixture
+def bundle_supplemented_dir():
+    return BUNDLE_SUPPLEMENTED_DIR
 
 
 @pytest.fixture
@@ -221,3 +241,34 @@ def checker_partials_dir():
     what a test renders.
     """
     return CHECKER_PARTIALS_DIR
+
+
+def _rendered_user_message(study_id, paper_text, image_labels,
+                          image_captions=None, image_notes=None,
+                          image_tables=None, supplements=None):
+    """The text view of the extractor's opening message, built the way a run
+    builds it: assemble the message, then project it.
+
+    Test scaffolding rather than a package function, because there is exactly
+    one way the engine produces this text — `render_message_text` over the
+    blocks a run sends — and a second implementation that only tests called
+    would be a path production never takes.
+
+    `image_labels` are labels; the bytes behind them are irrelevant to a text
+    view and are supplied here so the message can be assembled at all.
+    """
+    from meltiro.prompt_builder import (
+        build_initial_user_blocks, message_figure_labels, render_message_text)
+
+    figures = [(label, b"png-bytes") for label in image_labels]
+    blocks = build_initial_user_blocks(
+        study_id, paper_text, figures, image_captions, image_notes,
+        image_tables, supplements)
+    return render_message_text(
+        blocks, message_figure_labels(figures, supplements))
+
+
+@pytest.fixture
+def rendered_user_message():
+    """The helper above, as the fixture these tests take it by."""
+    return _rendered_user_message

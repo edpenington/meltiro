@@ -6,9 +6,12 @@ them. Papers are copyrighted, so they are NEVER shipped with the code; a
 run is handed one at the moment it starts.
 
     my-paper/
-      manifest.json    identity and the exhibit declaration
-      text.md          the paper's full text as markdown
-      figures/         cropped tables and figures
+      manifest.json     identity and the exhibit declaration
+      text.md           the paper's full text as markdown
+      figures/          cropped tables and figures
+      tables/           table exhibits' content as text
+      supplements.json  what supplementary material is carried
+      supplements/      one directory per supplement
 
 The format belongs to *alteksto* (github.com/edpenington/alteksto), which
 specifies it in `docs/bundle.md`, produces bundles to it, and enforces it —
@@ -28,12 +31,43 @@ What this module adds is what a valid bundle MEANS to a run:
   - each `figures/<label>.png` is attached to the message under its label,
     and that label is the token a model cites as `<img>label</img>`: the
     filename stem already IS the citation.
+  - each `tables/<label>.html` is the content of that exhibit as text, and it
+    rides in the message beside the crop under the same label. It is carried
+    verbatim: the markup a bundle passes validation with is the markup a
+    model reads, so the bytes shown are the bytes the producing route checked
+    against the page. Rendering it to a pipe table would flatten exactly what
+    the format chose HTML to keep, which is that a printed header can span
+    columns and a stub can span rows. It does not change what a citation is —
+    a fact taken from an exhibit is still cited `<img>label</img>`, because
+    the crop is still what the exhibit IS and the transcription is a reading
+    of it.
   - an exhibit's `caption` introduces its crop in the message, so a model
     reading `[table_01]` can tell which exhibit it is looking at, and its
     `notes` (the footnote the paper prints under the exhibit, which the crop
     normally carries as pixels and `text.md` does not carry at all) follows
     the caption as text, so small print does not have to be read off the
     image.
+  - a supplement is the paper's supplementary material, and a run is given
+    it the way it is given the article: its prose in the message under the
+    title the paper prints for it, its crops attached, its transcriptions
+    beside them. It arrives in a section of its own rather than merged into
+    the article, because the two are different artefacts — a supplement is
+    often not reviewed to the article's standard and can be revised after
+    publication — and a value read from one is a claim about that document.
+    The message is where that distinction is kept, since a label alone
+    cannot carry it.
+
+    A supplement's exhibits DO join the article's flat maps, because the
+    format makes an exhibit label unique across the whole bundle: one label
+    means one exhibit wherever it sits, so `<img>label</img>` resolves
+    without ambiguity and every consumer of those maps is untouched. What
+    the message groups, the citation does not have to.
+
+    A supplement's prose is NOT joined to `text.md`, and no `<q>` is ever
+    checked against it. `text.md` stays the article's, byte for byte, so a
+    consumer identifying the paper by it is unmoved by a supplement landing
+    — and so that a quote certified verbatim is always a claim about the
+    article. Reading a supplement is what `<img>` on its exhibits is for.
   - `summary` is the CHECKER's identity context for study-level fields (the
     checker never reads the paper). For a published paper that is the
     abstract; for grey literature an executive summary or a couple of
@@ -66,7 +100,36 @@ from pathlib import Path
 
 from alteksto import bundle as paper_bundle_format
 
+from meltiro import framing
 from meltiro.errors import BundleError
+
+
+@dataclass(frozen=True)
+class Supplement:
+    """One supplement of a bundle: a paper-like unit with no identity.
+
+    Shaped like the bundle around it minus the identity it does not have. A
+    supplement has no id, no DOI and no title page; `title` is what the
+    PAPER calls it ("Supplement 3. Characteristics of included studies"),
+    which is what a reader choosing between supplements chooses on, and
+    `name` is the directory and the token it is asked for by.
+
+    `text` is optional where the article's is required: a supplement that is
+    a run of data tables prints no prose, and inventing one would mean
+    inventing the prose. None means it printed none; it is never an empty
+    string.
+
+    The four exhibit maps are the article's four, on the article's terms, so
+    a caller that can read one can read the other.
+    """
+
+    name: str
+    title: str
+    text: str | None
+    figures: dict[str, Path]
+    exhibits: dict[str, str]
+    exhibit_notes: dict[str, str] = field(default_factory=dict)
+    tables: dict[str, Path] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -90,6 +153,104 @@ class PaperBundle:
     # The empty default carries that reading one step further: a bundle whose
     # exhibits print nothing constructs exactly as it always did.
     exhibit_notes: dict[str, str] = field(default_factory=dict)
+    # label -> the path of that exhibit's table transcription, for the
+    # exhibits that carry one. Absence is the format's only signal here and a
+    # strong one, so it is carried the way the footnote is: a missing key
+    # means the crop is the content, which is what every exhibit meant before
+    # the directory existed. A path rather than the markup, so this stays a
+    # description of the directory and the one read of each file happens
+    # where the message is built.
+    tables: dict[str, Path] = field(default_factory=dict)
+    # name -> Supplement, ordered by name. Empty for the ordinary paper,
+    # which carries the article alone. Kept as its own map rather than
+    # merged into the four above: the maps say what an `<img>` label
+    # resolves to, and this says which document each exhibit came out of,
+    # which is what the message has to keep apart.
+    supplements: dict[str, "Supplement"] = field(default_factory=dict)
+
+    def all_figures(self):
+        """Every crop in the bundle, article and supplements, label to path.
+
+        The format makes a label unique across the whole bundle, so this is
+        a merge and never a resolution: no key here can be claimed twice.
+        It is what an `<img>` citation is validated against and what the
+        checker attaches from, both of which ask only "which file is this
+        label", never "which document is it in".
+        """
+        return _merged(self.figures, "figures", self.supplements)
+
+    def all_exhibits(self):
+        """Every exhibit's caption, article and supplements."""
+        return _merged(self.exhibits, "exhibits", self.supplements)
+
+    def all_exhibit_notes(self):
+        """Every exhibit's printed footnote, article and supplements."""
+        return _merged(self.exhibit_notes, "exhibit_notes", self.supplements)
+
+    def all_tables(self):
+        """Every transcription's path, article and supplements."""
+        return _merged(self.tables, "tables", self.supplements)
+
+
+def _merged(article_map, attr, supplements):
+    """`article_map` plus the same map from every supplement, by label.
+
+    Supplements are merged in name order, and the article goes first, so one
+    bundle enumerates identically every time. Nothing is overwritten in
+    practice — validation has established that no label repeats anywhere in
+    the bundle — so the order is for determinism rather than precedence.
+    """
+    merged = dict(article_map)
+    for name in sorted(supplements):
+        merged.update(getattr(supplements[name], attr))
+    return {label: merged[label] for label in sorted(merged)}
+
+
+def _load_supplements(root):
+    """`{name: Supplement}` for the bundle at `root`, ordered by name.
+
+    Empty for the ordinary paper: no `supplements.json` means the bundle
+    carries the article alone, which is what every bundle carried before the
+    file existed. Reached only after `validate_bundle` has passed, so the
+    declaration parses, its every entry has its directory, and each
+    directory's contents are bound to what that entry declares — none of
+    which is re-checked here.
+
+    Which directories are supplements is `supplement_dirs`' answer, and each
+    one's assets are read by handing its path back to the same two functions
+    the article's are read with. That is the whole reason a supplement
+    directory is shaped like the bundle around it, and it is why nothing
+    here restates a rule about what lives where.
+    """
+    declaration = root / "supplements.json"
+    if not declaration.is_file():
+        return {}
+
+    declared = json.loads(declaration.read_text(encoding="utf-8"))
+    dirs = paper_bundle_format.supplement_dirs(root)
+
+    supplements = {}
+    for entry in sorted(declared["supplements"], key=lambda e: e["name"]):
+        name = entry["name"]
+        path = dirs[name]
+        exhibits = sorted(entry["exhibits"], key=lambda e: e["label"])
+        # Optional here where the article's is required: a supplement that is
+        # a run of data tables prints no prose. Absent is None, never "", so a
+        # caller reads "printed none" as a missing thing rather than as an
+        # empty one it has to test for.
+        text_path = path / "text.md"
+        supplements[name] = Supplement(
+            name=name,
+            title=entry["title"],
+            text=(text_path.read_text(encoding="utf-8")
+                  if text_path.is_file() else None),
+            figures=paper_bundle_format.figure_files(path),
+            tables=paper_bundle_format.table_files(path),
+            exhibits={e["label"]: e["caption"] for e in exhibits},
+            exhibit_notes={e["label"]: e["notes"] for e in exhibits
+                           if "notes" in e},
+        )
+    return {name: supplements[name] for name in sorted(supplements)}
 
 
 def load_bundle(path):
@@ -103,7 +264,36 @@ def load_bundle(path):
     problems = paper_bundle_format.validate_bundle(root)
     if problems:
         raise BundleError(problems, path=root)
+    bundle = _assemble(root)
+    problems = consumer_problems(bundle)
+    if problems:
+        raise BundleError(problems, path=root)
+    return bundle
 
+
+def bundle_problems(path):
+    """Every problem with a directory, each labelled by which side found it.
+
+    `("format", …)` for the paper bundle format's own rules, which are
+    alteksto's and every consumer's; `("meltiro", …)` for the two this
+    pipeline adds (see `consumer_problems`). One pass: the format's validator
+    runs once here rather than once for the report and again inside
+    `load_bundle`.
+
+    A directory the format rejects cannot be read far enough to ask anything
+    else of it, so its problems come back alone — the caller says so rather
+    than implying this pipeline had no complaints.
+    """
+    root = Path(path)
+    problems = paper_bundle_format.validate_bundle(root)
+    if problems:
+        return [("format", problem) for problem in problems]
+    return [("meltiro", problem)
+            for problem in consumer_problems(_assemble(root))]
+
+
+def _assemble(root):
+    """Build the `PaperBundle` for a directory the format has accepted."""
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     text = (root / "text.md").read_text(encoding="utf-8")
 
@@ -112,6 +302,10 @@ def load_bundle(path):
     # second reading could disagree with the one validation ran and put a
     # label in front of a model that no check ever saw.
     figures = paper_bundle_format.figure_files(root)
+    # And which are transcriptions, on the same terms and for the same
+    # reason. Unlike `figures/`, a label absent here is not a defect: a
+    # bundle may transcribe all, some or none of its exhibits.
+    tables = paper_bundle_format.table_files(root)
     # Validation has already established that these are exactly the labels
     # the manifest declares, so sorting both by label keeps them in lockstep.
     declared = sorted(manifest["exhibits"], key=lambda e: e["label"])
@@ -119,6 +313,7 @@ def load_bundle(path):
     exhibit_notes = {e["label"]: e["notes"] for e in declared if "notes" in e}
 
     return PaperBundle(
+        supplements=_load_supplements(root),
         root=root,
         study_id=manifest["id"],
         title=manifest["title"],
@@ -128,4 +323,130 @@ def load_bundle(path):
         figures=figures,
         exhibits=exhibits,
         exhibit_notes=exhibit_notes,
+        tables=tables,
     )
+
+
+def read_transcription(path):
+    """An exhibit's content as text, as a role is shown it.
+
+    Stripped, because the surrounding whitespace of a file is not part of a
+    table and no role can observe it. One reader, so the string a message
+    carries and the string `tables_fp` digests are the same string: hashing
+    the file's raw bytes instead would move the paper's identity, and refuse a
+    resume, for a change no role could see.
+    """
+    return Path(path).read_text(encoding="utf-8").strip()
+
+
+def normalise_label(label):
+    """The key every consumer here looks an exhibit up by.
+
+    A model writes a label as it reads it, so a citation is matched with
+    surrounding whitespace dropped and case ignored. One definition, because
+    the dispatcher validating `<img>`, the maps a message is built from and
+    the checker resolving a citation have to agree on what a label IS; two
+    would let a citation validate against one map and miss in another.
+    """
+    return str(label).strip().lower()
+
+
+def consumer_problems(bundle):
+    """Every problem THIS consumer has with a bundle the format accepts.
+
+    The format's rules are alteksto's and are checked there. These two are
+    meltiro's own, and both are cases where a bundle alteksto calls valid
+    cannot be run here without misinforming a role:
+
+      - two labels that differ only in case or surrounding whitespace. The
+        format holds one label to one exhibit and compares labels as written;
+        this consumer looks them up normalised (see `normalise_label`), and
+        under that key the two are one. What follows is silent: the maps
+        collapse, and one crop arrives under the other's caption, footnote and
+        transcription, while the label set a citation is validated against
+        holds a single entry for both. Refused here rather than worked around,
+        because there is no reading of a collapsed pair that is faithful to
+        the bundle. Checked over the crops and the declared exhibits;
+        transcription labels need no separate pass because the format binds
+        every `tables/*.html` stem to a declared exhibit — an alteksto rule
+        this check DEPENDS on rather than merely observes, so a change to it
+        belongs with a change here.
+      - text that spells one of the lines this engine writes around a paper
+        (see `meltiro.framing`). Every string a run puts in front of a model
+        is checked: the paper's prose, each supplement's printed title and
+        prose, and every caption, printed footnote and transcription in
+        either. A forged delimiter moves a boundary a role has nothing else
+        to check.
+
+    Returns a list of problem strings, empty when there are none, on
+    `alteksto.bundle.validate_bundle`'s terms — every problem, not the first.
+    """
+    problems = []
+
+    by_key = {}
+    for label in list(bundle.all_figures()) + list(bundle.all_exhibits()):
+        by_key.setdefault(normalise_label(label), set()).add(label)
+    for key, labels in sorted(by_key.items()):
+        if len(labels) > 1:
+            named = ", ".join(repr(label) for label in sorted(labels))
+            problems.append(
+                f"exhibit labels {named} differ only in case or spacing, and "
+                f"this pipeline resolves a citation by the normalised label "
+                f"{key!r}, so one exhibit's crop would arrive under the "
+                f"other's caption. Rename one of them.")
+
+    # A supplement's printed title goes INSIDE a line this engine writes, so
+    # it has to be one line. A title carrying a break becomes two lines, the
+    # second ending in the ` ---` the delimiter's own suffix supplies — a
+    # forgery the title alone never spells and no check of its text could see.
+    for name, supplement in bundle.supplements.items():
+        if not framing.interpolates_text(supplement.title):
+            problems.append(
+                f"supplements.json title for {name!r} spans more than one "
+                f"line. It is printed inside the line that opens the "
+                f"supplement's section, so a break in it moves the boundary "
+                f"the section is read by. Keep the title to one line.")
+
+    # `manifest.json`'s own free text. The title and the summary reach the
+    # checker as the study's identity, and the summary is the one a run falls
+    # back to; both were out of this list while the same string was refused in
+    # `text.md`.
+    sources = [("text.md", bundle.text),
+               ("manifest.json title", bundle.title),
+               ("manifest.json summary", bundle.summary),
+               ("manifest.json doi", bundle.doi)]
+    for label, caption in sorted(bundle.exhibits.items()):
+        sources.append((f"manifest.json caption for {label!r}", caption))
+    for label, note in sorted(bundle.exhibit_notes.items()):
+        sources.append((f"manifest.json notes for {label!r}", note))
+    for label, path in sorted(bundle.tables.items()):
+        sources.append((f"tables/{label}.html",
+                        read_transcription(path)))
+    for name, supplement in bundle.supplements.items():
+        where = f"supplements/{name}"
+        sources.append((f"supplements.json title for {name!r}",
+                        supplement.title))
+        sources.append((f"{where}/text.md", supplement.text))
+        for label, caption in sorted(supplement.exhibits.items()):
+            sources.append(
+                (f"supplements.json caption for {label!r}", caption))
+        for label, note in sorted(supplement.exhibit_notes.items()):
+            sources.append((f"supplements.json notes for {label!r}", note))
+        for label, path in sorted(supplement.tables.items()):
+            sources.append((f"{where}/tables/{label}.html",
+                                read_transcription(path)))
+
+    for where, text in sources:
+        # One problem per SOURCE, naming each distinct line once: a separator
+        # repeated through a long text.md would otherwise bury every other
+        # problem in the raised error under copies of itself.
+        forged = list(dict.fromkeys(framing.forged_lines(text)))
+        if forged:
+            named = ", ".join(repr(line) for line in forged)
+            problems.append(
+                f"{where} contains {named}, which this pipeline writes as a "
+                f"delimiter around the material it sends a model. Text that "
+                f"spells one moves a boundary the model has nothing else to "
+                f"check it against. Remove it.")
+    return problems
+

@@ -205,6 +205,16 @@ class TestExtractDryRun:
             encoding="utf-8")
         assert len(catalogue) > 2000
         json.loads(catalogue)
+        # The user message the run would send, in full and on stdout beside
+        # the system message. It carries the paper's whole text, which is most
+        # of what a run pays for, so a report without it previews the smaller
+        # half of the spend.
+        user_message = (report / "user_message.md").read_text(
+            encoding="utf-8")
+        paper_text = (bundle_minimal_dir / "text.md").read_text(
+            encoding="utf-8").strip()
+        assert paper_text in user_message
+        assert user_message in out
         # All three stage fingerprints plus the whole-run run_fp are
         # recorded, with no status key.
         fps = json.loads(
@@ -212,6 +222,12 @@ class TestExtractDryRun:
         assert fps["config_fp"] and fps["checker_fp"] and fps["review_fp"]
         assert fps["run_fp"]
         assert "status" not in fps
+        # And the paper's own axes beside the run's, on the keys run.json
+        # records them under: a dry run is per-paper, so what the run would
+        # be asked OF is previewable too.
+        for axis in ("bundle_fp", "text_fp", "figures_fp", "manifest_fp",
+                     "tables_fp", "supplements_fp"):
+            assert fps[axis], f"the preview records no {axis}"
         # The attached exhibits and the rendered checker + review prompts
         # are written.
         assert (report / "attached_exhibits.txt").exists()
@@ -237,8 +253,13 @@ class TestExtractDryRun:
         expected = ("[table_01] Table 1. Primary and secondary "
                     "associations between baseline CRT-HD total score and "
                     "each outcome")
-        assert expected in (report / "attached_exhibits.txt").read_text(
+        # The caption reaches the preview in the form the message carries it,
+        # inside the message. The exhibits file beside it is the manifest of
+        # what that message attaches, one line per exhibit.
+        assert expected in (report / "user_message.md").read_text(
             encoding="utf-8")
+        assert (report / "attached_exhibits.txt").read_text(
+            encoding="utf-8").splitlines() == ["[table_01]"]
         # ... and neither system prompt names the paper's exhibits at all.
         for name in ("extractor_system.md", "review_system.md"):
             assert "table_01" not in (report / name).read_text(

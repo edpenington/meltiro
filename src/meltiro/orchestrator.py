@@ -70,10 +70,12 @@ from meltiro.checker_prompts import (
     render_record_identity_context, render_study_identity_context,
     system_message_blocks as checker_sys_blocks,
 )
+from meltiro.bundle import normalise_label, read_transcription
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, validate_diagnostics
 from meltiro.errors import AgenticExtractionError, truncation_report
 from meltiro.extraction_record import ROLE_REVIEW
 from meltiro.fingerprint import (
+    bundle_fingerprint,
     call_fingerprint as _call_fp,
     run_fingerprint as _run_fp)
 from meltiro.instrument import Instrument
@@ -95,7 +97,8 @@ from meltiro.prompt_builder import (
     build_initial_user_blocks,
     build_review_user_blocks,
     image_label_text,
-    render_user_prompt_text,
+    message_figure_labels,
+    render_message_text,
     system_message_blocks as extractor_sys_blocks,
 )
 from meltiro.template import load_template
@@ -351,22 +354,72 @@ class Orchestrator:
         # (label, png_bytes) list the prompt builders consume; image_labels
         # is the lower-cased stem set used for image-citation matching.
         self.paper_text = bundle.text
+        # The ARTICLE's crops, in label order. A supplement's are attached in
+        # its own section rather than here (see `self.supplements`), because
+        # the message has to say which document an exhibit came out of.
         self.figures = [(label, path.read_bytes())
                         for label, path in bundle.figures.items()]
+        # The maps below are the WHOLE bundle's, article and supplements
+        # together. A label is unique across a bundle by the format's own
+        # rule, so one flat map resolves any citation without ambiguity, and
+        # every consumer of them — the dispatcher validating `<img>`, the
+        # checker attaching the crop it names — asks only which file a label
+        # is, never which document it sits in. Grouping is the message's job
+        # and it is done there.
+        #
         # Normalise exactly as the tool dispatcher does (strip + lower) so
         # image-citation matching agrees on both sides.
-        self.image_labels = {label.strip().lower() for label in bundle.figures}
+        self.image_labels = {normalise_label(label)
+                             for label in bundle.all_figures()}
         # Exhibit captions, keyed the same normalised way. Paper input, like
         # the labels: rides in the prompts, and in no fingerprint (prompt_hash
         # and review_fp render an empty label list, so two papers under one
         # config share a fingerprint).
-        self.image_captions = {label.strip().lower(): caption
-                               for label, caption in bundle.exhibits.items()}
+        self.image_captions = {
+            normalise_label(label): caption
+            for label, caption in bundle.all_exhibits().items()}
         # The footnote each exhibit prints, where the manifest records one, on
         # the same key. Paper input on the same terms as the captions, and
         # carried separately because only some exhibits have one.
-        self.image_notes = {label.strip().lower(): note
-                            for label, note in bundle.exhibit_notes.items()}
+        self.image_notes = {
+            normalise_label(label): note
+            for label, note in bundle.all_exhibit_notes().items()}
+        # The transcription each exhibit carries, where the bundle supplies
+        # one, read here and keyed the same way. Read at construction like the
+        # crops beside them, so the message, the recorded prompt and the
+        # checker's copy are the same bytes rather than three reads of a
+        # directory that could move under them. The loader's refusal and
+        # `tables_fp` each read for their own question, through the one
+        # reader (`bundle.read_transcription`), which is what makes the
+        # strings comparable.
+        self.image_tables = {
+            normalise_label(label): read_transcription(path)
+            for label, path in bundle.all_tables().items()
+        }
+        # Where each crop IS, on that same key: the map a role's citation is
+        # resolved through when the crop has to be attached again away from
+        # the opening message, which is the checker's whole case. It is built
+        # here, from `all_figures()`, for the reason the three above are —
+        # a checker handed the article's map alone accepts a supplement's
+        # label as a citation, says the crop is attached, and attaches
+        # nothing, because the label set and the file map disagreed about
+        # which document they covered.
+        self.image_figures = {
+            normalise_label(label): path
+            for label, path in bundle.all_figures().items()}
+        # Each supplement as the message builders take one: its name, the
+        # title the paper prints for it, its prose where it printed any, and
+        # its own crops read here beside the article's. Built once, in name
+        # order, so the sections a message carries and the sections a
+        # recorded prompt renders are the same list in the same order.
+        self.supplements = [
+            {"name": supplement.name,
+             "title": supplement.title,
+             "text": supplement.text,
+             "figures": [(label, path.read_bytes())
+                         for label, path in supplement.figures.items()]}
+            for supplement in bundle.supplements.values()
+        ]
 
         # Refuse a call the registry says cannot be made, in the constructor,
         # so every entry point (CLI, resume, programmatic) fails before a
@@ -376,7 +429,7 @@ class Orchestrator:
         # lookup happens to run first.
         self._refuse_unworkable_decoding()
 
-        # Declared per-role image capability, from the registry. A text-only
+        # Declared per-role image capability, from the registry. Every
         # extractor gets no image parts and no label blocks: its message states
         # that none accompany the study, and its dispatcher validates against
         # an empty label set, so citing an image it never saw fails as an
@@ -571,64 +624,14 @@ class Orchestrator:
     # Image capability (per role)
     # ----------------------------------------------------------------------
 
-    def _extractor_image_inputs(self):
-        """`(figures, image_labels)` to feed the extractor's message builders,
-        honouring the extractor model's declared image capability.
+    def _supplements_for(self):
+        """The supplement sections a role is sent: all of them.
 
-        A text-only extractor gets no figures and an empty label set, and the
-        two halves of that are mitigated together: its message carries no image
-        block and states instead that none accompany the study
-        (`prompt_builder.NO_EXHIBITS_NOTICE`), and the dispatcher it drives
-        validates `<img>` citations against an empty set, so a citation of an
-        unseen image fails as an unknown label. An image-capable extractor gets
-        the real figures/labels, untouched by this method.
+        A supplement reaches a role as a document — its prose, its crops and
+        its transcriptions together — and every role can read all three,
+        because `_startup_capability_guard` refuses a run whose models cannot.
         """
-        if self.extractor_supports_images:
-            return self.figures, self.image_labels
-        return [], set()
-
-    def _image_omitted_roles(self):
-        """`(role, model)` for every ENABLED stage whose model cannot accept
-        images, when the bundle actually carries figures to withhold.
-
-        Drives both `meta.images_omitted` and the run-start stderr warning. A
-        no-figures bundle yields no omissions even for a text-only model (the
-        capability still moves the fingerprint via `structure_hash`).
-        """
-        if not self.bundle.figures:
-            return []
-        roles = [("extractor", self.extractor_model)]
-        if self.checker_enabled:
-            roles.append(("checker", self.checker_config.checker_model))
-        if self.final_review:
-            roles.append(("review", self.review_model))
-        return [(role, model) for role, model in roles
-                if not model_supports_images(model)]
-
-    def _images_omitted_meta(self):
-        """`{role: True}` for every role whose figures are withheld this run.
-
-        Only omitted roles appear, so run.json carries `images_omitted:
-        {"extractor": true}` (or `{}` when nothing is withheld); a role that
-        accepts images is absent rather than recorded as false.
-        """
-        return {role: True for role, _ in self._image_omitted_roles()}
-
-    def _warn_images_withheld(self):
-        """One stderr line per role whose figures are withheld: role, model,
-        figure count.
-
-        Pairs with `meta.images_omitted`. Stderr-only, so a resume
-        re-announces it without duplicating a persisted warning.
-        """
-        figure_count = len(self.bundle.figures)
-        for role, model in self._image_omitted_roles():
-            print(
-                f"WARNING: images-omitted: the {role} model {model!r} is "
-                f"text-only (no image input); {figure_count} bundle "
-                f"figure(s) withheld from the {role}.",
-                file=sys.stderr,
-            )
+        return self.supplements
 
     def _warn_if_truncated(self, role, max_tokens, response):
         """Say so, loudly, when a role's response stopped on `max_tokens`.
@@ -690,7 +693,7 @@ class Orchestrator:
         that stage's fingerprint and only that one.
         """
         instrument = self.instrument
-        ext_figures, ext_image_labels = self._extractor_image_inputs()
+        ext_figures, ext_image_labels = self.figures, self.image_labels
         system_text = instrument.render_extractor_system_text()
         # Paper-INDEPENDENT prompt hash: nothing of the paper reaches a system
         # prompt, so two papers under the same code share a config_fp.
@@ -748,6 +751,7 @@ class Orchestrator:
     def prepare_new_session(self):
         """Build the fingerprints + initial messages + Session, return self."""
         # Pre-flight config check, before any API spend.
+        self._startup_capability_guard()
         self._startup_identity_guard()
         # Fingerprints + rendered extractor prompt, via the shared recipe a
         # dry run also uses.
@@ -768,7 +772,13 @@ class Orchestrator:
         # never reaches the reviewer. Each is None when its stage is off, and
         # Session.create then writes no file for it.
         tool_definitions = get_tool_definitions(self.template)
-        rendered_user_prompt = self._render_user_prompt_text()
+        # Built ONCE. The conversation starts from these blocks and the record
+        # is their text view, so the message sent and the message recorded are
+        # one object's contents — and the crops are base64-encoded once rather
+        # than encoded twice and thrown away once.
+        self.initial_user_blocks, message_labels = self._extractor_message()
+        rendered_user_prompt = render_message_text(
+            self.initial_user_blocks, message_labels)
         rendered_review_system = self._render_review_system_text() \
             if self.final_review else None
         rendered_checker_system = self._render_checker_system_text() \
@@ -807,7 +817,7 @@ class Orchestrator:
             review_system_prompt=rendered_review_system,
             checker_system_prompt=rendered_checker_system,
             checker_user_scaffold=rendered_checker_scaffold,
-            image_labels=self._attached_exhibits_record(ext_figures),
+            image_labels=self._attached_exhibits_record(message_labels),
             runs_dir=self.out_dir,
             caps={
                 "max_tool_calls": self.max_tool_calls,
@@ -815,58 +825,54 @@ class Orchestrator:
                 "max_checks_per_field": self.max_checks_per_field,
             },
             structure=self._structure_dict(),
-            images_omitted=self._images_omitted_meta(),
+            # The paper's own fingerprint, from the same bundle, written WITH
+            # the session rather than after it — and in no other fingerprint
+            # (see fingerprint.bundle_fingerprint).
+            paper_axes=bundle_fingerprint(self.bundle),
             decoding_specified=self.decoding_specified,
             diagnostics=self.diagnostics,
         )
-        # Loud run-start signals: the figures a text-only model never sees
-        # (pairs with meta.images_omitted), and any decoding value the operator
-        # configured that this run's models never send.
-        self._warn_images_withheld()
+        # Loud run-start signal: any decoding value the operator configured
+        # that this run's models never send.
         self._warn_inert_decoding_params()
 
         # Extraction record + dispatcher. The dispatcher validates `<img>`
-        # citations against the extractor's effective label set, so a
-        # text-only extractor (empty set) cannot cite an image it never saw.
+        # citations against the label set of every crop the message attached,
+        # article and supplements alike.
         self.extraction_record = self.session.load_extraction_record()
         self.dispatcher = ToolDispatcher(
             self.extraction_record, self.template, self.paper_text,
             ext_image_labels, reference_lists=self.reference_lists,
         )
 
-        # Per-image hashes let the transcript flag re-cropping drift after the
-        # run. A bundle fact, recorded whether or not the figures were sent;
-        # a text-only role's omission is in meta.images_omitted.
-        if self.bundle.figures:
-            self.session.capture_image_hashes(
-                sorted(self.bundle.figures.values()))
-        # The paper's own fingerprint, from the same bundle. Unconditional — a
-        # paper with no figures is still a paper the run must name — and in no
-        # other fingerprint (see fingerprint.bundle_fingerprint).
-        self.session.capture_bundle_fingerprint(self.bundle)
+        # Per-image hashes let the transcript flag re-cropping drift after
+        # the run, so they cover every crop the message attached: a
+        # supplement's crop with no baseline here is a crop whose re-cropping
+        # `supplements_fp` reports in aggregate and nothing attributes to a
+        # label.
+        attached_bytes = dict(self.figures)
+        for supplement in self.supplements:
+            attached_bytes.update(dict(supplement["figures"]))
+        if attached_bytes:
+            self.session.capture_image_hashes(attached_bytes)
 
-        # Initial conversation: empty messages list; the system + first
-        # user message are added at the extractor turn. A text-only
-        # extractor gets no image blocks (ext_figures is empty).
-        self.initial_user_blocks = build_initial_user_blocks(
-            self.study_id, self.paper_text, ext_figures, self.image_captions,
-            self.image_notes,
-        )
+        # The conversation, from the blocks built above.
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
 
     def resume_session(self, session_dir):
         """Reattach to an in-progress session and rebuild the conversation."""
         # Pre-flight config check, before any API spend.
+        self._startup_capability_guard()
         self._startup_identity_guard()
         # Inputs derived from the bundle in __init__. That they are the
         # ORIGINAL bundle's is enforced below, by the paper axes passed to
         # `Session.resume` — not by config_fp, which folds in no part of the
-        # paper. A text-only extractor is resumed with the same empty
-        # figures/labels it started with, so the rebuilt prompt and fingerprint
-        # match the original session.
+        # paper. The figures and labels are rebuilt from the same bundle the
+        # session started against, so the rebuilt prompt and fingerprint match
+        # the original session.
         instrument = self.instrument
-        ext_figures, ext_image_labels = self._extractor_image_inputs()
+        ext_figures, ext_image_labels = self.figures, self.image_labels
         self.system_text = instrument.render_extractor_system_text()
         # Paper-INDEPENDENT prompt hash; see _build_fingerprints.
         prompt_hash = instrument.extractor_prompt_hash()
@@ -1023,12 +1029,8 @@ class Orchestrator:
         )
         # Re-announce any image omission at this run start (stderr only; the
         # persisted meta.images_omitted carries over from session creation).
-        self._warn_images_withheld()
         self._warn_inert_decoding_params()
-        self.initial_user_blocks = build_initial_user_blocks(
-            self.study_id, self.paper_text, ext_figures, self.image_captions,
-            self.image_notes,
-        )
+        self.initial_user_blocks, _ = self._extractor_message()
         replayed = self.session.replay_messages()
         self.messages = [
             {"role": "user", "content": self.initial_user_blocks},
@@ -1065,31 +1067,45 @@ class Orchestrator:
         from it for a real field of this template. A checker round is otherwise
         the one thing an operator cannot read without paying for it.
 
+        Both halves of the extractor's opening conversation are in it: the
+        system message and the user message the run would send, the second
+        rendered text-only through the helper a real run captures. That
+        message is where the paper's whole text, every supplement's prose and
+        each exhibit's label and transcription actually sit, so a report
+        showing the instrument alone would preview the smaller half of what a
+        run spends its input tokens on and none of the framing the engine
+        builds around the study.
+
+        The paper's own fingerprint axes are printed beside the run's, on the
+        keys `run.json` records them under. A dry run is per-paper, so the
+        question a bundle's axes answer — whether this crop, transcription or
+        supplement moved the input's identity — is answerable here without
+        paying for the run that would record them.
+
         Returns the rendered artefacts for inspection by callers and tests.
         """
         # Pre-flight config check, the same guard a real run runs before spend.
+        self._startup_capability_guard()
         self._startup_identity_guard()
         fps = self._build_fingerprints()
         self.system_text = fps["system_text"]
 
         tool_catalogue = self.instrument.tool_catalogue()
-        # The exhibits as the extractor's user message will label them: the
-        # label it must cite, the paper's caption beside it, and the exhibit's
-        # printed footnote under that where the manifest records one.
+        # Every crop the message attaches, as a manifest: the label an `<img>`
+        # citation must name, in the order the message attaches them, each
+        # named by the document it came out of, because a label alone does not
+        # say which. The count is the one number a reader of this report takes
+        # on trust, so it is the message's own figure sequence that is counted.
         #
-        # Built from the extractor's effective FIGURE SEQUENCE and rendered
-        # through the message builders' own helper, on the same terms as the
-        # capture in `_render_user_prompt_text`, so the preview cannot say one
-        # thing and the message another. The normalised label set beside it
-        # would say two: it is lower-cased, so a manifest label carrying a
-        # capital previews a label no message ever sends, and it is sorted on
-        # that lower-cased form; and it is the whole bundle's, so a text-only
-        # extractor would preview crops its message states do not accompany
-        # the study.
-        ext_figures, _ = self._extractor_image_inputs()
-        attached_exhibits = [image_label_text(label, self.image_captions,
-                                              self.image_notes)
-                             for label, _ in ext_figures]
+        # The manifest and nothing more. The caption, the printed footnote and
+        # the content as text all appear in the USER MESSAGE section above,
+        # verbatim, in the block each belongs to — this block used to render
+        # them a second time, which was a second answer to what an exhibit
+        # arrives with and, once a transcription rode along, the same table
+        # printed twice on one report.
+        _, attached = self._extractor_message()
+        attached_exhibits = [self._exhibit_manifest_entry(label, document)
+                             for label, document in attached]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -1110,6 +1126,20 @@ class Orchestrator:
         review_system = (self._render_review_system_text()
                          if self.final_review else None)
 
+        # The extractor's user message, rendered by the same helper that
+        # captures it into a session, so the preview cannot say one thing and
+        # the message another. Text-only: an image block is rendered as the
+        # label text it is attached under, which is the most a written report
+        # can carry of a crop, and the exhibits block below itemises them.
+        user_message = self._render_user_prompt_text()
+        # The reviewer's, on the same terms and from the same construction the
+        # review turn sends. Its exhibits are guarded on the REVIEWER's model,
+        # so this is what that role is actually sent.
+        review_user_message = (
+            render_message_text(*self._review_message(
+                self.REVIEW_OUTPUT_PLACEHOLDER))
+            if self.final_review else None)
+
         fingerprints = {
             "study_id": self.study_id,
             "extractor_model": self.extractor_model,
@@ -1126,32 +1156,39 @@ class Orchestrator:
             "review_call_fp": fps["review_call_fp"],
             "engine_fp": fps["engine_fp"],
             "run_fp": fps["run_fp"],
+            # The paper, folded into none of the axes above: `run_fp` says
+            # what would be asked and `bundle_fp` what it would be asked of.
+            # Recomputed from the loaded bundle by the one recipe a run
+            # records, in the key order `run.json` uses, so a preview and a
+            # record of the same bundle are read the same way.
+            **bundle_fingerprint(self.bundle),
             "template_hash": self.instrument.template_hash,
             "prompt_hash": fps["prompt_hash"],
             "tool_set_hash": fps["tool_hash"],
             "reference_lists_hash": self.instrument.reference_hash(),
             "structure": self._structure_dict(),
-            "images_omitted": self._images_omitted_meta(),
             "decoding_params": self._decoding_params_meta(),
         }
 
         self._print_dry_run(fingerprints, tool_catalogue, attached_exhibits,
                             checker_system, checker_scaffold, checker_round,
-                            review_system)
+                            review_system, user_message, review_user_message)
         # Loud run-start signals a real run start also emits. The inert-param
         # warning matters most here: the report above prints the RESOLVED
         # params, and only this says which value the operator wrote was
         # dropped to produce them.
-        self._warn_images_withheld()
         self._warn_inert_decoding_params()
 
         if report_dir is not None:
             self._write_dry_run_report(
                 Path(report_dir), tool_catalogue, attached_exhibits,
                 checker_system, checker_scaffold, checker_round,
-                review_system, fingerprints)
+                review_system, fingerprints, user_message,
+                review_user_message)
         return {
             "system_text": self.system_text,
+            "user_message": user_message,
+            "review_user_message": review_user_message,
             "tool_catalogue": tool_catalogue,
             "attached_exhibits": attached_exhibits,
             "checker_system": checker_system,
@@ -1316,12 +1353,23 @@ class Orchestrator:
 
     def _print_dry_run(self, fingerprints, tool_catalogue, attached_exhibits,
                        checker_system, checker_scaffold, checker_round,
-                       review_system):
+                       review_system, user_message, review_user_message):
         """Print the full, untruncated dry-run report to stdout."""
         print("=== DRY RUN (no session created) ===\n")
         print(f"Study: {self.study_id}\n")
         print("=== SYSTEM MESSAGE ===\n")
         print(self.system_text)
+        # The extractor's other half, printed untruncated like the rest: the
+        # study delimited, then a section per supplement, then the exhibits
+        # itemised below in the order that message attaches them. The pair is
+        # kept together because it is one conversation.
+        print("\n=== USER MESSAGE (image blocks as their labels) ===\n")
+        print(user_message)
+        print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
+        for entry in attached_exhibits:
+            # One line per exhibit: this is the manifest of what the message
+            # above attaches, and what each arrives with is printed there.
+            print(f"  {entry}")
         print("\n=== TOOL CATALOGUE (canonical JSON) ===\n")
         print(tool_catalogue)
         if checker_system is not None:
@@ -1340,20 +1388,17 @@ class Orchestrator:
         if review_system is not None:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
-        print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
-        for entry in attached_exhibits:
-            # An entry is one exhibit and may run to two lines, the label and
-            # caption then the footnote under them. Indenting every line of it
-            # keeps the block one exhibit to the eye.
-            for line in entry.splitlines():
-                print(f"  {line}")
+            print("\n=== REVIEW USER MESSAGE (image blocks as their "
+                  "labels) ===\n")
+            print(review_user_message)
         print("\n=== FINGERPRINTS ===\n")
         print(json.dumps(fingerprints, indent=2, sort_keys=False))
 
     def _write_dry_run_report(self, report_dir, tool_catalogue,
                               attached_exhibits, checker_system,
                               checker_scaffold, checker_round,
-                              review_system, fingerprints):
+                              review_system, fingerprints, user_message,
+                              review_user_message):
         """Write the dry-run report as plain files under `report_dir`.
 
         Deliberately NOT a session: no run.json, no status, no
@@ -1376,17 +1421,21 @@ class Orchestrator:
         try:
             (tmp_dir / "extractor_system.md").write_text(
                 self.system_text, encoding="utf-8")
+            (tmp_dir / "user_message.md").write_text(
+                user_message, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
-            # One exhibit per entry, and an entry starts at column 0: a
-            # manifest may record a footnote of any shape, blank lines
-            # included, so the separator has to be something a footnote cannot
-            # contain rather than something it is merely unlikely to. Every
-            # line after the first is indented, including an empty one.
-            (tmp_dir / "attached_exhibits.txt").write_text(
-                "".join(f"{_indent_continuation(entry)}\n"
-                        for entry in attached_exhibits),
-                encoding="utf-8")
+            # One line per exhibit, so the file is a list a reader or a
+            # script can take a line at a time. What each exhibit arrives
+            # with is in `user_message.md`, in the block it belongs to. A
+            # study supplying no crops gets no file, on the terms an empty
+            # `api_calls.jsonl` is not written: an absent file says nothing
+            # was attached, where an empty one reads as a report that failed
+            # to write.
+            if attached_exhibits:
+                (tmp_dir / "attached_exhibits.txt").write_text(
+                    "".join(f"{entry}\n" for entry in attached_exhibits),
+                    encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",
                 encoding="utf-8")
@@ -1403,6 +1452,8 @@ class Orchestrator:
             if review_system is not None:
                 (tmp_dir / "review_system.md").write_text(
                     review_system, encoding="utf-8")
+                (tmp_dir / "review_user_message.md").write_text(
+                    review_user_message, encoding="utf-8")
             # Swap the freshly written temp dir into place. A rename cannot
             # replace a non-empty directory, so remove the old report first,
             # then rename. The gap only ever exposes a missing report_dir.
@@ -2107,21 +2158,14 @@ class Orchestrator:
                 f"disable the reviewer with final_review: false "
                 f"(or --no-final-review).")
 
-        # Guard on the reviewer's own model: a text-only reviewer is sent no
-        # image parts and no label blocks, independent of the extractor's
-        # capability.
-        review_figures, _ = self._review_image_inputs()
+        # The reviewer's own message, from the one construction the preview
+        # is projected from.
         review_system_text = self._render_review_system_text()
-        review_user_blocks = build_review_user_blocks(
-            self.study_id, self.paper_text, review_figures,
-            # Without the check blocks: the reviewer records its OWN quality
-            # check, so the extractor's self-assessment is withheld for the
-            # same reason the checker's verdicts are (see
-            # build_review_user_blocks).
-            self.extraction_record.to_dict(include_checks=False),
-            self.image_captions,
-            self.image_notes,
-        )
+        # Without the check blocks: the reviewer records its OWN quality
+        # check, so the extractor's self-assessment is withheld for the same
+        # reason the checker's verdicts are (see build_review_user_blocks).
+        review_user_blocks, _ = self._review_message(
+            self.extraction_record.to_dict(include_checks=False))
         review_messages = [{"role": "user", "content": review_user_blocks}]
         tool_defs = get_tool_definitions(self.template, role=ROLE_REVIEW)
 
@@ -2595,13 +2639,19 @@ class Orchestrator:
                 self.checker_config)
         return self._cached_checker_adapter
 
-    def _attached_exhibits_record(self, figures):
+    def _exhibit_manifest_entry(self, label, document):
+        """One line of the preview's exhibit manifest."""
+        where = f"({document}) " if document else ""
+        return f"{where}[{label}]"
+
+    def _attached_exhibits_record(self, labels):
         """The session's record of the exhibits the extractor's message carried.
 
         One entry per attachment, in the order the message attaches them,
         carrying the label an `<img>` citation must name, the caption the
-        paper prints beside it, and the footnote it prints under it. The two
-        texts are the half a label alone cannot supply: `table_02` says which
+        paper prints beside it, the footnote it prints under it, and whether
+        the exhibit's content rode with it as text. The two texts are the half
+        a label alone cannot supply: `table_02` says which
         crop was cited and nothing about which table it is or what its small
         print qualified, and no other capture holds the manifest's wording once
         the bundle directory has moved on. A crop the manifest gave neither of
@@ -2609,54 +2659,102 @@ class Orchestrator:
         — and, for the footnote, one the reader of a transcript is told apart
         from a session that recorded no footnotes at all.
 
-        Empty for a bundle carrying no crops and for a text-only extractor
-        alike; `meta.images_omitted` is what tells those two apart.
+        `labels` is the message's own figure sequence — the article's
+        followed by each supplement's, in the order they attach — so the
+        record covers every crop the message carried rather than the
+        article's alone. Empty only for a bundle that supplies no crops at
+        all.
         """
         return [{"label": label,
-                 "caption": self.image_captions.get(
-                     str(label).strip().lower()),
-                 "notes": self.image_notes.get(str(label).strip().lower())}
-                for label, _ in figures]
+                 "caption": self.image_captions.get(normalise_label(label)),
+                 "notes": self.image_notes.get(normalise_label(label)),
+                 # Whether the exhibit's content rode with it as text. A flag
+                 # rather than the markup: the transcription itself is in the
+                 # rendered prompt, and repeating it here would put a table in
+                 # meta once per attachment. What the flag is for is that the
+                 # rendered prompt is captured only from `--diagnostics
+                 # standard` up, while this record is kept at every level, so
+                 # without it the leanest run could not say afterwards whether
+                 # a cell was read as text or off pixels. `tables_fp` says
+                 # WHICH transcriptions the bundle held; this says which of
+                 # them the message actually carried.
+                 "transcribed": normalise_label(label) in self.image_tables}
+                for label, _ in labels]
+
+    def _extractor_message(self):
+        """The extractor's opening user message, and the labels it attaches.
+
+        The ONE construction of that message in this class: the conversation
+        is started from it, the session captures its text view, and
+        `--dry-run` prints that same view. A second construction anywhere
+        would be a second answer to "what is the extractor sent", and the two
+        would agree until one of them was edited.
+
+        The labels beside it are the effective FIGURE SEQUENCE, which is what
+        `build_initial_user_blocks` iterates: the same labels, in the same
+        order, spelt the same way, the article's followed by each
+        supplement's. The normalised label set beside it is the dispatcher's,
+        lower-cased and unordered, so a view derived from that would name the
+        labels a message carries in a case and an order the message never
+        used. A bundle supplying no crops has an empty sequence, and its
+        message states that none accompany the study.
+        """
+        ext_figures = self.figures
+        supplements = self._supplements_for()
+        blocks = build_initial_user_blocks(
+            self.study_id, self.paper_text, ext_figures, self.image_captions,
+            self.image_notes, self.image_tables, supplements,
+        )
+        return blocks, message_figure_labels(ext_figures, supplements)
+
+    # What stands in the preview where the assembled extraction output goes.
+    # A dry run happens before there is one, and the alternative — an empty
+    # record, rendered as JSON — would preview a shape the reviewer is never
+    # sent, which is worse than saying plainly that this part is not knowable
+    # yet. Everything around it in that message IS knowable, and is previewed.
+    REVIEW_OUTPUT_PLACEHOLDER = (
+        "(not previewable: the assembled extraction output as it stands when "
+        "the review begins)")
+
+    def _review_message(self, extraction_record_dict):
+        """The reviewer's user message, and the labels it attaches.
+
+        The ONE construction of that message, on the extractor's terms above:
+        the review turn sends it, and `--dry-run` prints its text view. Its
+        exhibits are the whole bundle's, as every role's are.
+
+        `extraction_record_dict` is the only part of it a dry run cannot
+        know, which is why it is the caller's argument rather than read from
+        `self` here: the review turn passes the output as it stands when the
+        review begins, and the preview passes a line saying so.
+        """
+        review_figures = self.figures
+        supplements = self._supplements_for()
+        blocks = build_review_user_blocks(
+            self.study_id, self.paper_text, review_figures,
+            extraction_record_dict,
+            self.image_captions, self.image_notes, self.image_tables,
+            supplements,
+        )
+        return blocks, message_figure_labels(review_figures, supplements)
 
     def _render_user_prompt_text(self):
-        """Text-only render of the initial user message, captured into
-        the session at creation time so the transcript view never has
-        to re-read the paper text from disk.
+        """The text view of the message above, projected FROM it.
 
-        Built from the extractor's effective FIGURE SEQUENCE, which is what
-        `build_initial_user_blocks` iterates: the same labels, in the same
-        order, spelt the same way. The normalised label set beside it is the
-        dispatcher's, lower-cased and unordered, so a capture derived from that
-        would record the labels a message carries in a case and an order the
-        message never used. A text-only extractor's sequence is empty, and its
-        captured prompt states that none accompany the study, matching the
-        blocks actually sent."""
-        ext_figures, _ = self._extractor_image_inputs()
-        return render_user_prompt_text(
-            self.study_id, self.paper_text,
-            [label for label, _ in ext_figures], self.image_captions,
-            self.image_notes,
-        )
-
-    def _review_image_inputs(self):
-        """The reviewer's effective (figures, labels).
-
-        The reviewer guards on its OWN model: a text-only reviewer is sent no
-        image parts and no label blocks, whatever the extractor could see. Its
-        message states that none accompany the study in their place, and its
-        share of the dispatcher validates against the empty label set, exactly
-        as the extractor's does.
+        Captured into the session at creation time so the transcript view
+        never has to re-read the paper text from disk, and printed by
+        `--dry-run` so what a run would send can be read before it is paid
+        for. Only the crops' bytes are absent; each is named where it
+        attaches.
         """
-        if model_supports_images(self.review_model):
-            return self.figures, self.image_labels
-        return [], set()
+        blocks, labels = self._extractor_message()
+        return render_message_text(blocks, labels)
 
     def _render_review_system_text(self):
         """The reviewer's rendered system message.
 
         Paper-independent, like the extractor's: which cropped exhibits the
-        reviewer actually receives is decided where they are attached
-        (`_review_image_inputs`, guarded on the reviewer's own model), not in
+        reviewer actually receives is decided where they are attached, not in
         this text.
         """
         return self.instrument.render_review_system_text()
@@ -2736,6 +2834,50 @@ class Orchestrator:
     # ----------------------------------------------------------------------
     # Study-identity context for the checker
     # ----------------------------------------------------------------------
+
+    def _startup_capability_guard(self):
+        """Fail loudly, before any API spend, when a role's model cannot
+        accept images.
+
+        This pipeline extracts from the paper AND its exhibits: a table's
+        value is read off a crop, an `<img>` citation names one, and the
+        checker verifies a value against the exhibit it was read from. A model
+        that cannot receive an image cannot do any of that, so a run
+        configured with one is not a degraded run, it is a different task
+        wearing this one's fingerprints — and it would answer with the same
+        `run_fp` a full run answers with.
+
+        Every ENABLED stage is checked, and the message names the role, the
+        model and the key that set it, because that is the line an operator
+        edits.
+        """
+        roles = [("extractor", self.extractor_model, "extractor_model")]
+        if self.checker_enabled:
+            roles.append(("checker", self.checker_config.checker_model,
+                          "checker_model"))
+        if self.final_review:
+            roles.append(("review", self.review_model, "review_model"))
+        blind = [(role, model, key) for role, model, key in roles
+                 if not model_supports_images(model)]
+        if not blind:
+            return
+        # Each role's model can come from `pipeline.yaml` or from the flag
+        # that overrides it, and this refusal cannot tell which — so it names
+        # both, as the two sibling refusals about these same three values do.
+        # Naming one sends an operator who used the other to a place the value
+        # is not.
+        named = "; ".join(
+            f"the {role} model {model!r} (pipeline.yaml `{key}`, or "
+            f"`--{key.replace('_model', '')}-model`)"
+            for role, model, key in blind)
+        raise AgenticExtractionError(
+            f"Image input is not optional in this pipeline: {named} cannot "
+            f"accept images. Every role reads the paper's cropped exhibits — "
+            f"a value taken from a table is cited as `<img>label</img>` and "
+            f"checked against the crop it names — so a text-only model would "
+            f"be asked for evidence it cannot see. Configure a model with "
+            f"image input for every enabled stage."
+        )
 
     def _startup_identity_guard(self):
         """Fail loudly, before any API spend, when the checker would have no
@@ -3739,18 +3881,17 @@ class Orchestrator:
         if not checkable:
             return [], {}
 
-        # Guard on the checker's own model. A text-only checker attaches no
-        # cropped PNGs and renders evidence with no image references (empty
-        # label set, no figures map); the guard matters in the mixed case
-        # (image-capable extractor, text-only checker).
-        if model_supports_images(self.checker_config.checker_model):
-            checker_image_labels = self.image_labels
-            checker_figures = self.bundle.figures
-            checker_notes = self.image_notes
-        else:
-            checker_image_labels = set()
-            checker_figures = None
-            checker_notes = None
+        # The four maps the checker resolves a citation through, all four the
+        # WHOLE bundle's and all four keyed the same way. They travel together
+        # because they answer one question between them — what this label is,
+        # where its crop is, what it prints underneath, and what its content
+        # says — and a checker holding three of them agrees with the extractor
+        # about which labels exist while disagreeing about which crops it can
+        # produce.
+        checker_image_labels = self.image_labels
+        checker_figures = self.image_figures
+        checker_notes = self.image_notes
+        checker_tables = self.image_tables
 
         calls = []
         envelopes = {}
@@ -3783,6 +3924,15 @@ class Orchestrator:
                 # context to the checker's narrow view; it makes the smallest
                 # print on the exhibit legible without resolving it off pixels.
                 exhibit_notes=checker_notes,
+                # The content of each attached crop as text, where the bundle
+                # transcribes it. On the footnote's side of the checker's
+                # narrow view rather than the caption's: it is the exhibit's
+                # own content, which the crop already carries as pixels, and
+                # not a description of the exhibit from outside it. What it
+                # buys is that a cell can be read rather than resolved off an
+                # image, which is the whole of what a checker looking at a
+                # table is doing.
+                exhibit_tables=checker_tables,
                 # The paper text the quotes are windowed into, and how wide
                 # the window is. The paper is the run's INPUT and rides in no
                 # fingerprint; the width is config identity and rides in

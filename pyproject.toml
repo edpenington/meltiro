@@ -46,12 +46,21 @@ dependencies = [
     # Anyone building a bundle builds to alteksto, which is also where a
     # bundle is produced from a PDF.
     #
-    # The floor is where `figure_files` arrives, and where the page stack
-    # moved behind an extra so that this dependency weighs what the contract
+    # The floor is a FORMAT floor: alteksto declares one schema version per
+    # release and validates a manifest against exactly that number, so an
+    # install below the floor does not read the format producers write — it
+    # refuses every bundle, and it refuses them as a manifest error rather
+    # than as anything a reader would recognise as a version mismatch. The
+    # floor is therefore where the format this package reads arrives: the
+    # transcriptions a table exhibit may carry beside its crop, and the
+    # supplementary material a bundle may carry beside the article. It is
+    # also where `figure_files` arrives, and where the page stack moved
+    # behind an extra so that this dependency weighs what the contract
     # weighs: `alteksto.bundle` imports the standard library and nothing
-    # else. An install below it lacks the enumeration `load_bundle` calls,
-    # and drags a PDF library into every environment that only reads bundles.
-    "alteksto>=0.2.0",
+    # else, and no environment that only reads bundles drags in a PDF
+    # library. tests/test_dependency_floors.py checks the resolved version
+    # against this number, and the fixtures against the resolved version.
+    "alteksto>=0.3.0",
     # The shared provider layer: adapters, model registry, cost arithmetic —
     # and, since meltiro builds no provider client of its own, the package that
     # carries the provider SDKs. `direktoro.build_adapter` resolves the

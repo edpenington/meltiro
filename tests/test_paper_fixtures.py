@@ -42,7 +42,6 @@ from meltiro.orchestrator import Orchestrator
 from meltiro.prompt_builder import (
     build_initial_user_blocks,
     build_system_message,
-    render_user_prompt_text,
 )
 from meltiro.quote_check import (
     find_quote,
@@ -387,12 +386,12 @@ class TestPromptBuildingOverRealBundle:
         # Last block carries the cache marker for the whole user prefix.
         assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
 
-    def test_render_user_prompt_text_size_and_label_order(self,
-                                                          bundle_unicode_dir):
+    def test_the_rendered_message_size_and_label_order(self,
+                                                          bundle_unicode_dir, rendered_user_message):
         b = load_bundle(bundle_unicode_dir)
         # Two labels, given in a deterministic order, appear in that order and
         # after the paper text. Real unicode in the text must not raise.
-        text = render_user_prompt_text(
+        text = rendered_user_message(
             b.study_id, b.text, image_labels=["figure_01", "table_02"])
         assert isinstance(text, str)
         assert len(text) > len(b.text)  # header + labels add to the raw text
@@ -482,5 +481,8 @@ class TestCliDryRunOverRealBundle:
         assert (report / "extractor_system.md").exists()
         # A figure-less bundle still renders an (empty) exhibit file, and
         # no session is created.
-        assert (report / "attached_exhibits.txt").exists()
+        # A study supplying no crops gets no exhibit manifest: an absent
+        # file says nothing was attached, where an empty one reads as a
+        # report that failed to write.
+        assert not (report / "attached_exhibits.txt").exists()
         assert not (out_dir / "syn-degradation" / "sessions").exists()

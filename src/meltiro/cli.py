@@ -60,7 +60,7 @@ import yaml
 from dotenv import load_dotenv
 
 from alteksto.bundle import validate_bundle
-from meltiro.bundle import load_bundle
+from meltiro.bundle import bundle_problems, load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, DIAGNOSTICS_LEVELS
@@ -1354,14 +1354,35 @@ def _cmd_transcript(args):
 # ---------------------------------------------------------------------------
 
 def _cmd_validate_bundle(args):
+    """Report every problem with each bundle: the format's, then this
+    consumer's.
+
+    The format's verdict comes first and in full, because a directory that is
+    not a bundle cannot be read far enough to ask anything else of it. Where
+    it is one, the two checks meltiro adds run too — a pair of labels that
+    collapse under the normalisation a citation is resolved by, and text that
+    spells a delimiter this engine writes — because an operator holding a
+    bundle wants both answers here rather than one here and one at the start
+    of a run.
+
+    Each is labelled with where it comes from. A problem the format reports is
+    a problem for every consumer; a problem reported here is this pipeline
+    refusing to run a directory another tool may accept.
+    """
     any_invalid = False
     for path in args.bundle:
-        problems = validate_bundle(path)
+        problems = bundle_problems(path)
         if problems:
             any_invalid = True
             print(f"INVALID: {path}")
-            for problem in problems:
-                print(f"  - {problem}")
+            for source, problem in problems:
+                print(f"  - [{source}] {problem}")
+            if all(source == "format" for source, _ in problems):
+                # Said rather than implied: a directory the format rejects
+                # cannot be read far enough to ask this pipeline's own two
+                # questions of it, so silence here is not a clean bill.
+                print("  (this pipeline's own checks did not run: fix the "
+                      "format problems above and validate again)")
         else:
             print(f"OK: {path}")
     return 1 if any_invalid else 0

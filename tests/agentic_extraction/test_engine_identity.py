@@ -30,6 +30,7 @@ from meltiro import __version__, prompt_builder
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
+from meltiro.fingerprint import bundle_fingerprint
 from meltiro.orchestrator import Orchestrator
 from meltiro.run_entry import build_entry
 
@@ -250,7 +251,12 @@ class TestSourceHash:
     def test_it_is_stable_across_calls(self):
         from meltiro.run_log import source_hash
 
+        # Called twice in one process, so this pins only that the walk is
+        # not order-dependent WITHIN a process; the value is also compared
+        # with one computed over a shuffled copy of the tree below, which is
+        # what an unsorted walk would move.
         assert source_hash() == source_hash()
+        assert len(source_hash()) == 64
 
     def test_it_covers_the_imported_package_not_the_repository(self):
         # Anchored to `meltiro.__file__`'s directory, so an installed copy and
@@ -520,6 +526,87 @@ class TestPaperDoesNotMoveStageFingerprints:
             for i, b in enumerate([one_figure, many_figures, no_figures])
         ]
         assert fps[0] == fps[1] == fps[2]
+
+    def test_papers_differing_only_in_transcriptions_share_every_fingerprint(
+            self, config_dir, bundle_transcribed_dir, tmp_path):
+        # A transcription is per-paper prompt content, like the caption and
+        # the crop beside it, so it must move the PAPER's identity and none of
+        # the stage fingerprints. It is the newest thing to ride in the user
+        # message, and the one most easily wired into a hash by accident,
+        # because unlike a crop it IS text.
+        with_it = tmp_path / "b_transcribed"
+        shutil.copytree(bundle_transcribed_dir, with_it)
+
+        without = tmp_path / "b_plain"
+        shutil.copytree(bundle_transcribed_dir, without)
+        shutil.rmtree(without / "tables")
+
+        edited = tmp_path / "b_edited"
+        shutil.copytree(bundle_transcribed_dir, edited)
+        path = edited / "tables" / "table_01.html"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Weekday", "Midweek"),
+            encoding="utf-8")
+
+        # Sanity: the three really do differ in what they transcribe.
+        assert load_bundle(without).tables == {}
+        assert load_bundle(with_it).tables != {}
+        assert (load_bundle(edited).tables["table_01"].read_text("utf-8")
+                != load_bundle(with_it).tables["table_01"].read_text("utf-8"))
+
+        fps = [
+            _fps(_prepared_orch(config_dir, b, tmp_path / f"tout_{i}"))
+            for i, b in enumerate([with_it, without, edited])
+        ]
+        assert fps[0] == fps[1] == fps[2]
+
+        # And the other half of the same claim: the paper's own identity DOES
+        # tell all three apart, so "moves no stage fingerprint" is not being
+        # bought by the transcription reaching no fingerprint at all.
+        paper = [bundle_fingerprint(load_bundle(b))["bundle_fp"]
+                 for b in (with_it, without, edited)]
+        assert len(set(paper)) == 3
+
+    def test_papers_differing_only_in_supplements_share_every_fingerprint(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        # The twin of the case above for the other thing the format added. A
+        # supplement is a whole document of per-paper prompt content — prose,
+        # captions, footnotes, crops, transcriptions — so it must move the
+        # paper's identity and no stage fingerprint. Folding a supplement's
+        # name into `prompt_hash` passed the suite while the identical
+        # mutation with a transcription was caught here.
+        import json
+
+        with_it = tmp_path / "s_with"
+        shutil.copytree(bundle_supplemented_dir, with_it)
+
+        without = tmp_path / "s_without"
+        shutil.copytree(bundle_supplemented_dir, without)
+        shutil.rmtree(without / "supplements")
+        (without / "supplements.json").unlink()
+
+        edited = tmp_path / "s_edited"
+        shutil.copytree(bundle_supplemented_dir, edited)
+        path = edited / "supplements.json"
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        declared["supplements"][0]["title"] = "Supplement A. Retitled"
+        path.write_text(json.dumps(declared), encoding="utf-8")
+
+        # Sanity: the three really do differ in their supplementary material.
+        assert load_bundle(without).supplements == {}
+        assert load_bundle(with_it).supplements != {}
+        assert (next(iter(load_bundle(edited).supplements.values())).title
+                != next(iter(load_bundle(with_it).supplements.values())).title)
+
+        fps = [
+            _fps(_prepared_orch(config_dir, b, tmp_path / f"sout_{i}"))
+            for i, b in enumerate([with_it, without, edited])
+        ]
+        assert fps[0] == fps[1] == fps[2]
+
+        paper = [bundle_fingerprint(load_bundle(b))["bundle_fp"]
+                 for b in (with_it, without, edited)]
+        assert len(set(paper)) == 3
 
 
 # ---------------------------------------------------------------------------

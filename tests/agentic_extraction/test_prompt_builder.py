@@ -23,7 +23,6 @@ from meltiro.prompt_builder import (
     build_review_system_message,
     build_review_user_blocks,
     build_system_message,
-    render_user_prompt_text,
     system_message_blocks,
 )
 
@@ -128,10 +127,10 @@ def test_a_label_with_no_caption_arrives_bare():
     assert "[table_01]" in texts
 
 
-def test_the_captured_user_prompt_mirrors_the_message():
+def test_the_captured_user_prompt_mirrors_the_message(rendered_user_message):
     # `render_user_prompt_text` is what the session records as "the user
     # prompt", so its text blocks are the message's own, captions included.
-    text = render_user_prompt_text(
+    text = rendered_user_message(
         "376", "Methods.", ["table_01", "figure_01"], CAPTIONS)
     assert "[table_01] Table 1. Unit characteristics" in text
     assert "[figure_01] Figure 1. Study flow" in text
@@ -166,10 +165,10 @@ class TestAnExhibitsPrintedFootnote:
         assert any(t.startswith("[table_01] Table 1.") and "Footnote: SD" in t
                    for t in self._texts(blocks))
 
-    def test_the_captured_prompt_mirrors_it(self):
+    def test_the_captured_prompt_mirrors_it(self, rendered_user_message):
         # The session's record of the message, so the footnote is in the
         # record exactly as it went on the wire.
-        text = render_user_prompt_text(
+        text = rendered_user_message(
             "376", "Methods.", ["table_01", "figure_01"], CAPTIONS, NOTES)
         assert "Footnote: SD, standard deviation." in text
 
@@ -227,7 +226,7 @@ def _capture_the_message_implies(blocks, labels):
     return "\n\n".join(parts)
 
 
-def test_the_capture_and_the_message_emit_the_same_strings():
+def test_the_capture_and_the_message_emit_the_same_strings(rendered_user_message):
     # The function's own contract: "the exact text strings match those
     # `build_initial_user_blocks` emits as text content blocks". A capture
     # built from the dispatcher's normalised label set would satisfy every
@@ -237,7 +236,7 @@ def test_the_capture_and_the_message_emit_the_same_strings():
     labels = [label for label, _ in MIXED_CASE_FIGURES]
     blocks = build_initial_user_blocks(
         "376", "Methods.", MIXED_CASE_FIGURES, MIXED_CASE_CAPTIONS)
-    assert render_user_prompt_text(
+    assert rendered_user_message(
         "376", "Methods.", labels, MIXED_CASE_CAPTIONS) == \
         _capture_the_message_implies(blocks, labels)
 
@@ -392,10 +391,10 @@ class TestTheMessageStatesWhenNoExhibitsAccompanyTheStudy:
         assert NO_EXHIBITS_NOTICE in [
             b.get("text") for b in blocks if b["type"] == "text"]
 
-    def test_the_captured_prompt_mirrors_it(self):
+    def test_the_captured_prompt_mirrors_it(self, rendered_user_message):
         # `render_user_prompt_text` is the session's record of the message, so
         # the statement has to be in the record exactly as it is on the wire.
-        text = render_user_prompt_text("376", "Methods.", [], CAPTIONS)
+        text = rendered_user_message("376", "Methods.", [], CAPTIONS)
         assert NO_EXHIBITS_NOTICE in text
 
     @pytest.mark.parametrize("build,extra", [
@@ -540,8 +539,14 @@ def test_the_session_records_the_exhibits_the_message_carried(
     assert recorded == [
         {"label": "TABLE_01",
          "caption": "Exhibit TABLE_01. Depot readings",
-         "notes": "Note. Readings are depot means over the round."},
+         "notes": "Note. Readings are depot means over the round.",
+         # This bundle transcribes neither exhibit, so both record the
+         # absence. It is a fact about the MESSAGE, on the same terms as the
+         # caption beside it: what the model was shown, not what the bundle
+         # could have supplied.
+         "transcribed": False},
         {"label": "figure_01",
          "caption": "Exhibit figure_01. Depot readings",
-         "notes": None},
+         "notes": None,
+         "transcribed": False},
     ]

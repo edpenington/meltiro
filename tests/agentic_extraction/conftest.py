@@ -94,7 +94,9 @@ def checker_trigger_orch(template, extraction_record, *,
     orch.extraction_record = extraction_record
     orch.image_labels = set()
     orch.image_notes = {}
-    orch.bundle = SimpleNamespace(figures={})
+    orch.image_tables = {}
+    orch.image_figures = {}
+    orch.bundle = SimpleNamespace(figures={}, tables={})
     orch.config = SimpleNamespace(partials_dir="/unused")
     orch.checker_config = SimpleNamespace(
         checker_model="claude-sonnet-4-6", context_chars=0)

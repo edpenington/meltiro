@@ -26,6 +26,7 @@ from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.errors import ResumeRefused
 from meltiro.orchestrator import Orchestrator
+from meltiro.session import Session
 
 pytestmark = pytest.mark.usefixtures("stage_keys")
 
@@ -125,3 +126,168 @@ def test_the_paper_gate_is_not_the_config_gate(config_dir, paper, tmp_path):
 
     after = _orch(config_dir, paper, out)._build_fingerprints()
     assert before == after
+
+
+class TestAnAxisTheSessionNeverRecorded:
+    """A session started before an axis existed cannot answer for it, and the
+    refusal says so.
+
+    This is what an upgrade actually looks like: the axes a run records grow,
+    and a session paused under the previous engine has no value for the new
+    ones. Read as a mismatch, that reports a paper that changed and prescribes
+    a fix that cannot work — no bundle hashes to a missing value, so the
+    operator re-points `--paper` at the original directory and gets the same
+    refusal, with nothing naming the real boundary.
+    """
+
+    def _paused_without(self, config_dir, paper, out, axes):
+        import json
+
+        session_dir = _paused(config_dir, paper, out)
+        meta_path = Session.meta_path_for(session_dir)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        for axis in axes:
+            meta.pop(axis, None)
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        return session_dir
+
+    @pytest.mark.parametrize("axes", [
+        ["tables_fp"], ["supplements_fp"], ["tables_fp", "supplements_fp"]])
+    def test_it_is_named_as_unsettled_rather_than_moved(
+            self, config_dir, paper, tmp_path, axes):
+        out = tmp_path / "runs"
+        session_dir = self._paused_without(config_dir, paper, out, axes)
+
+        orch = _orch(config_dir, paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        # The paper did not change, and the message does not say it did.
+        assert "the paper bundle changed" not in message
+        assert "records no" in message
+        for axis in axes:
+            assert axis in message
+        # Nor does it prescribe the fix that cannot work.
+        assert "Point --paper at the original bundle" not in message
+
+    def test_a_paper_that_really_moved_is_named_too(
+            self, config_dir, paper, tmp_path):
+        """Both facts, and the remedy that can actually work.
+
+        An unrecorded axis does not mask a real change — the moved axis is
+        named — but it decides the remedy, because no bundle clears a missing
+        value. Prescribing `--paper` here sends the operator round a loop:
+        they re-point at the original directory and get this refusal again,
+        with nothing naming the real boundary.
+        """
+        out = tmp_path / "runs"
+        session_dir = self._paused_without(
+            config_dir, paper, out, ["supplements_fp"])
+        text = paper / "text.md"
+        text.write_text(text.read_text(encoding="utf-8") + "\n\nAdded.\n",
+                        encoding="utf-8")
+
+        orch = _orch(config_dir, paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        assert "records no supplements_fp" in message
+        assert "text_fp moved" in message
+        assert "Point --paper at the original bundle" not in message
+        assert "Start a fresh session" in message
+        # And it does not claim the recorded axes all match, because one did
+        # not.
+        assert "does record all match" not in message
+
+
+class TestTheTwoNewestAxesAreCompared:
+    """A re-transcribed cell and an edited supplement each refuse a resume.
+
+    Both were asserted only as membership of the `BUNDLE_AXES` tuple — the
+    constant, not the comparison — so excluding them from the comparison
+    itself passed the whole suite. Both are shown to the model, which is why
+    they are axes at all: the conversation being replayed was read against
+    them.
+    """
+
+    @pytest.fixture
+    def supplemented_paper(self, tmp_path, bundle_supplemented_dir):
+        dst = tmp_path / "supplemented"
+        shutil.copytree(bundle_supplemented_dir, dst)
+        return dst
+
+    def test_a_re_transcribed_cell_refuses(
+            self, config_dir, supplemented_paper, tmp_path):
+        out = tmp_path / "runs"
+        session_dir = _paused(config_dir, supplemented_paper, out)
+
+        path = supplemented_paper / "tables" / "table_01.html"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "<td>5.8 (4.1-7.6)</td>", "<td>5.9 (4.1-7.6)</td>"),
+            encoding="utf-8")
+
+        orch = _orch(config_dir, supplemented_paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        assert "the paper bundle changed" in message
+        assert "tables_fp" in message
+        # And it names that axis alone: the article's text and crops did not
+        # move, so a reader is pointed at one file.
+        assert "text_fp" not in message
+        assert "figures_fp" not in message
+
+    def test_an_edited_supplement_refuses(
+            self, config_dir, supplemented_paper, tmp_path):
+        import json
+
+        out = tmp_path / "runs"
+        session_dir = _paused(config_dir, supplemented_paper, out)
+
+        path = supplemented_paper / "supplements.json"
+        declared = json.loads(path.read_text(encoding="utf-8"))
+        declared["supplements"][0]["exhibits"][0]["caption"] = (
+            "Table S1. MEAN turnaround time by shift")
+        path.write_text(json.dumps(declared), encoding="utf-8")
+
+        orch = _orch(config_dir, supplemented_paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        assert "the paper bundle changed" in message
+        assert "supplements_fp" in message
+        assert "text_fp" not in message
+
+    def test_an_untouched_supplemented_bundle_resumes(
+            self, config_dir, supplemented_paper, tmp_path):
+        out = tmp_path / "runs"
+        session_dir = _paused(config_dir, supplemented_paper, out)
+        orch = _orch(config_dir, supplemented_paper, out)
+        orch.resume_session(session_dir)  # must not raise
+        assert orch.session.meta["status"] == "in_progress"
+
+
+def test_a_session_never_exists_without_its_paper_axes(
+        config_dir, paper, tmp_path):
+    """The axes are in the session's first write.
+
+    Written afterwards, a session existed in `in_progress` describing no
+    input, and a kill in that gap left one that could never be resumed —
+    refused for axes it does not record, with a message that blames the engine
+    for a session the engine had just made. The window was milliseconds; the
+    session it produced was permanent.
+    """
+    import json
+
+    from meltiro.fingerprint import bundle_fingerprint
+
+    out = tmp_path / "runs"
+    orch = _orch(config_dir, paper, out)
+    orch.prepare_new_session()
+    meta = json.loads(
+        Session.meta_path_for(orch.session.session_dir).read_text(
+            encoding="utf-8"))
+    expected = bundle_fingerprint(load_bundle(paper))
+    for axis, value in expected.items():
+        assert meta[axis] == value, axis

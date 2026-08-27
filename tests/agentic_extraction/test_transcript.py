@@ -515,9 +515,18 @@ class TestItReadsStartToFinish:
     def test_the_run_is_reached_early_in_the_document(self, document):
         """The measurable form of the same claim. Before the schemas moved,
         91% of the document sat ahead of the run; a check that the sections
-        merely exist would not have caught that."""
+        merely exist would not have caught that.
+
+        The bound is loose on purpose. What sits ahead of the run is the
+        instrument — the system messages and the catalogue — which is a fixed
+        size for a config bundle, while the run itself grows with the turns a
+        study takes, so the fraction is a fact about this fixture's paper and
+        this bundle's prose rather than about the document's shape. A bound
+        tight enough to move when a role's briefing gains a paragraph would
+        fail for a reason the docstring does not name.
+        """
         run = document.index("## 3. The extraction, turn by turn")
-        assert run < len(document) / 2, (
+        assert run < len(document) * 0.6, (
             f"the run starts {run / len(document):.0%} into the document")
 
     def test_2_5_indexes_the_tools_rather_than_printing_them(self, session):
@@ -635,6 +644,7 @@ class TestItReadsStartToFinish:
             document.index("## 7. The tool definitions in full"):]
         tools = json.loads((session.session.instrument_dir /
                             "tool_definitions.json").read_text())
+        assert tools, "an empty catalogue makes every assertion below vacuous"
         for tool in tools:
             assert tool["description"] in appendix
             assert json.dumps(tool["input_schema"], indent=2,
@@ -647,6 +657,7 @@ class TestItReadsStartToFinish:
                     "diagnostics" / "transcript.md").read_text()
         tools = json.loads((session.session.instrument_dir /
                             "tool_definitions.json").read_text())
+        assert tools, "an empty catalogue makes every assertion below vacuous"
         for tool in tools:
             anchor = f'<a id="tool-{tool["name"].replace("_", "-")}"></a>'
             assert document.count(anchor) == 1, tool["name"]
@@ -953,7 +964,13 @@ class TestOneCodePath:
         before = {p.name: p.read_bytes()
                   for p in (session_dir / "diagnostics").iterdir()
                   if p.is_file()}
-        assert render_transcript(session_dir) == render_transcript(session_dir)
+        # Two renders of the same session. The length floor is what stops
+        # the equality being vacuous: an empty document, or a renderer that
+        # returned nothing at all, compares equal to itself.
+        first = render_transcript(session_dir)
+        second = render_transcript(session_dir)
+        assert first == second
+        assert len(first) > 1000
         after = {p.name: p.read_bytes()
                  for p in (session_dir / "diagnostics").iterdir()
                  if p.is_file()}
@@ -1408,3 +1425,38 @@ class TestStrictInputs:
         assert exit_info.value.code == 1
         assert not out.exists()
         assert "no such session directory" in capsys.readouterr().err
+
+
+class TestTheTranscriptNamesThePaper:
+    """The document says what the run was asked, and now what it was asked OF.
+
+    Its fingerprint section rests on "the same stage fingerprint plus the same
+    INPUT means the same question", and printed no part of the input: a reader
+    holding two transcripts could compare everything the run chose and nothing
+    the paper supplied. The axes are also what a refused resume names, so a
+    reader chasing one had nowhere to look it up.
+    """
+
+    def test_every_paper_axis_is_rendered_with_its_value(self, session):
+        document = (session.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        meta = session.session.meta
+        for axis in ("bundle_fp", "text_fp", "figures_fp", "manifest_fp",
+                     "tables_fp", "supplements_fp"):
+            assert f"`{axis}`" in document, axis
+            assert meta[axis] in document, axis
+
+    def test_a_session_missing_an_axis_says_so_rather_than_blank(
+            self, session):
+        # A session recorded before an axis existed renders without it, and
+        # the row says which — the same distinction the resume gate draws
+        # between an axis that moved and one that was never written.
+        from meltiro.transcript import render_transcript
+
+        meta = dict(session.session.meta)
+        meta.pop("supplements_fp")
+        (session.session.session_dir / "diagnostics" / "run.json").write_text(
+            json.dumps(meta), encoding="utf-8")
+        document = render_transcript(session.session.session_dir)
+        assert "`supplements_fp`" in document
+        assert "*(not recorded)*" in document

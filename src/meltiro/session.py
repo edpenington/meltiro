@@ -51,6 +51,7 @@ assistant side from each turn's `assistant_message` event, the tool_result
 side from the same serialisation the live loop sent).
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -73,10 +74,18 @@ from meltiro.statuses import TERMINAL_STATUSES
 
 # The paper's own axes, as `capture_bundle_fingerprint` records them and
 # `Session.resume` re-reads them. The composite `bundle_fp` is deliberately not
-# among them: it is a digest OF these three, so comparing it would refuse a
+# among them: it is a digest OF these five, so comparing it would refuse a
 # changed paper without being able to say which part of it changed, and
 # comparing both would report the same drift twice.
-BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp")
+#
+# `tables_fp` and `supplements_fp` are axes for the reason the others are:
+# both are shown to the model, so re-transcribing a cell or editing a
+# supplement's prose between a pause and a resume changes what the run was
+# reading as surely as re-cropping an exhibit does. A supplement is a document
+# the run quotes from in its `notes` and cites exhibits out of, so it is on
+# this list for the same reason `text_fp` is.
+BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp", "tables_fp",
+               "supplements_fp")
 
 
 def _engine_label(meltiro_v, direktoro_v):
@@ -314,23 +323,42 @@ class Session:
             return
         self._api_writer.write(entry)
 
-    def capture_image_hashes(self, figure_paths):
-        """At session start, sha256 every cropped figure used by this
-        study so subsequent re-cropping is detectable. `figure_paths`
-        is an iterable of pathlib.Path. Stored in meta as
-        `image_hashes: {label: {sha256, byte_length}}`.
+    def capture_image_hashes(self, attached):
+        """At session start, sha256 every crop the run ATTACHED, so
+        re-cropping afterwards is detectable. `attached` is
+        `{label: png_bytes}` — the bytes already in the message. Stored in
+        meta as `image_hashes: {label: {sha256, byte_length}}`.
 
-        The recipe is `fingerprint.figure_hashes`, the same one `figures_fp`
-        is built from, so this per-image record and the bundle fingerprint
-        beside it are the same numbers.
+        The bytes, not the paths, because this record is what the wire log's
+        per-image digests are compared against (`api_logger`): a second read
+        of the directory would describe a later moment than the message did,
+        and a crop replaced between construction and session start would make
+        the two disagree while both were honestly computed. `figures_fp` reads
+        the directory on purpose — it is the paper's identity on disk — and
+        the pair is then two statements rather than one made twice.
         """
-        self.meta["image_hashes"] = figure_hashes(figure_paths)
+        self.meta["image_hashes"] = {
+            label: {"sha256": hashlib.sha256(data).hexdigest(),
+                    "byte_length": len(data)}
+            for label, data in sorted(attached.items())}
         self.write_meta()
 
     def capture_bundle_fingerprint(self, bundle):
+        """DEPRECATED shape, kept for a caller that has only the bundle.
+
+        `create(paper_axes=...)` is the one a run uses: the axes go in with
+        the session's first write, so no session exists in `in_progress`
+        without the record of what it was asked of. Written afterwards, a kill
+        in the gap left a session that could never be resumed, refused with a
+        message blaming the engine for a session this engine had just made.
+        """
+        return self._capture_bundle_fingerprint(bundle)
+
+    def _capture_bundle_fingerprint(self, bundle):
         """At session start, record the PAPER's own fingerprint in meta.
 
-        Four values (`text_fp`, `figures_fp`, `manifest_fp`, `bundle_fp`; see
+        Six values (`text_fp`, `figures_fp`, `manifest_fp`, `tables_fp`,
+        `supplements_fp`, `bundle_fp`; see
         `fingerprint.bundle_fingerprint`) naming the input this run was given.
         They are folded into no other fingerprint: the config axes describe the
         question and this describes what the question was asked of, so a reader
@@ -357,7 +385,7 @@ class Session:
                user_prompt=None, image_labels=None,
                review_system_prompt=None, checker_system_prompt=None,
                checker_user_scaffold=None,
-               caps=None, structure=None, images_omitted=None,
+               caps=None, structure=None, paper_axes=None,
                checker_context_chars=None, decoding_specified=None,
                diagnostics=DEFAULT_DIAGNOSTICS):
         """Start a fresh session and write the initial run.json + empty
@@ -565,12 +593,12 @@ class Session:
             # stage fingerprint (checker_fp / review_fp) above, and its model
             # may be null too.
             "structure": structure or {},
-            # Per-role image omission: {role: true} for every enabled stage
-            # whose text-only model had the bundle's figures withheld. Empty
-            # when nothing was withheld; a role that accepts images is absent
-            # rather than recorded as false. The stderr warning at run start
-            # is the loud companion to this structural record.
-            "images_omitted": images_omitted or {},
+            # The PAPER's axes, in with the first write. A session written
+            # without them exists in `in_progress` describing no input, and a
+            # kill in that gap leaves one that can never be resumed — refused
+            # for axes it does not record, with a message that blames the
+            # engine for a session the engine had just made.
+            **(paper_axes or {}),
             # The operator's decoding block per role, verbatim, as the config
             # bundle wrote it; a role that wrote none is absent. Its
             # counterpart `decoding_params` is written per role as each role's
@@ -644,7 +672,7 @@ class Session:
         under new inputs.
 
         `expected_bundle` is the `PaperBundle` this resume was handed, and it
-        is checked against the three axes `capture_bundle_fingerprint` recorded
+        is checked against the five axes `capture_bundle_fingerprint` recorded
         at session start, through the same `bundle_fingerprint` recipe. The
         stage fingerprints cannot stand in for it: the paper is folded into
         none of them by design (the config axes say what was asked, the bundle
@@ -715,8 +743,47 @@ class Session:
                 )
         if expected_bundle is not None:
             current = bundle_fingerprint(expected_bundle)
+            # An axis the session never recorded is UNDETERMINED, not moved.
+            # A session started before an axis existed has no value to
+            # compare, and reading the absent key as a mismatch would report
+            # a paper that changed and prescribe a fix that cannot work —
+            # no bundle hashes to None, so re-pointing `--paper` at the
+            # original directory returns the same refusal. The engine axis is
+            # read the same way (see `_drift_axis`).
+            unrecorded = [axis for axis in BUNDLE_AXES
+                          if meta.get(axis) is None]
             moved = [axis for axis in BUNDLE_AXES
-                     if meta.get(axis) != current[axis]]
+                     if meta.get(axis) is not None
+                     and meta.get(axis) != current[axis]]
+            # Unrecorded axes decide the REMEDY, because no bundle can clear
+            # them: re-pointing `--paper` at the original directory returns
+            # this same refusal. So where any axis is unrecorded the message
+            # says so and sends the operator to a fresh session, naming any
+            # axis that also moved rather than dropping it — the two facts are
+            # both true and only one of them has a fix.
+            if unrecorded:
+                named = ", ".join(unrecorded)
+                also = ""
+                if moved:
+                    also = (
+                        " Separately, "
+                        + "; ".join(
+                            f"{axis} moved (session started with "
+                            f"{meta.get(axis)}, the bundle now supplied is "
+                            f"{current[axis]})" for axis in moved)
+                        + ".")
+                raise ResumeRefused(
+                    f"this session records no {named}, so whether the paper "
+                    f"is the one it started against cannot be settled: those "
+                    f"axes were not written when it began."
+                    + (" The axes it does record all match." if not moved
+                       else "")
+                    + also
+                    + f" Re-pointing --paper at the original bundle will not "
+                    f"clear this, because no bundle hashes to a missing "
+                    f"value. Start a fresh session against the bundle you "
+                    f"mean to extract, under this engine."
+                )
             if moved:
                 detail = "; ".join(
                     f"{axis}: session started with {meta.get(axis)}, the "

@@ -41,6 +41,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from meltiro.bundle import read_transcription
+
 
 def _sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -508,11 +510,13 @@ def engine_fingerprint(meltiro_version, meltiro_source_hash,
 def bundle_fingerprint(bundle):
     """Fingerprint the PAPER: which input this run was given.
 
-    Returns the four self-prefixed values a run records, as a dict:
+    Returns the six self-prefixed values a run records, as a dict:
 
-      - `text_fp`: SHA-256 of `text.md`'s bytes, the whole text the models
-        were shown.
-      - `figures_fp`: SHA-256 over the bundle's cropped figures as sorted
+      - `text_fp`: SHA-256 of the ARTICLE's `text.md`. Every role is also
+        shown each supplement's prose, which rides in `supplements_fp`: the
+        split is what lets a consumer identify the paper by the article's own
+        bytes.
+      - `figures_fp`: SHA-256 over the ARTICLE's cropped figures as sorted
         `(label, sha256-of-bytes)` pairs, so a re-crop, a swapped image or a
         renamed label all move it. A bundle with no figures folds in the
         module's `ABSENT_STAGE` sentinel, making "this paper supplies no
@@ -520,7 +524,26 @@ def bundle_fingerprint(bundle):
       - `manifest_fp`: SHA-256 of `manifest.json`'s canonical JSON, so an
         edited title, id, summary or exhibit caption moves it while a
         reformat or a key reordering does not.
-      - `bundle_fp`: SHA-256 over the three above, joined by `|` in that fixed
+      - `tables_fp`: SHA-256 over the ARTICLE's table transcriptions as sorted
+        `(label, sha256-of-bytes)` pairs, on exactly `figures_fp`'s terms, so
+        a re-transcribed cell, a transcription added to an exhibit that had
+        none, or one withdrawn all move it. A bundle transcribing nothing
+        folds in `ABSENT_STAGE`, making "this paper supplies no
+        transcriptions" a hashed fact rather than the digest of an empty
+        payload — and telling that apart from a bundle whose transcriptions
+        happen to hash to nothing.
+      - `supplements_fp`: SHA-256 over the supplementary material as sorted
+        `(name, title, text-digest, crops, transcriptions)` entries, so a
+        supplement arriving, a supplement withdrawn, a re-crop inside one, a
+        re-transcription inside one, or an edit to its prose or its printed
+        title all move it. A bundle carrying none folds in `ABSENT_STAGE`.
+        It is a SEPARATE component rather than a contribution to the three
+        above, and that is the whole point of the shape: `text_fp` and
+        `manifest_fp` stay the article's, byte for byte, so a consumer that
+        identifies a paper by them — the screening side does — is untouched
+        by supplementary material landing later, while a consumer that reads
+        the whole bundle sees the addition in `bundle_fp`.
+      - `bundle_fp`: SHA-256 over the five above, joined by `|` in that fixed
         order, each hashed verbatim as its full self-prefixed string.
 
     This is folded into NOTHING — not `config_fp`, not `instrument_fp`, not
@@ -539,15 +562,84 @@ def bundle_fingerprint(bundle):
     figures_fp = "figures_fp:" + _sha256(
         canonical_json(pairs) if pairs else ABSENT_STAGE)
 
+    # The transcriptions, on `figures_fp`'s terms with one difference: a
+    # transcription is digested as the TEXT a role is shown, through the
+    # reader the message is built with, where a crop is digested as its bytes.
+    # A crop's bytes are the crop; a transcription's file has surrounding
+    # whitespace that no role can observe, so hashing it would move the
+    # paper's identity — and refuse a resume — for a change to something
+    # nobody read.
+    table_pairs = _transcription_digests(bundle.tables)
+    tables_fp = "tables_fp:" + _sha256(
+        canonical_json(table_pairs) if table_pairs else ABSENT_STAGE)
+
     manifest = json.loads(
         (root / "manifest.json").read_text(encoding="utf-8"))
     manifest_fp = "manifest_fp:" + _sha256(canonical_json(manifest))
 
+    supplements_fp = "supplements_fp:" + _sha256(
+        canonical_json(_supplement_payload(bundle))
+        if bundle.supplements else ABSENT_STAGE)
+
     bundle_fp = "bundle_fp:" + _sha256(
-        f"{text_fp}|{figures_fp}|{manifest_fp}")
+        f"{text_fp}|{figures_fp}|{manifest_fp}|{tables_fp}"
+        f"|{supplements_fp}")
     return {
         "text_fp": text_fp,
         "figures_fp": figures_fp,
         "manifest_fp": manifest_fp,
+        "tables_fp": tables_fp,
+        "supplements_fp": supplements_fp,
         "bundle_fp": bundle_fp,
     }
+
+
+def _supplement_payload(bundle):
+    """The hashable description of a bundle's supplementary material.
+
+    One entry per supplement, in name order, carrying everything a run is
+    shown out of it: the name and the printed title, a digest of the prose
+    (a digest rather than the prose itself, so the preimage stays a fixed
+    size whatever a supplement runs to), each exhibit's caption and printed
+    footnote, and its crops and transcriptions as `figures_fp`'s own
+    (label, digest) pairs.
+
+    `None` for a supplement that prints no prose, which is a different fact
+    from an empty one and hashes differently from it.
+
+    The captions and footnotes are here because `supplements.json` is hashed
+    NOWHERE ELSE. The article's are covered by `manifest_fp`, which digests
+    `manifest.json` whole, and a supplement's declaration has no such
+    wholesale cover — so free prose that every role is shown, and that says
+    what an exhibit reports, would otherwise move no axis at all. A caption
+    edited from "median" to "mean" tells three roles the exhibit reports
+    something the crop does not, and this is the axis that has to notice.
+    """
+    entries = []
+    for name in sorted(bundle.supplements):
+        supplement = bundle.supplements[name]
+        entries.append({
+            "name": name,
+            "title": supplement.title,
+            "text": (_sha256(supplement.text)
+                     if supplement.text is not None else None),
+            "exhibits": sorted(supplement.exhibits.items()),
+            "exhibit_notes": sorted(supplement.exhibit_notes.items()),
+            "figures": _label_digests(supplement.figures),
+            "tables": _transcription_digests(supplement.tables),
+        })
+    return entries
+
+
+def _label_digests(paths):
+    """Sorted `(label, sha256)` pairs for one map of label -> path."""
+    digests = figure_hashes(paths.values())
+    return sorted((label, digests[label]["sha256"]) for label in digests)
+
+
+def _transcription_digests(paths):
+    """Sorted `(label, sha256-of-the-text)` pairs for one map of
+    label -> transcription path."""
+    return sorted(
+        (label, _sha256(read_transcription(path)))
+        for label, path in paths.items())

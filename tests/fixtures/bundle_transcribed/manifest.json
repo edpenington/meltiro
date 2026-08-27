@@ -1,0 +1,14 @@
+{
+  "schema_version": 4,
+  "id": "syn-transcribed",
+  "title": "Depot turnaround time before and after the revised intake rota: a two-site service evaluation",
+  "doi": "10.0000/syn.0003",
+  "exhibits": [
+    {
+      "label": "table_01",
+      "caption": "Table 1. Median turnaround time by site and rota period, with the proportion of units meeting the four-hour standard",
+      "notes": "IQR, interquartile range. The four-hour standard is the depot's own service target, not a regulatory one. Site B did not operate a weekend intake in the before period, so no weekend figure is reported for it."
+    }
+  ],
+  "summary": "A two-site service evaluation of depot turnaround time before and after a revised intake rota. Turnaround fell at both sites, and the proportion of units meeting the four-hour standard rose at both, though the weekend comparison is available for one site only."
+}
