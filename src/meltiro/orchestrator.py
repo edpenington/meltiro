@@ -1099,9 +1099,9 @@ class Orchestrator:
         # them a second time, which was a second answer to what an exhibit
         # arrives with and, once a transcription rode along, the same table
         # printed twice on one report.
-        attached_exhibits = [
-            self._exhibit_manifest_entry(label, document)
-            for label, document in self._attached_exhibit_sources()]
+        _, attached = self._extractor_message()
+        attached_exhibits = [self._exhibit_manifest_entry(label, document)
+                             for label, document in attached]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -2632,20 +2632,6 @@ class Orchestrator:
                 self.checker_config)
         return self._cached_checker_adapter
 
-    def _attached_exhibit_sources(self):
-        """`(label, document)` for every crop the extractor's message
-        attaches, in the order it attaches them.
-
-        `document` is None for the article's and the supplement's name for a
-        supplement's, which is the distinction the message keeps with its
-        sections and a flat list cannot.
-        """
-        sources = [(label, None) for label, _ in self.figures]
-        for supplement in self._supplements_for():
-            sources += [(label, supplement["name"])
-                        for label, _ in supplement["figures"]]
-        return sources
-
     def _exhibit_manifest_entry(self, label, document):
         """One line of the preview's exhibit manifest."""
         where = f"({document}) " if document else ""
@@ -2686,7 +2672,7 @@ class Orchestrator:
                  # WHICH transcriptions the bundle held; this says which of
                  # them the message actually carried.
                  "transcribed": normalise_label(label) in self.image_tables}
-                for label in labels]
+                for label, _ in labels]
 
     def _extractor_message(self):
         """The extractor's opening user message, and the labels it attaches.

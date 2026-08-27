@@ -81,7 +81,7 @@ def bundle_root_for_prompt(system_prompt_path):
 # Engine-authored framing (extractor + reviewer roles)
 # ---------------------------------------------------------------------------
 
-def _extractor_header(study_id):
+def _extractor_header(study_id, supplements=None):
     """The extractor's opening framing line.
 
     One definition, used wherever the extractor's opening message is built,
@@ -89,9 +89,12 @@ def _extractor_header(study_id):
     """
     return (
         f"Extract study {study_id}. The full text follows, and every cropped "
-        "table and figure this study supplies is attached below — the "
-        "article's here, and each supplement's inside its own section. Where "
-        "something is not attached, the message says so in its place."
+        "table and figure this study supplies is attached below."
+        + (" Supplementary material follows the paper, each supplement in a "
+           "section of its own carrying its own prose and exhibits."
+           if supplements else "")
+        + " Where something is not attached, the message says so in its "
+          "place."
     )
 
 
@@ -478,18 +481,23 @@ def system_message_blocks(text):
 
 
 def message_figure_labels(figures, supplements=None):
-    """The labels a message attaches, in the order it attaches them.
+    """What a message attaches, in the order it attaches them: `(label,
+    document)` pairs, `document` being None for the article's crops and the
+    supplement's name for a supplement's.
 
     The article's figure sequence followed by each supplement's, which is the
     order `build_initial_user_blocks` and `build_review_user_blocks` emit
-    their image blocks in. One definition, because a text view of a message
-    pairs labels to image blocks by position: a second answer to this
-    question is a view that names the wrong crop.
+    their image blocks in. ONE definition, because two consumers depend on it
+    and a second answer would be a second story about one message: a text view
+    pairs labels to image blocks by position, and the dry run's exhibit
+    manifest names each crop by the document it came out of. Neither derives
+    the sequence itself.
     """
-    labels = [label for label, _ in figures]
+    attached = [(label, None) for label, _ in figures]
     for supplement in supplements or []:
-        labels += [label for label, _ in supplement.get("figures") or []]
-    return labels
+        attached += [(label, supplement["name"])
+                     for label, _ in supplement.get("figures") or []]
+    return attached
 
 
 def render_message_text(blocks, image_labels):
@@ -502,15 +510,16 @@ def render_message_text(blocks, image_labels):
     the whole reason this takes blocks rather than the material they were
     built from.
 
-    `image_labels` is the figure sequence those blocks were built from, in
-    the order they attach — the article's followed by each supplement's — and
-    is consumed one label per image block. An `image` block carries the
-    crop's bytes and no label, so the label has to come from the sequence
-    that built it; a caller passing a re-sorted, re-cased or short sequence
-    is naming attachments the message never carried, and the checks below
-    refuse it rather than writing a wrong label.
+    `image_labels` is `message_figure_labels`' sequence for those blocks, and
+    is consumed one entry per image block. An `image` block carries the crop's
+    bytes and no label, so the label has to come from the sequence that built
+    it; a caller passing a re-sorted, re-cased or short sequence is naming
+    attachments the message never carried, and the checks below refuse it
+    rather than writing a wrong label. A bare label is accepted too, for a
+    caller that has only the names.
     """
-    labels = iter(list(image_labels))
+    labels = iter([entry[0] if isinstance(entry, tuple) else entry
+                   for entry in image_labels])
     parts = []
     for block in blocks:
         kind = block.get("type")
@@ -580,7 +589,8 @@ def build_initial_user_blocks(study_id, paper_text, figures,
     absence from a message that simply stops.
     """
     blocks = []
-    blocks.append({"type": "text", "text": _extractor_header(study_id)})
+    blocks.append({"type": "text",
+                   "text": _extractor_header(study_id, supplements)})
 
     blocks.append({
         "type": "text",
@@ -681,7 +691,11 @@ def build_review_user_blocks(study_id, paper_text, figures,
         f"You are reviewing the assembled extraction output for "
         f"study {study_id}. Read the paper, examine the "
         f"figures, and decide whether the extraction output is correct and "
-        f"complete. You have as many turns as you need: the view tools let "
+        f"complete."
+        + (" Supplementary material follows the paper, each supplement in a "
+           "section of its own carrying its own prose and exhibits."
+           if supplements else "")
+        + f" You have as many turns as you need: the view tools let "
         f"you inspect the extraction output and return their results to you, "
         f"and the editing tools let you revise it. Call `mark_complete` when "
         f"satisfied. Do NOT make stylistic changes; only revise "

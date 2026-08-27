@@ -200,17 +200,43 @@ class TestItReachesTheMessageAsItsOwnDocument:
         assert joined.index(supplement_close("supplement_a")) < joined.index(
             "--- ASSEMBLED EXTRACTION OUTPUT (to review) ---")
 
-    def test_the_recorded_prompt_matches_the_message(self, supplemented, sections, rendered_user_message):
-        sent = build_initial_user_blocks(
-            supplemented.study_id, supplemented.text,
-            [("table_01", b"png")], supplemented.all_exhibits(),
-            supplemented.all_exhibit_notes(), {}, sections)
-        recorded = rendered_user_message(
-            supplemented.study_id, supplemented.text, ["table_01"],
-            supplemented.all_exhibits(), supplemented.all_exhibit_notes(),
-            {}, sections)
+    def test_the_recorded_prompt_matches_the_message(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        """The prompt a SESSION records is the message that session sends.
+
+        Read off disk and compared with the conversation in memory, because
+        the two are what a reader of a finished run holds and what the model
+        was actually handed. Comparing two calls of the message builders
+        instead — which is what this test did — compares production with
+        itself and passes even when the recorded prompt is rebuilt without
+        the supplements.
+        """
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir),
+            load_bundle(bundle_supplemented_dir), tmp_path / "runs",
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096)
+        orch.prepare_new_session()
+
+        recorded = (orch.session.instrument_dir / "user_prompt.txt").read_text(
+            encoding="utf-8")
+        sent = orch.messages[0]["content"]
+        # Every text block of the message, verbatim and in order, and a line
+        # naming each crop where its bytes are.
         for block in _text_blocks(sent):
             assert block in recorded
+        assert recorded.count("(image: ") == sum(
+            1 for b in sent if b.get("type") == "image") == 2
+        supplement = next(
+            iter(load_bundle(bundle_supplemented_dir).supplements.values()))
+        assert supplement.text.strip() in recorded
 
 
 class TestItStaysSeparateFromTheArticle:
@@ -1380,3 +1406,78 @@ class TestEverySectionStateSaysWhatItHolds:
         assert NO_ARTICLE_EXHIBITS_NOTICE in joined
         assert NO_EXHIBITS_NOTICE not in joined
         assert sum(1 for b in blocks if b.get("type") == "image") == 1
+
+
+class TestTheManifestIsTheMessagesOwnSequence:
+    """The dry run's exhibit manifest, compared with the message it previews.
+
+    It used to re-derive the sequence from `self.figures` and the supplement
+    list — a third answer to a question the message had already answered — and
+    sorting it passed the whole suite, because the one test that compared
+    entries read those same two sources and ran on a bundle with a single
+    exhibit, where no order can differ.
+    """
+
+    def _report(self, config_dir, bundle_dir, out_dir):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        previewer = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+            dry_run=True)
+        return previewer.dry_run_report()
+
+    @staticmethod
+    def _message_image_labels(blocks):
+        """The labels the message attaches, read off the block above each
+        image — the pairing a role makes, not the one the code asserts."""
+        labels = []
+        for index, block in enumerate(blocks):
+            if block.get("type") != "image":
+                continue
+            above = blocks[index - 1]["text"]
+            labels.append(above[1:above.index("]")])
+        return labels
+
+    def test_the_manifest_names_them_in_the_messages_order(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        report = self._report(config_dir, bundle_supplemented_dir,
+                              tmp_path / "preview")
+        capsys.readouterr()
+        # The article's crop is attached first and sorts SECOND, so a manifest
+        # built by sorting cannot pass this.
+        from_message = self._message_image_labels(
+            build_initial_user_blocks(
+                *self._inputs(bundle_supplemented_dir)))
+        assert from_message == ["table_01", "supplement_a_table_01"]
+        assert [entry[entry.index("[") + 1:entry.index("]")]
+                for entry in report["attached_exhibits"]] == from_message
+
+    def test_each_entry_names_the_document_it_came_out_of(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        report = self._report(config_dir, bundle_supplemented_dir,
+                              tmp_path / "preview")
+        capsys.readouterr()
+        assert report["attached_exhibits"] == [
+            "[table_01]", "(supplement_a) [supplement_a_table_01]"]
+
+    @staticmethod
+    def _inputs(bundle_dir):
+        bundle = load_bundle(bundle_dir)
+        supplement = bundle.supplements["supplement_a"]
+        return (
+            bundle.study_id, bundle.text,
+            [(label, path.read_bytes())
+             for label, path in bundle.figures.items()],
+            bundle.all_exhibits(), bundle.all_exhibit_notes(), {},
+            [{"name": supplement.name, "title": supplement.title,
+              "text": supplement.text,
+              "figures": [(label, path.read_bytes())
+                          for label, path in supplement.figures.items()]}],
+        )
