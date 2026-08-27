@@ -366,7 +366,11 @@ def consumer_problems(bundle):
         transcription, while the label set a citation is validated against
         holds a single entry for both. Refused here rather than worked around,
         because there is no reading of a collapsed pair that is faithful to
-        the bundle.
+        the bundle. Checked over the crops and the declared exhibits;
+        transcription labels need no separate pass because the format binds
+        every `tables/*.html` stem to a declared exhibit — an alteksto rule
+        this check DEPENDS on rather than merely observes, so a change to it
+        belongs with a change here.
       - text that spells one of the lines this engine writes around a paper
         (see `meltiro.framing`). Every string a run puts in front of a model
         is checked: the paper's prose, each supplement's printed title and

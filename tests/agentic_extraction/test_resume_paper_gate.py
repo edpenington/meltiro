@@ -266,3 +266,28 @@ class TestTheTwoNewestAxesAreCompared:
         orch = _orch(config_dir, supplemented_paper, out)
         orch.resume_session(session_dir)  # must not raise
         assert orch.session.meta["status"] == "in_progress"
+
+
+def test_a_session_never_exists_without_its_paper_axes(
+        config_dir, paper, tmp_path):
+    """The axes are in the session's first write.
+
+    Written afterwards, a session existed in `in_progress` describing no
+    input, and a kill in that gap left one that could never be resumed —
+    refused for axes it does not record, with a message that blames the engine
+    for a session the engine had just made. The window was milliseconds; the
+    session it produced was permanent.
+    """
+    import json
+
+    from meltiro.fingerprint import bundle_fingerprint
+
+    out = tmp_path / "runs"
+    orch = _orch(config_dir, paper, out)
+    orch.prepare_new_session()
+    meta = json.loads(
+        Session.meta_path_for(orch.session.session_dir).read_text(
+            encoding="utf-8"))
+    expected = bundle_fingerprint(load_bundle(paper))
+    for axis, value in expected.items():
+        assert meta[axis] == value, axis

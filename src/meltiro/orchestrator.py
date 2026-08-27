@@ -825,6 +825,10 @@ class Orchestrator:
                 "max_checks_per_field": self.max_checks_per_field,
             },
             structure=self._structure_dict(),
+            # The paper's own fingerprint, from the same bundle, written WITH
+            # the session rather than after it — and in no other fingerprint
+            # (see fingerprint.bundle_fingerprint).
+            paper_axes=bundle_fingerprint(self.bundle),
             decoding_specified=self.decoding_specified,
             diagnostics=self.diagnostics,
         )
@@ -851,10 +855,6 @@ class Orchestrator:
             attached_bytes.update(dict(supplement["figures"]))
         if attached_bytes:
             self.session.capture_image_hashes(attached_bytes)
-        # The paper's own fingerprint, from the same bundle. Unconditional — a
-        # paper with no figures is still a paper the run must name — and in no
-        # other fingerprint (see fingerprint.bundle_fingerprint).
-        self.session.capture_bundle_fingerprint(self.bundle)
 
         # The conversation, from the blocks built above.
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]

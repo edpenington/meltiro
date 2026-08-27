@@ -344,6 +344,17 @@ class Session:
         self.write_meta()
 
     def capture_bundle_fingerprint(self, bundle):
+        """DEPRECATED shape, kept for a caller that has only the bundle.
+
+        `create(paper_axes=...)` is the one a run uses: the axes go in with
+        the session's first write, so no session exists in `in_progress`
+        without the record of what it was asked of. Written afterwards, a kill
+        in the gap left a session that could never be resumed, refused with a
+        message blaming the engine for a session this engine had just made.
+        """
+        return self._capture_bundle_fingerprint(bundle)
+
+    def _capture_bundle_fingerprint(self, bundle):
         """At session start, record the PAPER's own fingerprint in meta.
 
         Six values (`text_fp`, `figures_fp`, `manifest_fp`, `tables_fp`,
@@ -374,7 +385,7 @@ class Session:
                user_prompt=None, image_labels=None,
                review_system_prompt=None, checker_system_prompt=None,
                checker_user_scaffold=None,
-               caps=None, structure=None,
+               caps=None, structure=None, paper_axes=None,
                checker_context_chars=None, decoding_specified=None,
                diagnostics=DEFAULT_DIAGNOSTICS):
         """Start a fresh session and write the initial run.json + empty
@@ -582,6 +593,12 @@ class Session:
             # stage fingerprint (checker_fp / review_fp) above, and its model
             # may be null too.
             "structure": structure or {},
+            # The PAPER's axes, in with the first write. A session written
+            # without them exists in `in_progress` describing no input, and a
+            # kill in that gap leaves one that can never be resumed — refused
+            # for axes it does not record, with a message that blames the
+            # engine for a session the engine had just made.
+            **(paper_axes or {}),
             # The operator's decoding block per role, verbatim, as the config
             # bundle wrote it; a role that wrote none is absent. Its
             # counterpart `decoding_params` is written per role as each role's
