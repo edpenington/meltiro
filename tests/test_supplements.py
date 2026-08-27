@@ -35,6 +35,8 @@ from meltiro.config_bundle import load_config_bundle
 from meltiro.fingerprint import bundle_fingerprint
 from meltiro.prompt_partials import stage_predicates
 from meltiro.prompt_builder import (
+    NO_ARTICLE_EXHIBITS_NOTICE,
+    NO_EXHIBITS_NOTICE,
     NO_SUPPLEMENT_CONTENT_NOTICE,
     NO_SUPPLEMENT_TEXT_NOTICE,
     SUPPLEMENT_TEXT_CLOSE,
@@ -1232,3 +1234,149 @@ class TestEverySourceAndEveryLineIsChecked:
         with pytest.raises(BundleError) as excinfo:
             load_bundle(dst)
         assert len(excinfo.value.problems) == 1
+
+
+class TestWhatTheSessionRecordsCoversTheWholeMessage:
+    """The record and the hashes cover every crop the message attached.
+
+    Both were the article's alone before last wave, and both reverted to it
+    with the whole suite green afterwards, because every session-record test
+    ran on a fixture with no supplements. These run on one that has them.
+    """
+
+    def _session(self, config_dir, bundle_dir, out_dir):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        orch.prepare_new_session()
+        return orch
+
+    def test_the_exhibit_record_names_every_attachment(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        import json
+
+        orch = self._session(config_dir, bundle_supplemented_dir,
+                             tmp_path / "runs")
+        recorded = json.loads(
+            (orch.session.instrument_dir / "image_labels.json").read_text(
+                encoding="utf-8"))
+        assert [entry["label"] for entry in recorded] == [
+            "table_01", "supplement_a_table_01"]
+        # And each entry carries that exhibit's own caption and footnote, not
+        # the article's for both.
+        bundle = load_bundle(bundle_supplemented_dir)
+        for entry in recorded:
+            label = entry["label"]
+            assert entry["caption"] == bundle.all_exhibits()[label]
+            assert entry["notes"] == bundle.all_exhibit_notes()[label]
+            assert entry["transcribed"] is True
+
+    def test_every_attached_crop_has_a_hash_of_its_own_bytes(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        import hashlib
+
+        bundle = load_bundle(bundle_supplemented_dir)
+        orch = self._session(config_dir, bundle_supplemented_dir,
+                             tmp_path / "runs")
+        hashes = orch.session.meta["image_hashes"]
+        assert set(hashes) == set(bundle.all_figures())
+        for label, path in bundle.all_figures().items():
+            assert hashes[label]["sha256"] == hashlib.sha256(
+                path.read_bytes()).hexdigest()
+        # Distinguishable, so a map that resolved every label to one crop
+        # could not pass this.
+        assert len({h["sha256"] for h in hashes.values()}) == 2
+
+
+class TestEverySectionStateSaysWhatItHolds:
+    """All four states of a supplement's section, and the words each uses.
+
+    Three notices covered three states and the fourth — prose, no exhibits —
+    fell through to nothing, while the extractor's header promises "where
+    something is not attached, the message says so in its place". And no
+    notice's WORDING was pinned anywhere: every assertion was `CONSTANT in
+    text` where production wrote that same constant, so only which branch
+    fired was observable, never what it said.
+    """
+
+    STATES = {
+        "prose-and-exhibits": (True, True, None),
+        "exhibits-only": (False, True,
+                          "(this supplement prints no prose; its exhibits "
+                          "follow)"),
+        "prose-only": (True, False,
+                       "(this supplement supplies no cropped figures or "
+                       "tables)"),
+        "neither": (False, False,
+                    "(this supplement prints no prose and supplies no "
+                    "exhibits)"),
+    }
+
+    @pytest.mark.parametrize("state", sorted(STATES))
+    def test_the_section_states_it_in_these_words(self, state):
+        has_prose, has_exhibits, expected = self.STATES[state]
+        blocks = supplement_blocks({
+            "name": "supplement_b",
+            "title": "Supplement B. The protocol",
+            "text": "# Protocol\n\nProse.\n" if has_prose else None,
+            "figures": [("supplement_b_table_01", b"png")]
+            if has_exhibits else [],
+        })
+        notices = [b["text"] for b in blocks
+                   if b.get("type") == "text" and b["text"].startswith("(")]
+        assert notices == ([expected] if expected else [])
+
+    @pytest.mark.parametrize("notice,words", [
+        ("NO_EXHIBITS_NOTICE",
+         "(no cropped figures or tables accompany this study)"),
+        ("NO_ARTICLE_EXHIBITS_NOTICE",
+         "(the article prints no cropped figures or tables of its own; the "
+         "supplementary material's follow in their own sections)"),
+    ])
+    def test_the_article_level_notices_say_what_they_say(self, notice, words):
+        # Spelled out here rather than compared with the constant, so a
+        # rewording is a decision rather than an accident: these sentences are
+        # read by a model and answer its own initial check about the figures.
+        from meltiro import prompt_builder
+
+        assert getattr(prompt_builder, notice) == words
+
+    def test_a_paper_whose_crops_are_all_supplementary_says_so(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        import json
+
+        # The case the notice exists for, described in code as "the ordinary
+        # case here, not an edge": deleting the branch left the message
+        # claiming no crops accompany the study while attaching one.
+        dst = tmp_path / "supplementary_only"
+        shutil.copytree(bundle_supplemented_dir, dst)
+        (dst / "figures" / "table_01.png").unlink()
+        (dst / "tables" / "table_01.html").unlink()
+        manifest = json.loads(
+            (dst / "manifest.json").read_text(encoding="utf-8"))
+        manifest["exhibits"] = []
+        (dst / "manifest.json").write_text(json.dumps(manifest),
+                                           encoding="utf-8")
+        assert validate_bundle(dst) == []
+
+        bundle = load_bundle(dst)
+        blocks = build_initial_user_blocks(
+            bundle.study_id, bundle.text, [], bundle.all_exhibits(),
+            bundle.all_exhibit_notes(), {},
+            [{"name": "supplement_a",
+              "title": bundle.supplements["supplement_a"].title,
+              "text": bundle.supplements["supplement_a"].text,
+              "figures": [("supplement_a_table_01", b"png")]}])
+        joined = _joined(blocks)
+        assert NO_ARTICLE_EXHIBITS_NOTICE in joined
+        assert NO_EXHIBITS_NOTICE not in joined
+        assert sum(1 for b in blocks if b.get("type") == "image") == 1

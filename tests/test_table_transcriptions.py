@@ -598,3 +598,78 @@ class TestTheProjectionRefusesAMismatchedPair:
         text = render_message_text(self._blocks(2), ["first", "second"])
         assert text.index("(image: first.png)") < text.index(
             "(image: second.png)")
+
+
+class TestTheMessageAndTheHashReadOneString:
+    """The single-reader invariant, guarded on the side that decides what the
+    model sees.
+
+    Reverting the FINGERPRINT to a raw read fails two tests. Reverting the
+    MESSAGE to a raw read passed the whole suite, because every wiring
+    assertion is `markup in message` against a fixture that is already
+    stripped — a substring a raw read satisfies too. That is the dangerous
+    direction: the roles read bytes the axis does not cover, so a resume
+    admits material they will read differently.
+    """
+
+    def test_the_orchestrator_holds_exactly_what_the_axis_digests(
+            self, config_dir, bundle_transcribed_dir, tmp_path):
+        import hashlib
+
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.fingerprint import _transcription_digests
+        from meltiro.orchestrator import Orchestrator
+
+        # Padded on disk, so a raw read and the reader disagree.
+        dst = tmp_path / "padded"
+        shutil.copytree(bundle_transcribed_dir, dst)
+        path = dst / "tables" / "table_01.html"
+        raw = "\n\n" + path.read_text(encoding="utf-8") + "\n   \n"
+        path.write_text(raw, encoding="utf-8")
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(dst),
+            tmp_path / "runs",
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        held = orch.image_tables["table_01"]
+        assert held != raw, "the orchestrator read the file raw"
+        digested = dict(_transcription_digests(load_bundle(dst).tables))
+        assert digested["table_01"] == hashlib.sha256(
+            held.encode("utf-8")).hexdigest()
+
+    def test_the_message_carries_that_string_and_not_the_file(
+            self, config_dir, bundle_transcribed_dir, tmp_path):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        dst = tmp_path / "padded"
+        shutil.copytree(bundle_transcribed_dir, dst)
+        path = dst / "tables" / "table_01.html"
+        path.write_text("\n\n" + path.read_text(encoding="utf-8") + "\n \n",
+                        encoding="utf-8")
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(dst),
+            tmp_path / "runs",
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        orch.prepare_new_session()
+        block = next(
+            b["text"] for b in orch.messages[0]["content"]
+            if isinstance(b, dict) and b.get("type") == "text"
+            and b["text"].startswith("[table_01]"))
+        # The block ends where the transcription ends: a raw read would leave
+        # the file's trailing blank lines inside the message.
+        assert block == block.rstrip()
+        assert block.endswith("</table>")

@@ -206,6 +206,12 @@ NO_SUPPLEMENT_TEXT_NOTICE = (
     "(this supplement prints no prose; its exhibits follow)")
 NO_SUPPLEMENT_CONTENT_NOTICE = (
     "(this supplement prints no prose and supplies no exhibits)")
+# And the fourth state: prose, and no exhibits. A supplement may be a protocol
+# or a statistical appendix and print nothing to crop, so the section has to
+# say that rather than end after the prose — the message states what
+# accompanies a document on both sides, or a role reads a gap and guesses.
+NO_SUPPLEMENT_EXHIBITS_NOTICE = (
+    "(this supplement supplies no cropped figures or tables)")
 
 
 def supplement_blocks(supplement, captions=None, notes=None, tables=None):
@@ -233,6 +239,9 @@ def supplement_blocks(supplement, captions=None, notes=None, tables=None):
     else:
         blocks.append({"type": "text",
                        "text": NO_SUPPLEMENT_CONTENT_NOTICE})
+    if text and not supplement.get("figures"):
+        blocks.append({"type": "text",
+                       "text": NO_SUPPLEMENT_EXHIBITS_NOTICE})
 
     for label, png_bytes in supplement.get("figures") or []:
         blocks.append({"type": "text",

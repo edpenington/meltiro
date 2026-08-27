@@ -589,3 +589,69 @@ class TestTheDryRunPreviewIsTheMessage:
         message = self._user_message(orch, tmp_path)
         block = message.split("[table_01]")[1].split("[figure_02]")[0]
         assert "\n\nUnits withdrawn" in block
+
+
+class TestTheGuardOnEveryEntryPointAndThroughTheCLI:
+    """Every way a run starts, and the message an operator actually reads.
+
+    `resume_session` losing the guard passed the whole suite: the refusal was
+    tested through `prepare_new_session` and `dry_run_report` only, so an
+    operator could swap a text-only model into a paused run and carry on. And
+    because no test went through the CLI, the refusal was free to name a
+    `pipeline.yaml` key for a value a command-line flag had set.
+    """
+
+    def _paused(self, config_dir, bundle_dir, out_dir):
+        orch = _orch(config_dir, bundle_dir, out_dir,
+                     extractor_model="claude-opus-4-7")
+        orch.prepare_new_session()
+        return orch.session.session_dir
+
+    def test_a_resume_is_refused_too(
+            self, config_dir, bundle_minimal_dir, tmp_path):
+        out_dir = tmp_path / "runs"
+        session_dir = self._paused(config_dir, bundle_minimal_dir, out_dir)
+
+        orch = _orch(config_dir, bundle_minimal_dir, out_dir,
+                     extractor_model=TEXT_ONLY_MODEL)
+        with pytest.raises(AgenticExtractionError) as excinfo:
+            orch.resume_session(session_dir)
+        assert TEXT_ONLY_MODEL in str(excinfo.value)
+
+    def test_the_refusal_names_the_flag_when_a_flag_set_the_model(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # Both sibling refusals about these three values say "Fix
+        # pipeline.yaml or pass a known --extractor-model ...", because the
+        # value can come from either place and an operator sent to the wrong
+        # one goes looking for something that is not there.
+        from meltiro.cli import main
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["extract",
+                  "--config", str(config_dir),
+                  "--paper", str(bundle_minimal_dir),
+                  "--out", str(tmp_path / "runs"),
+                  "--extractor-model", TEXT_ONLY_MODEL])
+        err = capsys.readouterr().err
+        assert excinfo.value.code == 1
+        assert TEXT_ONLY_MODEL in err
+        assert "--extractor-model" in err
+
+    def test_no_session_is_written_through_the_cli(
+            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
+        # The run root itself is created before any orchestrator exists — it
+        # is the writability probe every run starts with — so what the guard
+        # owes is that no SESSION is written, which is what a resume would
+        # find.
+        from meltiro.cli import main
+
+        out_dir = tmp_path / "runs"
+        with pytest.raises(SystemExit):
+            main(["extract",
+                  "--config", str(config_dir),
+                  "--paper", str(bundle_minimal_dir),
+                  "--out", str(out_dir),
+                  "--extractor-model", TEXT_ONLY_MODEL])
+        capsys.readouterr()
+        assert list(out_dir.rglob("sessions")) == []
+        assert list(out_dir.rglob("run.json")) == []

@@ -2869,8 +2869,14 @@ class Orchestrator:
                  if not model_supports_images(model)]
         if not blind:
             return
+        # Each role's model can come from `pipeline.yaml` or from the flag
+        # that overrides it, and this refusal cannot tell which — so it names
+        # both, as the two sibling refusals about these same three values do.
+        # Naming one sends an operator who used the other to a place the value
+        # is not.
         named = "; ".join(
-            f"the {role} model {model!r} (pipeline.yaml `{key}`)"
+            f"the {role} model {model!r} (pipeline.yaml `{key}`, or "
+            f"`--{key.replace('_model', '')}-model`)"
             for role, model, key in blind)
         raise AgenticExtractionError(
             f"Image input is not optional in this pipeline: {named} cannot "
