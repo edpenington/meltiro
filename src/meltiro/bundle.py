@@ -100,6 +100,7 @@ from pathlib import Path
 
 from alteksto import bundle as paper_bundle_format
 
+from meltiro import framing
 from meltiro.errors import BundleError
 
 
@@ -282,7 +283,7 @@ def load_bundle(path):
     exhibits = {e["label"]: e["caption"] for e in declared}
     exhibit_notes = {e["label"]: e["notes"] for e in declared if "notes" in e}
 
-    return PaperBundle(
+    bundle = PaperBundle(
         supplements=_load_supplements(root),
         root=root,
         study_id=manifest["id"],
@@ -295,3 +296,93 @@ def load_bundle(path):
         exhibit_notes=exhibit_notes,
         tables=tables,
     )
+    problems = consumer_problems(bundle)
+    if problems:
+        raise BundleError(problems, path=root)
+    return bundle
+
+
+def normalise_label(label):
+    """The key every consumer here looks an exhibit up by.
+
+    A model writes a label as it reads it, so a citation is matched with
+    surrounding whitespace dropped and case ignored. One definition, because
+    the dispatcher validating `<img>`, the maps a message is built from and
+    the checker resolving a citation have to agree on what a label IS; two
+    would let a citation validate against one map and miss in another.
+    """
+    return str(label).strip().lower()
+
+
+def consumer_problems(bundle):
+    """Every problem THIS consumer has with a bundle the format accepts.
+
+    The format's rules are alteksto's and are checked there. These two are
+    meltiro's own, and both are cases where a bundle alteksto calls valid
+    cannot be run here without misinforming a role:
+
+      - two labels that differ only in case or surrounding whitespace. The
+        format holds one label to one exhibit and compares labels as written;
+        this consumer looks them up normalised (see `normalise_label`), and
+        under that key the two are one. What follows is silent: the maps
+        collapse, and one crop arrives under the other's caption, footnote and
+        transcription, while the label set a citation is validated against
+        holds a single entry for both. Refused here rather than worked around,
+        because there is no reading of a collapsed pair that is faithful to
+        the bundle.
+      - text that spells one of the lines this engine writes around a paper
+        (see `meltiro.framing`). Every string a run puts in front of a model
+        is checked: the paper's prose, each supplement's printed title and
+        prose, and every caption, printed footnote and transcription in
+        either. A forged delimiter moves a boundary a role has nothing else
+        to check.
+
+    Returns a list of problem strings, empty when there are none, on
+    `alteksto.bundle.validate_bundle`'s terms — every problem, not the first.
+    """
+    problems = []
+
+    by_key = {}
+    for label in list(bundle.all_figures()) + list(bundle.all_exhibits()):
+        by_key.setdefault(normalise_label(label), set()).add(label)
+    for key, labels in sorted(by_key.items()):
+        if len(labels) > 1:
+            named = ", ".join(repr(label) for label in sorted(labels))
+            problems.append(
+                f"exhibit labels {named} differ only in case or spacing, and "
+                f"this pipeline resolves a citation by the normalised label "
+                f"{key!r}, so one exhibit's crop would arrive under the "
+                f"other's caption. Rename one of them.")
+
+    sources = [("text.md", bundle.text)]
+    for label, caption in sorted(bundle.exhibits.items()):
+        sources.append((f"manifest.json caption for {label!r}", caption))
+    for label, note in sorted(bundle.exhibit_notes.items()):
+        sources.append((f"manifest.json notes for {label!r}", note))
+    for label, path in sorted(bundle.tables.items()):
+        sources.append((f"tables/{label}.html", _read_text(path)))
+    for name, supplement in bundle.supplements.items():
+        where = f"supplements/{name}"
+        sources.append((f"supplements.json title for {name!r}",
+                        supplement.title))
+        sources.append((f"{where}/text.md", supplement.text))
+        for label, caption in sorted(supplement.exhibits.items()):
+            sources.append(
+                (f"supplements.json caption for {label!r}", caption))
+        for label, note in sorted(supplement.exhibit_notes.items()):
+            sources.append((f"supplements.json notes for {label!r}", note))
+        for label, path in sorted(supplement.tables.items()):
+            sources.append((f"{where}/tables/{label}.html", _read_text(path)))
+
+    for where, text in sources:
+        for line in framing.forged_lines(text):
+            problems.append(
+                f"{where} contains the line {line!r}, which is a delimiter "
+                f"this pipeline writes around the material it sends a model. "
+                f"Text that spells one moves a boundary the model has nothing "
+                f"else to check it against. Remove it.")
+    return problems
+
+
+def _read_text(path):
+    return Path(path).read_text(encoding="utf-8")

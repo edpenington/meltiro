@@ -47,6 +47,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from meltiro import framing
 from meltiro.reference_lists import substitute_reference_placeholders
 from meltiro.prompt_partials import (
     EXTRACTOR_SYSTEM,
@@ -173,8 +174,12 @@ def supplement_close(name):
 # from the article's `PAPER TEXT` markers by name, so a role reading a quote
 # back can tell which of the two it came out of — and so that "the paper
 # text" means one thing in this message.
-SUPPLEMENT_TEXT_OPEN = "--- SUPPLEMENT TEXT ---"
-SUPPLEMENT_TEXT_CLOSE = "--- END SUPPLEMENT TEXT ---"
+#
+# Every delimiter this module writes is defined in `meltiro.framing`, which
+# the loader imports to refuse a bundle whose own text spells one. Two places
+# holding the vocabulary would be two answers to what a boundary is.
+SUPPLEMENT_TEXT_OPEN = framing.SUPPLEMENT_TEXT_OPEN
+SUPPLEMENT_TEXT_CLOSE = framing.SUPPLEMENT_TEXT_CLOSE
 
 # What stands in a supplement's section where its prose would be. A
 # supplement that is a run of data tables prints none, and the format lets it
@@ -487,7 +492,7 @@ def render_message_text(blocks, image_labels):
                     "the message attaches more images than the figure "
                     "sequence has labels, so a text view of it would name "
                     "the wrong crop")
-            parts.append(f"(image: {label}.png)")
+            parts.append(framing.image_placeholder(label))
         else:
             raise ValueError(f"unrenderable content block: {kind!r}")
     left = list(labels)
@@ -562,7 +567,8 @@ def build_initial_user_blocks(study_id, paper_text, figures,
 
     blocks.append({
         "type": "text",
-        "text": "--- PAPER TEXT ---\n" + paper_text + "\n--- END PAPER TEXT ---",
+        "text": (framing.PAPER_TEXT_OPEN + "\n" + paper_text
+                 + "\n" + framing.PAPER_TEXT_CLOSE),
     })
 
     if not figures:
@@ -669,8 +675,8 @@ def build_review_user_blocks(study_id, paper_text, figures,
 
     blocks.append({
         "type": "text",
-        "text": ("--- PAPER TEXT ---\n" + paper_text
-                 + "\n--- END PAPER TEXT ---"),
+        "text": (framing.PAPER_TEXT_OPEN + "\n" + paper_text
+                 + "\n" + framing.PAPER_TEXT_CLOSE),
     })
 
     if not figures:
@@ -700,9 +706,9 @@ def build_review_user_blocks(study_id, paper_text, figures,
     blocks.append({
         "type": "text",
         "text": (
-            "--- ASSEMBLED EXTRACTION OUTPUT (to review) ---\n"
+            framing.REVIEW_OUTPUT_OPEN + "\n"
             + extraction_record_text
-            + "\n--- END EXTRACTION OUTPUT ---\n\n"
+            + "\n" + framing.REVIEW_OUTPUT_CLOSE + "\n\n"
             "If the extraction output is correct, call `mark_complete`. "
             "If it needs revisions, call `update_study` "
             "/ `update_record` / `add_record` / "

@@ -1354,14 +1354,37 @@ def _cmd_transcript(args):
 # ---------------------------------------------------------------------------
 
 def _cmd_validate_bundle(args):
+    """Report every problem with each bundle: the format's, then this
+    consumer's.
+
+    The format's verdict comes first and in full, because a directory that is
+    not a bundle cannot be read far enough to ask anything else of it. Where
+    it is one, the two checks meltiro adds run too — a pair of labels that
+    collapse under the normalisation a citation is resolved by, and text that
+    spells a delimiter this engine writes — because an operator holding a
+    bundle wants both answers here rather than one here and one at the start
+    of a run.
+
+    Each is labelled with where it comes from. A problem the format reports is
+    a problem for every consumer; a problem reported here is this pipeline
+    refusing to run a directory another tool may accept.
+    """
     any_invalid = False
     for path in args.bundle:
-        problems = validate_bundle(path)
+        problems = [("format", problem) for problem in validate_bundle(path)]
+        if not problems:
+            # `load_bundle` is what refuses, so it is what is asked: a check
+            # run here beside it could answer differently from the one a run
+            # will hit.
+            try:
+                load_bundle(path)
+            except BundleError as exc:
+                problems = [("meltiro", problem) for problem in exc.problems]
         if problems:
             any_invalid = True
             print(f"INVALID: {path}")
-            for problem in problems:
-                print(f"  - {problem}")
+            for source, problem in problems:
+                print(f"  - [{source}] {problem}")
         else:
             print(f"OK: {path}")
     return 1 if any_invalid else 0
