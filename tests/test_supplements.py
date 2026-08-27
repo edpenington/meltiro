@@ -35,11 +35,13 @@ from meltiro.config_bundle import load_config_bundle
 from meltiro.fingerprint import bundle_fingerprint
 from meltiro.prompt_partials import stage_predicates
 from meltiro.prompt_builder import (
+    NO_SUPPLEMENT_CONTENT_NOTICE,
     NO_SUPPLEMENT_TEXT_NOTICE,
     build_initial_user_blocks,
     build_review_system_message,
     build_review_user_blocks,
     build_system_message,
+    supplement_blocks,
     supplement_close,
     supplement_open,
 )
@@ -193,14 +195,6 @@ class TestItReachesTheMessageAsItsOwnDocument:
         joined = _joined(blocks)
         assert joined.index(supplement_close("supplement_a")) < joined.index(
             "--- ASSEMBLED EXTRACTION OUTPUT (to review) ---")
-
-    def test_a_supplement_with_no_prose_says_so(self, supplemented):
-        section = {"name": "supplement_a", "title": "S A", "text": None,
-                   "figures": []}
-        blocks = build_initial_user_blocks(
-            supplemented.study_id, supplemented.text, [("table_01", b"png")],
-            {}, {}, {}, [section])
-        assert NO_SUPPLEMENT_TEXT_NOTICE in _joined(blocks)
 
     def test_the_recorded_prompt_matches_the_message(self, supplemented, sections, rendered_user_message):
         sent = build_initial_user_blocks(
@@ -764,3 +758,37 @@ class TestABundleThisPipelineCannotRun:
         assert excinfo.value.code == 1
         assert "[meltiro]" in out
         assert "--- PAPER TEXT ---" in out
+
+
+class TestASectionSaysWhatItHolds:
+    """The notice in place of a supplement's prose is true of that supplement.
+
+    A supplement with no prose and no exhibits is a valid bundle: the format
+    lets a declaration assert an empty exhibit list, and lets a supplement
+    print no prose. Its section used to say "its exhibits follow" and then
+    close, which is the one thing a role cannot check for itself.
+    """
+
+    def test_a_supplement_with_prose_carries_it_delimited(self, supplemented):
+        supplement = next(iter(supplemented.supplements.values()))
+        blocks = supplement_blocks(
+            {"name": supplement.name, "title": supplement.title,
+             "text": supplement.text,
+             "figures": [("supplement_a_table_01", b"png")]})
+        joined = _joined(blocks)
+        assert NO_SUPPLEMENT_TEXT_NOTICE not in joined
+        assert supplement.text.strip() in joined
+
+    def test_no_prose_but_exhibits_says_they_follow(self):
+        blocks = supplement_blocks(
+            {"name": "supplement_b", "title": "Supplement B. Data tables",
+             "text": None, "figures": [("supplement_b_table_01", b"png")]})
+        assert NO_SUPPLEMENT_TEXT_NOTICE in _joined(blocks)
+
+    def test_no_prose_and_no_exhibits_says_that_instead(self):
+        blocks = supplement_blocks(
+            {"name": "supplement_b", "title": "Supplement B. The protocol",
+             "text": None, "figures": []})
+        joined = _joined(blocks)
+        assert NO_SUPPLEMENT_CONTENT_NOTICE in joined
+        assert NO_SUPPLEMENT_TEXT_NOTICE not in joined

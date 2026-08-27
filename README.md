@@ -18,7 +18,8 @@ every extracted field.
 
 **It takes** a *config bundle* (extraction template, prompts, reference lists,
 pipeline settings) and a *paper bundle* (clean full text, cropped tables and
-figures, a manifest), and **returns** a validated extraction in which every
+figures and their content as text, any supplementary material, a manifest),
+and **returns** a validated extraction in which every
 field carries its evidence (if applicable), plus a deterministic record of how
 the run went. The extraction output can contain both study-level fields (e.g.
 authors, aim, conclusion) and a specified record type which may be extracted more
@@ -57,11 +58,11 @@ exhibit the paper bundle supplies. Three cases sit outside that guarantee:
   bundle declared and supplied. **Nothing reads the image.** A crop that clips
   its header row, or catches the wrong table, satisfies `evidence: required`
   for any value whatever. Whether the exhibit supports the extracted value
-  is only judged by the checker LLM. That holds unchanged where the bundle
-  supplies the exhibit's content as text: the transcription is shown to every
-  role that is shown the crop, and it makes a cell legible without changing
-  what the citation is checked for. A value read from a table is a value
-  no deterministic check has verified.
+  is only judged by the checker LLM. Where the bundle supplies the exhibit's
+  content as text, the transcription is shown to every role beside the crop
+  and makes a cell legible, and the citation is still checked for nothing but
+  the label. A value read from a table is a value no deterministic check has
+  verified.
 
 The two self-assessment blocks, `initial_check` and `quality_check`, are the
 roles' reports on how the run went rather than claims about the paper, so they
@@ -107,7 +108,7 @@ folds into the fingerprints.
 ```mermaid
 flowchart TD
     CB["<b>Config bundle</b><br/>template (including reference lists), prompts, pipeline.yaml"]
-    PB["<b>Paper bundle</b><br/>text plus cropped figures and tables"]
+    PB["<b>Paper bundle</b><br/>text, cropped exhibits,<br/>supplements"]
 
     subgraph APP["meltiro"]
         direction TB
@@ -184,15 +185,17 @@ without spending anything:
 ```
 
 A dry run makes no API call, needs no key, and creates no session. It loads and
-validates both bundles and prints both halves of the conversation each role
-would be opened with: the system message, and the user message itself — the
-paper's whole text, every supplement in its own delimited section, and each
-exhibit under the label a role must cite with its footnote and its content as
-text where the bundle carries them. Each is projected from the message the run
-would send, so only the crops' bytes are absent, and each is named where it
-attaches. The reviewer's carries all of that too; the assembled extraction
-output is the one part of it that does not exist until a run has produced one,
-and the preview says so where it will sit.
+validates both bundles and prints both halves of the conversation the
+extractor and the reviewer would each be opened with: the system message, and
+the user message itself — the paper's whole text, every supplement in its own
+delimited section, and each exhibit under the label a role must cite with its
+footnote and its content as text where the bundle carries them. Each is
+projected from the message the run would send, so only the crops' bytes are
+absent, and each is named where it attaches. The reviewer's carries all of
+that too; the assembled extraction output is the one part of it that does not
+exist until a run has produced one, and the preview says so where it will sit.
+The Checker's half is per field rather than per run, so what the report shows
+for it is the scaffold and one specimen, below.
 
 Beside them the report prints the tool catalogue, the exhibits attached, and
 the fingerprints: the run's own axes and the paper's, so whether a crop, a
@@ -297,7 +300,7 @@ paper-bundle/
 │   └── table_01.html
 ├── supplements.json   # optional: what supplementary material is carried
 └── supplements/       # optional: one directory per supplement
-    └── supplement_a/  #   shaped like the bundle around it
+    └── supplement_a/  #   text.md, figures/, tables/ — no manifest of its own
 ```
 
 **The format belongs to [alteksto](https://github.com/edpenington/alteksto),
@@ -327,15 +330,17 @@ What the format leaves to you, this pipeline then leans on:
   Nor can any check know the paper contains a table nobody cropped — that
   question goes to the Extractor, which reads the paper.
 - `tables/<label>.html` is that exhibit's content as text, and it arrives in
-  the message beside the crop, verbatim. `text.md` carries no table content —
-  only a marker where the exhibit sits — so without it every cell of every
-  table has to be read off pixels. It is passed through as the bundle wrote
-  it rather than reflowed: a pipe table cannot express a header that spans
-  columns or a stub that spans rows, and those are what say which column a
-  number belongs to. It changes no citation. The crop is still what the
-  exhibit is, so a fact read from either is `<img>label</img>`, and a cell is
-  never a verbatim quote. An exhibit with no file here is the ordinary case
-  and says only that the crop is the content.
+  the message beside the crop as the bundle wrote it, less the surrounding
+  whitespace of the file. It is the crop's cells made readable: a table's
+  numbers are otherwise resolved off pixels, since the format asks `text.md`
+  for the paper's prose and puts an exhibit's content here. The markup goes
+  through unrendered because it is what carries the structure — a header that
+  spans columns, a stub that spans rows — and those are what say which column
+  a number belongs to. It changes no citation. The crop is still what the
+  exhibit is, so a fact read from either is `<img>label</img>`, and a table
+  cell is not a quote of the paper: a `<q>` resolves against `text.md` alone.
+  An exhibit with no file here is the ordinary case and says only that the
+  crop is the content.
 - Supplementary material is carried as its own document and reaches a run
   that way. Each supplement arrives after the paper in a delimited section of
   its own, carrying the title the paper prints for it, its prose, and its own
@@ -655,22 +660,27 @@ own instead, recorded with the run and folded into nothing:
   recorded fact rather than an absent one.
 - `manifest_fp` — the manifest's content: id, title, doi, summary and the
   exhibit declarations, canonicalised, so a reformat moves nothing.
-- `tables_fp` — the table transcriptions, as sorted (label, content-hash)
-  pairs, on the same terms as the crops: a paper transcribing nothing hashes
-  the same fixed token, so "no transcriptions" is a recorded fact too.
-- `supplements_fp` — the supplementary material: each supplement's name,
-  printed title, prose and assets. Separate from the axes above so that a
-  consumer identifying a paper by the article's own bytes is untouched when a
+- `tables_fp` — the ARTICLE's table transcriptions, as sorted (label,
+  content-hash) pairs, on the same terms as the crops, and hashed as the text
+  a role is shown rather than as the file's bytes. A paper transcribing
+  nothing hashes the same fixed token, so "no transcriptions" is a recorded
+  fact too.
+- `supplements_fp` — the supplementary material, and all of it: each
+  supplement's name, printed title, prose, exhibit captions and footnotes,
+  crops and transcriptions. Separate from the axes above so that a consumer
+  identifying a paper by the article's own bytes is untouched when a
   supplement lands, while one reading the whole bundle sees it.
 - `bundle_fp` — the five above, folded into one.
 
 Each part moves only for its own input. Edit a line of `text.md` and `text_fp`
 and `bundle_fp` move. Swap a crop for a better one and `figures_fp` and
-`bundle_fp` move. Re-transcribe a cell and `tables_fp` and `bundle_fp` move. Add a supplement
-and `supplements_fp` and `bundle_fp` move, and nothing else does.
-Change the manifest's summary and `manifest_fp` and `bundle_fp` move. So
-`run_fp` says what was asked and `bundle_fp` says what it was asked of, and
-either can be compared while the other varies.
+`bundle_fp` move. Re-transcribe one of the article's cells and `tables_fp` and
+`bundle_fp` move. Change the manifest's summary and `manifest_fp` and
+`bundle_fp` move. Touch anything inside a supplement — its prose, a caption, a
+crop, one of its transcriptions, its name — and `supplements_fp` and
+`bundle_fp` move, and no article axis does. So `run_fp` says what was asked
+and `bundle_fp` says what it was asked of, and either can be compared while
+the other varies.
 
 *meltiro*'s own prose — the engine prompts each role opens with, the framing the
 engine writes around your prompts, and every tool result and validation error it

@@ -1417,3 +1417,38 @@ class TestStrictInputs:
         assert exit_info.value.code == 1
         assert not out.exists()
         assert "no such session directory" in capsys.readouterr().err
+
+
+class TestTheTranscriptNamesThePaper:
+    """The document says what the run was asked, and now what it was asked OF.
+
+    Its fingerprint section rests on "the same stage fingerprint plus the same
+    INPUT means the same question", and printed no part of the input: a reader
+    holding two transcripts could compare everything the run chose and nothing
+    the paper supplied. The axes are also what a refused resume names, so a
+    reader chasing one had nowhere to look it up.
+    """
+
+    def test_every_paper_axis_is_rendered_with_its_value(self, session):
+        document = (session.session.session_dir /
+                    "diagnostics" / "transcript.md").read_text()
+        meta = session.session.meta
+        for axis in ("bundle_fp", "text_fp", "figures_fp", "manifest_fp",
+                     "tables_fp", "supplements_fp"):
+            assert f"`{axis}`" in document, axis
+            assert meta[axis] in document, axis
+
+    def test_a_session_missing_an_axis_says_so_rather_than_blank(
+            self, session):
+        # A session recorded before an axis existed renders without it, and
+        # the row says which — the same distinction the resume gate draws
+        # between an axis that moved and one that was never written.
+        from meltiro.transcript import render_transcript
+
+        meta = dict(session.session.meta)
+        meta.pop("supplements_fp")
+        (session.session.session_dir / "diagnostics" / "run.json").write_text(
+            json.dumps(meta), encoding="utf-8")
+        document = render_transcript(session.session.session_dir)
+        assert "`supplements_fp`" in document
+        assert "*(not recorded)*" in document

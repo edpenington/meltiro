@@ -73,13 +73,16 @@ from meltiro.statuses import TERMINAL_STATUSES
 
 # The paper's own axes, as `capture_bundle_fingerprint` records them and
 # `Session.resume` re-reads them. The composite `bundle_fp` is deliberately not
-# among them: it is a digest OF these four, so comparing it would refuse a
+# among them: it is a digest OF these five, so comparing it would refuse a
 # changed paper without being able to say which part of it changed, and
 # comparing both would report the same drift twice.
 #
-# `tables_fp` is an axis for the reason the others are: a transcription is
-# shown to the model, so re-transcribing a cell between a pause and a resume
-# changes what the run was reading as surely as re-cropping the exhibit does.
+# `tables_fp` and `supplements_fp` are axes for the reason the others are:
+# both are shown to the model, so re-transcribing a cell or editing a
+# supplement's prose between a pause and a resume changes what the run was
+# reading as surely as re-cropping an exhibit does. A supplement is a document
+# the run quotes from in its `notes` and cites exhibits out of, so it is on
+# this list for the same reason `text_fp` is.
 BUNDLE_AXES = ("text_fp", "figures_fp", "manifest_fp", "tables_fp",
                "supplements_fp")
 
@@ -644,7 +647,7 @@ class Session:
         under new inputs.
 
         `expected_bundle` is the `PaperBundle` this resume was handed, and it
-        is checked against the three axes `capture_bundle_fingerprint` recorded
+        is checked against the five axes `capture_bundle_fingerprint` recorded
         at session start, through the same `bundle_fingerprint` recipe. The
         stage fingerprints cannot stand in for it: the paper is folded into
         none of them by design (the config axes say what was asked, the bundle

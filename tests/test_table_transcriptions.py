@@ -372,7 +372,8 @@ class TestEveryRoleShownOneIsBriefedOnIt:
 
     @pytest.mark.parametrize("role", ["extractor", "reviewer"])
     def test_the_briefing_keeps_a_cell_out_of_a_quote(self, briefings, role):
-        assert "a cell is never a verbatim quote" in briefings[role], (
+        assert "a cell is not a verbatim quote of the paper" in briefings[
+                role], (
             f"the {role} writes evidence and is shown a table's content as "
             "text, so it has to be told the content is not quotable")
 

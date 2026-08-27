@@ -861,6 +861,24 @@ class _Renderer:
             ("`prompt_hash`", _code_cell(meta.get("prompt_hash"))),
             ("`tool_set_hash`", _code_cell(meta.get("tool_set_hash"))),
         ]))
+        # The other half of "the same fingerprint plus the same INPUT". The
+        # sentence above rests on the paper, and a reader could not see it
+        # here: these are what say which paper, and which part of it moved
+        # when a resume is refused. `bundle_fp` is the digest of the five
+        # beside it, printed first because it is what a consumer keys on.
+        self._p()
+        self._p(
+            "And the paper the run was asked of. `bundle_fp` folds the five "
+            "axes under it; each of those moves only for its own part of the "
+            "bundle, which is what lets a refused resume name one file."
+        )
+        self._p()
+        self._block(_kv_table(["Paper axis", "Value"], [
+            (f"`{axis}`", _code_cell(meta.get(axis))
+             if meta.get(axis) else "*(not recorded)*")
+            for axis in ("bundle_fp", "text_fp", "figures_fp", "manifest_fp",
+                         "tables_fp", "supplements_fp")
+        ]))
 
     def _render_structure(self):
         meta = self.s.meta

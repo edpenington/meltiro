@@ -197,8 +197,15 @@ SUPPLEMENT_TEXT_CLOSE = framing.SUPPLEMENT_TEXT_CLOSE
 # supplement that is a run of data tables prints none, and the format lets it
 # say so by carrying no text.md; stating it keeps the section's shape the same
 # either way, on the terms `NO_EXHIBITS_NOTICE` is stated on.
+#
+# Two of them, because "its exhibits follow" has to be true. A supplement with
+# no prose AND no exhibits is a valid bundle — the declaration may assert an
+# empty exhibit list — and its section would otherwise promise attachments and
+# then close.
 NO_SUPPLEMENT_TEXT_NOTICE = (
     "(this supplement prints no prose; its exhibits follow)")
+NO_SUPPLEMENT_CONTENT_NOTICE = (
+    "(this supplement prints no prose and supplies no exhibits)")
 
 
 def supplement_blocks(supplement, captions=None, notes=None, tables=None):
@@ -221,8 +228,11 @@ def supplement_blocks(supplement, captions=None, notes=None, tables=None):
             "text": (SUPPLEMENT_TEXT_OPEN + "\n" + text + "\n"
                      + SUPPLEMENT_TEXT_CLOSE),
         })
-    else:
+    elif supplement.get("figures"):
         blocks.append({"type": "text", "text": NO_SUPPLEMENT_TEXT_NOTICE})
+    else:
+        blocks.append({"type": "text",
+                       "text": NO_SUPPLEMENT_CONTENT_NOTICE})
 
     for label, png_bytes in supplement.get("figures") or []:
         blocks.append({"type": "text",
