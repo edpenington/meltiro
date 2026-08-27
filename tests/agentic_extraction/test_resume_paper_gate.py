@@ -26,6 +26,7 @@ from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
 from meltiro.errors import ResumeRefused
 from meltiro.orchestrator import Orchestrator
+from meltiro.session import Session
 
 pytestmark = pytest.mark.usefixtures("stage_keys")
 
@@ -125,3 +126,64 @@ def test_the_paper_gate_is_not_the_config_gate(config_dir, paper, tmp_path):
 
     after = _orch(config_dir, paper, out)._build_fingerprints()
     assert before == after
+
+
+class TestAnAxisTheSessionNeverRecorded:
+    """A session started before an axis existed cannot answer for it, and the
+    refusal says so.
+
+    This is what an upgrade actually looks like: the axes a run records grow,
+    and a session paused under the previous engine has no value for the new
+    ones. Read as a mismatch, that reports a paper that changed and prescribes
+    a fix that cannot work — no bundle hashes to a missing value, so the
+    operator re-points `--paper` at the original directory and gets the same
+    refusal, with nothing naming the real boundary.
+    """
+
+    def _paused_without(self, config_dir, paper, out, axes):
+        import json
+
+        session_dir = _paused(config_dir, paper, out)
+        meta_path = Session.meta_path_for(session_dir)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        for axis in axes:
+            meta.pop(axis, None)
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        return session_dir
+
+    @pytest.mark.parametrize("axes", [
+        ["tables_fp"], ["supplements_fp"], ["tables_fp", "supplements_fp"]])
+    def test_it_is_named_as_unsettled_rather_than_moved(
+            self, config_dir, paper, tmp_path, axes):
+        out = tmp_path / "runs"
+        session_dir = self._paused_without(config_dir, paper, out, axes)
+
+        orch = _orch(config_dir, paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        # The paper did not change, and the message does not say it did.
+        assert "the paper bundle changed" not in message
+        assert "records no" in message
+        for axis in axes:
+            assert axis in message
+        # Nor does it prescribe the fix that cannot work.
+        assert "Point --paper at the original bundle" not in message
+
+    def test_a_paper_that_really_moved_is_still_reported_as_moved(
+            self, config_dir, paper, tmp_path):
+        # The control: an absent axis does not mask a real change to an axis
+        # the session DID record.
+        out = tmp_path / "runs"
+        session_dir = self._paused_without(
+            config_dir, paper, out, ["supplements_fp"])
+        text = paper / "text.md"
+        text.write_text(text.read_text(encoding="utf-8") + "\n\nAdded.\n",
+                        encoding="utf-8")
+
+        orch = _orch(config_dir, paper, out)
+        with pytest.raises(ResumeRefused) as caught:
+            orch.resume_session(session_dir)
+        message = str(caught.value)
+        assert "the paper bundle changed" in message
+        assert "text_fp" in message

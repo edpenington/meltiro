@@ -1,0 +1,24 @@
+# The two sister packages, pinned to the releases meltiro is developed and
+# tested against.
+#
+# Neither is on PyPI, so nothing installs them by resolution: they have to be
+# named. This file is that naming, and it is a requirements file rather than a
+# constraints file for the same reason — a constraints file bounds what is
+# already being installed and never causes an install.
+#
+# The pin is EXACT and the pyproject floor is not, because they answer
+# different questions. `alteksto>=0.3.0` in pyproject.toml is what a consumer
+# installing meltiro must have; this file is what a green test run was green
+# against. A floor alone leaves both CI and a developer tracking whichever
+# commit a sister's default branch happens to hold, so a run describes that
+# repo's morning rather than the commit under test.
+#
+# alteksto owns the paper bundle format and validates a manifest against
+# EXACTLY the schema version its release declares, so moving this pin is a
+# format upgrade: the fixtures under tests/fixtures/ are built to the pinned
+# release's schema, and any bump belongs in the same commit as their rebuild.
+# tests/test_dependency_floors.py asserts the installed distribution matches
+# this pin, so a local checkout installed over it fails loudly rather than
+# silently changing what is tested.
+alteksto @ git+https://github.com/edpenington/alteksto@v0.3.0
+direktoro @ git+https://github.com/edpenington/direktoro@v0.4.3

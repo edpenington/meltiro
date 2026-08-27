@@ -302,6 +302,18 @@ def load_bundle(path):
     return bundle
 
 
+def read_transcription(path):
+    """An exhibit's content as text, as a role is shown it.
+
+    Stripped, because the surrounding whitespace of a file is not part of a
+    table and no role can observe it. One reader, so the string a message
+    carries and the string `tables_fp` digests are the same string: hashing
+    the file's raw bytes instead would move the paper's identity, and refuse a
+    resume, for a change no role could see.
+    """
+    return Path(path).read_text(encoding="utf-8").strip()
+
+
 def normalise_label(label):
     """The key every consumer here looks an exhibit up by.
 

@@ -41,6 +41,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from meltiro.bundle import read_transcription
+
 
 def _sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -558,13 +560,14 @@ def bundle_fingerprint(bundle):
     figures_fp = "figures_fp:" + _sha256(
         canonical_json(pairs) if pairs else ABSENT_STAGE)
 
-    # The transcriptions, by the same recipe. `figure_hashes` keys on the
-    # file's stem, which is the label for a transcription exactly as it is for
-    # a crop, so the two directories are read by one function rather than by
-    # two that could come to disagree about what a label is.
-    table_digests = figure_hashes(bundle.tables.values())
-    table_pairs = sorted(
-        (label, table_digests[label]["sha256"]) for label in table_digests)
+    # The transcriptions, on `figures_fp`'s terms with one difference: a
+    # transcription is digested as the TEXT a role is shown, through the
+    # reader the message is built with, where a crop is digested as its bytes.
+    # A crop's bytes are the crop; a transcription's file has surrounding
+    # whitespace that no role can observe, so hashing it would move the
+    # paper's identity — and refuse a resume — for a change to something
+    # nobody read.
+    table_pairs = _transcription_digests(bundle.tables)
     tables_fp = "tables_fp:" + _sha256(
         canonical_json(table_pairs) if table_pairs else ABSENT_STAGE)
 
@@ -621,7 +624,7 @@ def _supplement_payload(bundle):
             "exhibits": sorted(supplement.exhibits.items()),
             "exhibit_notes": sorted(supplement.exhibit_notes.items()),
             "figures": _label_digests(supplement.figures),
-            "tables": _label_digests(supplement.tables),
+            "tables": _transcription_digests(supplement.tables),
         })
     return entries
 
@@ -630,3 +633,11 @@ def _label_digests(paths):
     """Sorted `(label, sha256)` pairs for one map of label -> path."""
     digests = figure_hashes(paths.values())
     return sorted((label, digests[label]["sha256"]) for label in digests)
+
+
+def _transcription_digests(paths):
+    """Sorted `(label, sha256-of-the-text)` pairs for one map of
+    label -> transcription path."""
+    return sorted(
+        (label, _sha256(read_transcription(path)))
+        for label, path in paths.items())

@@ -51,6 +51,8 @@ import tomllib
 from importlib import metadata
 from pathlib import Path
 
+import importlib
+
 import pytest
 
 
@@ -213,21 +215,96 @@ def test_meltiro_declares_neither_sdk():
             f"with it; direktoro owns that floor")
 
 
+SISTER_PINS = REPO_ROOT / "requirements" / "sisters.txt"
+
+
+def _pinned_sisters():
+    """`{name: version}` from the pin file, which names an exact tag each.
+
+    The file is the development environment's answer to "which release", where
+    pyproject's floor is the consumer's answer to "at least which release".
+    """
+    assert SISTER_PINS.is_file(), (
+        f"{SISTER_PINS} is missing, so what this tree was tested against "
+        f"cannot be read")
+    pins = {}
+    for line in SISTER_PINS.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, _, ref = line.partition("@")
+        pins[name.strip()] = ref.rsplit("@", 1)[1].strip().lstrip("v")
+    return pins
+
+
+def _installed_version(package):
+    """What pip actually resolved, from the distribution's own metadata.
+
+    NOT the module's `__version__`. An editable install keeps the metadata it
+    was built with, so a checkout that moves under one reports a version it no
+    longer holds — this machine held `alteksto` dist-info at 0.2.0 while the
+    module said 0.5.0, below meltiro's own floor, with every check passing.
+    """
+    import importlib.metadata as metadata
+
+    return metadata.version(package)
+
+
+@pytest.mark.parametrize("package", ["alteksto", "direktoro"])
+def test_the_installed_sister_is_the_pinned_release(package):
+    # What a green suite was green against. A sister resolved from a local
+    # checkout or from a default branch's tip is not this release, and the
+    # difference is not cosmetic: alteksto validates a manifest against
+    # exactly its own schema version, so its tip moving refuses every fixture
+    # here.
+    installed = _installed_version(package)
+    pinned = _pinned_sisters()[package]
+    assert installed == pinned, (
+        f"{package} {installed} is installed but {SISTER_PINS.name} pins "
+        f"{pinned}. Install the pin — `pip install -r "
+        f"requirements/sisters.txt` — or move the pin deliberately, with the "
+        f"fixtures it affects in the same commit.")
+
+
+@pytest.mark.parametrize("package", ["alteksto", "direktoro"])
+def test_a_sisters_metadata_agrees_with_its_module(package):
+    # The two disagree exactly when a checkout has moved under an editable
+    # install, which is the state that hides everything else here.
+    module = importlib.import_module(package)
+    assert module.__version__ == _installed_version(package), (
+        f"{package} reports __version__ {module.__version__} while its "
+        f"installed distribution says {_installed_version(package)}: the "
+        f"install is a checkout that has moved since it was made. Reinstall "
+        f"it so what is imported and what is recorded are one version.")
+
+
 def test_installed_alteksto_satisfies_the_declared_floor():
     # The package that owns the paper bundle format. Its floor buys two
     # things: `figure_files`, which `load_bundle` calls to enumerate the
     # crops, and the packaging split that lets this dependency weigh what the
     # format contract weighs. Below the floor the call is missing outright,
-    # which is why it is checked against the version actually resolved rather
-    # than assumed from the declaration.
-    import alteksto
+    # which is why it is checked against what pip RESOLVED — the
+    # distribution's metadata — rather than against the module attribute,
+    # which an install that has drifted still reports happily.
     from alteksto.bundle import figure_files, validate_bundle  # noqa: F401
 
     floor = _declared_floor(
         _meltiro_requirements(), "alteksto", "meltiro's pyproject.toml")
-    assert _version_tuple(alteksto.__version__) >= _version_tuple(floor), (
-        f"alteksto {alteksto.__version__} is below meltiro's declared floor "
+    installed = _installed_version("alteksto")
+    assert _version_tuple(installed) >= _version_tuple(floor), (
+        f"alteksto {installed} is below meltiro's declared floor "
         f"of {floor}; the enumeration `load_bundle` calls is not there")
+
+
+def test_the_declared_floor_admits_the_pin():
+    # The two answers have to be compatible: a floor above the pin would
+    # declare a release this tree has never run against.
+    floor = _declared_floor(
+        _meltiro_requirements(), "alteksto", "meltiro's pyproject.toml")
+    assert _version_tuple(_pinned_sisters()["alteksto"]) >= \
+        _version_tuple(floor), (
+        f"requirements/sisters.txt pins alteksto below meltiro's own floor "
+        f"of {floor}")
 
 
 def test_the_fixture_bundles_declare_the_resolved_formats_version():

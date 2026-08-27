@@ -30,7 +30,7 @@ import shutil
 import pytest
 from alteksto.bundle import validate_bundle
 
-from meltiro.bundle import load_bundle
+from meltiro.bundle import load_bundle, read_transcription
 from meltiro.checker_prompts import (
     build_checker_system_text,
     build_checker_user_message,
@@ -375,3 +375,61 @@ class TestEveryRoleShownOneIsBriefedOnIt:
         assert "a cell is never a verbatim quote" in briefings[role], (
             f"the {role} writes evidence and is shown a table's content as "
             "text, so it has to be told the content is not quotable")
+
+
+class TestTheHashCoversWhatTheRoleReads:
+    """`tables_fp` digests the transcription as a role is shown it.
+
+    A crop's bytes ARE the crop, so `figures_fp` hashes the file. A
+    transcription's file has surrounding whitespace that no message carries
+    and no role can observe, so hashing the file would move the paper's
+    identity — and refuse a resume — for a change to something nobody read,
+    while two bundles a role cannot tell apart would carry different numbers.
+    """
+
+    def test_whitespace_around_the_markup_moves_nothing(
+            self, bundle_transcribed_dir, tmp_path):
+        dst = tmp_path / "padded"
+        shutil.copytree(bundle_transcribed_dir, dst)
+        path = dst / "tables" / "table_01.html"
+        path.write_text("\n\n" + path.read_text(encoding="utf-8") + "\n   \n",
+                        encoding="utf-8")
+
+        assert validate_bundle(dst) == []
+        before = bundle_fingerprint(load_bundle(bundle_transcribed_dir))
+        after = bundle_fingerprint(load_bundle(dst))
+        assert after["tables_fp"] == before["tables_fp"]
+        assert after["bundle_fp"] == before["bundle_fp"]
+
+    def test_a_cell_edited_inside_the_markup_still_moves_it(
+            self, bundle_transcribed_dir, tmp_path):
+        # The control: the reader strips, it does not normalise.
+        dst = tmp_path / "edited"
+        shutil.copytree(bundle_transcribed_dir, dst)
+        path = dst / "tables" / "table_01.html"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("<td>", "<td> ", 1),
+            encoding="utf-8")
+        assert bundle_fingerprint(load_bundle(dst))["tables_fp"] != \
+            bundle_fingerprint(load_bundle(bundle_transcribed_dir))["tables_fp"]
+
+    def test_the_digest_is_over_the_string_the_message_carries(
+            self, bundle_transcribed_dir):
+        # Stated directly, so the two cannot drift apart through their
+        # separate call sites.
+        import hashlib
+
+        bundle = load_bundle(bundle_transcribed_dir)
+        text = read_transcription(bundle.tables["table_01"])
+        expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        blocks = build_initial_user_blocks(
+            bundle.study_id, bundle.text, [("table_01", b"png")],
+            bundle.exhibits, bundle.exhibit_notes, {"table_01": text})
+        # The message carries that string, and the pair the axis is built
+        # from carries its digest — the two ends of the same reading.
+        from meltiro.fingerprint import _transcription_digests
+
+        assert any(text in b["text"] for b in blocks
+                   if b.get("type") == "text")
+        assert _transcription_digests(bundle.tables) == [
+            ("table_01", expected)]

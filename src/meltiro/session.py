@@ -715,8 +715,18 @@ class Session:
                 )
         if expected_bundle is not None:
             current = bundle_fingerprint(expected_bundle)
+            # An axis the session never recorded is UNDETERMINED, not moved.
+            # A session started before an axis existed has no value to
+            # compare, and reading the absent key as a mismatch would report
+            # a paper that changed and prescribe a fix that cannot work —
+            # no bundle hashes to None, so re-pointing `--paper` at the
+            # original directory returns the same refusal. The engine axis is
+            # read the same way (see `_drift_axis`).
+            unrecorded = [axis for axis in BUNDLE_AXES
+                          if meta.get(axis) is None]
             moved = [axis for axis in BUNDLE_AXES
-                     if meta.get(axis) != current[axis]]
+                     if meta.get(axis) is not None
+                     and meta.get(axis) != current[axis]]
             if moved:
                 detail = "; ".join(
                     f"{axis}: session started with {meta.get(axis)}, the "
@@ -729,6 +739,18 @@ class Session:
                     f"evidence was verified against them. Point --paper at "
                     f"the original bundle, or start a fresh session against "
                     f"the new one."
+                )
+            if unrecorded:
+                named = ", ".join(unrecorded)
+                raise ResumeRefused(
+                    f"this session records no {named}, so whether the paper "
+                    f"is the one it started against cannot be settled: those "
+                    f"axes were not written when it began, and the axes it "
+                    f"does record all match. The paper may be unchanged — "
+                    f"re-pointing --paper at the original bundle will not "
+                    f"clear this, because no bundle hashes to a missing "
+                    f"value. Start a fresh session against the bundle you "
+                    f"mean to extract, under this engine."
                 )
         s = cls(session_dir, meta)
         # A hard kill (power loss) mid-append can leave the last line of the

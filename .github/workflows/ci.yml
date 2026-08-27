@@ -34,20 +34,22 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # Two public sister packages: a plain install each, no deploy key and no
-      # repository secret. alteksto owns the paper bundle format meltiro
-      # reads; direktoro is the provider layer. Neither is on an index, so
-      # both are named by repository and resolve to whatever their default
-      # branch currently holds, which is also what a stranger's install gets.
-      # The floors in pyproject.toml then hold that: a sister package whose
-      # main is below its floor fails the install below rather than testing
-      # green against a version this release cannot use. Once they are on
-      # PyPI this whole step can be deleted: the editable install below
-      # resolves both names on its own.
+      # Two public sister packages, neither on an index, so both have to be
+      # named: alteksto owns the paper bundle format meltiro reads, direktoro
+      # is the provider layer. They are named by TAG, in one file shared with
+      # local development, so a green run here was green against the same two
+      # releases a developer ran against. Naming the repositories alone
+      # resolved each default branch's tip, which made this job's verdict a
+      # statement about those repos' morning rather than about the commit
+      # under test — and alteksto validates a manifest against exactly its
+      # release's schema version, so its tip moving is enough to refuse every
+      # fixture here.
+      #
+      # The floors in pyproject.toml stay floors: they are what a consumer
+      # installing meltiro must have, which is a different question from what
+      # this run was tested against.
       - name: Install the sister packages (alteksto, direktoro)
-        run: |
-          pip install "alteksto @ git+https://github.com/edpenington/alteksto"
-          pip install "direktoro @ git+https://github.com/edpenington/direktoro"
+        run: pip install -r requirements/sisters.txt
 
       - name: Install
         run: pip install -e ".[dev]"
@@ -101,8 +103,8 @@ jobs:
       # and brings nothing with it: its format contract is stdlib-only.
       - run: |
           pip install --no-deps dist/*.whl
-          pip install pyyaml python-dotenv \
-            "alteksto @ git+https://github.com/edpenington/alteksto"
+          pip install pyyaml python-dotenv
+          pip install --no-deps -r requirements/sisters.txt
       - name: Import and use the library with direktoro absent
         run: |
           python - <<'PY'
@@ -167,8 +169,7 @@ jobs:
         # than run off pytest's `pythonpath` alone: a bare `pytest` there fails
         # 4 tests with "No module named 'meltiro'" in the child process.
         run: |
-          pip install "alteksto @ git+https://github.com/edpenington/alteksto"
-          pip install "direktoro @ git+https://github.com/edpenington/direktoro"
+          pip install -r requirements/sisters.txt
           mkdir -p "$RUNNER_TEMP/sdist"
           tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist" --strip-components=1
           pip install "$RUNNER_TEMP/sdist"

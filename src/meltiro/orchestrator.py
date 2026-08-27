@@ -70,7 +70,7 @@ from meltiro.checker_prompts import (
     render_record_identity_context, render_study_identity_context,
     system_message_blocks as checker_sys_blocks,
 )
-from meltiro.bundle import normalise_label
+from meltiro.bundle import normalise_label, read_transcription
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, validate_diagnostics
 from meltiro.errors import AgenticExtractionError, truncation_report
 from meltiro.extraction_record import ROLE_REVIEW
@@ -391,7 +391,7 @@ class Orchestrator:
         # bytes rather than three reads of a directory that could move under
         # them.
         self.image_tables = {
-            label.strip().lower(): path.read_text(encoding="utf-8").strip()
+            normalise_label(label): read_transcription(path)
             for label, path in bundle.all_tables().items()
         }
         # Where each crop IS, on that same key: the map a role's citation is

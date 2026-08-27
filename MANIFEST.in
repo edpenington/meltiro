@@ -9,6 +9,10 @@
 # `[tool.pytest.ini_options]` lets the unpacked sdist import what it ships.
 recursive-include tests *
 include CITATION.cff
+# The sister pins, because the suite above asserts what is installed against
+# them: shipped without it, the sdist's own test run cannot tell whether it
+# resolved the releases this tree was tested against.
+include requirements/sisters.txt
 global-exclude *.py[cod]
 global-exclude .DS_Store
 prune tests/**/__pycache__
