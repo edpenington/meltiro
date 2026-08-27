@@ -70,6 +70,7 @@ from meltiro.checker_prompts import (
     render_record_identity_context, render_study_identity_context,
     system_message_blocks as checker_sys_blocks,
 )
+from meltiro.bundle import normalise_label
 from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, validate_diagnostics
 from meltiro.errors import AgenticExtractionError, truncation_report
 from meltiro.extraction_record import ROLE_REVIEW
@@ -769,7 +770,13 @@ class Orchestrator:
         # never reaches the reviewer. Each is None when its stage is off, and
         # Session.create then writes no file for it.
         tool_definitions = get_tool_definitions(self.template)
-        rendered_user_prompt = self._render_user_prompt_text()
+        # Built ONCE. The conversation starts from these blocks and the record
+        # is their text view, so the message sent and the message recorded are
+        # one object's contents — and the crops are base64-encoded once rather
+        # than encoded twice and thrown away once.
+        self.initial_user_blocks, message_labels = self._extractor_message()
+        rendered_user_prompt = render_message_text(
+            self.initial_user_blocks, message_labels)
         rendered_review_system = self._render_review_system_text() \
             if self.final_review else None
         rendered_checker_system = self._render_checker_system_text() \
@@ -808,7 +815,7 @@ class Orchestrator:
             review_system_prompt=rendered_review_system,
             checker_system_prompt=rendered_checker_system,
             checker_user_scaffold=rendered_checker_scaffold,
-            image_labels=self._attached_exhibits_record(ext_figures),
+            image_labels=self._attached_exhibits_record(message_labels),
             runs_dir=self.out_dir,
             caps={
                 "max_tool_calls": self.max_tool_calls,
@@ -819,37 +826,33 @@ class Orchestrator:
             decoding_specified=self.decoding_specified,
             diagnostics=self.diagnostics,
         )
-        # Loud run-start signals: the figures a text-only model never sees
-        # (pairs with meta.images_omitted), and any decoding value the operator
-        # configured that this run's models never send.
+        # Loud run-start signal: any decoding value the operator configured
+        # that this run's models never send.
         self._warn_inert_decoding_params()
 
         # Extraction record + dispatcher. The dispatcher validates `<img>`
-        # citations against the extractor's effective label set, so a
-        # text-only extractor (empty set) cannot cite an image it never saw.
+        # citations against the label set of every crop the message attached,
+        # article and supplements alike.
         self.extraction_record = self.session.load_extraction_record()
         self.dispatcher = ToolDispatcher(
             self.extraction_record, self.template, self.paper_text,
             ext_image_labels, reference_lists=self.reference_lists,
         )
 
-        # Per-image hashes let the transcript flag re-cropping drift after the
-        # run. A bundle fact, recorded whether or not the figures were sent;
-        # a text-only role's omission is in meta.images_omitted.
-        if self.bundle.figures:
+        # Per-image hashes let the transcript flag re-cropping drift after
+        # the run, so they cover every crop the message attached: a
+        # supplement's crop with no baseline here is a crop whose re-cropping
+        # `supplements_fp` reports in aggregate and nothing attributes to a
+        # label.
+        if self.bundle.all_figures():
             self.session.capture_image_hashes(
-                sorted(self.bundle.figures.values()))
+                sorted(self.bundle.all_figures().values()))
         # The paper's own fingerprint, from the same bundle. Unconditional — a
         # paper with no figures is still a paper the run must name — and in no
         # other fingerprint (see fingerprint.bundle_fingerprint).
         self.session.capture_bundle_fingerprint(self.bundle)
 
-        # Initial conversation: empty messages list; the system + first
-        # user message are added at the extractor turn. A text-only
-        # extractor gets no image blocks (ext_figures is empty). Built by the
-        # one method the capture above was projected from, so the message
-        # sent and the message recorded are the same object's contents.
-        self.initial_user_blocks, _ = self._extractor_message()
+        # The conversation, from the blocks built above.
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
 
@@ -1084,40 +1087,21 @@ class Orchestrator:
         self.system_text = fps["system_text"]
 
         tool_catalogue = self.instrument.tool_catalogue()
-        # The exhibits as the extractor's user message will label them: the
-        # label it must cite, the paper's caption beside it, and the exhibit's
-        # printed footnote under that where the manifest records one.
+        # Every crop the message attaches, as a manifest: the label an `<img>`
+        # citation must name, in the order the message attaches them, each
+        # named by the document it came out of, because a label alone does not
+        # say which. The count is the one number a reader of this report takes
+        # on trust, so it is the message's own figure sequence that is counted.
         #
-        # Built from the extractor's effective FIGURE SEQUENCE and rendered
-        # through the message builders' own helper, on the same terms as the
-        # capture in `_render_user_prompt_text`, so the preview cannot say one
-        # thing and the message another. The normalised label set beside it
-        # would say two: it is lower-cased, so a manifest label carrying a
-        # capital previews a label no message ever sends, and it is sorted on
-        # that lower-cased form; and it is the whole bundle's, so a text-only
-        # extractor would preview crops its message states do not accompany
-        # the study.
-        #
-        # Every crop the message attaches, which is the article's followed by
-        # each supplement's, in the order the sections are built. Previewing
-        # the article's alone would under-count a supplemented study and say
-        # so in a headline count, which is the one number a reader of this
-        # report takes on trust.
-        ext_figures = self.figures
-        ext_supplements = self._supplements_for()
-        attached_exhibits = [image_label_text(label, self.image_captions,
-                                              self.image_notes,
-                                              self.image_tables)
-                             for label, _ in ext_figures]
-        for supplement in ext_supplements:
-            # Named by the supplement it belongs to, because the message puts
-            # it in that supplement's section and a label alone does not say
-            # which document a crop came out of.
-            for label, _ in supplement["figures"]:
-                attached_exhibits.append(
-                    f"({supplement['name']}) "
-                    + image_label_text(label, self.image_captions,
-                                       self.image_notes, self.image_tables))
+        # The manifest and nothing more. The caption, the printed footnote and
+        # the content as text all appear in the USER MESSAGE section above,
+        # verbatim, in the block each belongs to — this block used to render
+        # them a second time, which was a second answer to what an exhibit
+        # arrives with and, once a transcription rode along, the same table
+        # printed twice on one report.
+        attached_exhibits = [
+            self._exhibit_manifest_entry(label, document)
+            for label, document in self._attached_exhibit_sources()]
 
         # The checker and review system prompts render with no API call, so a
         # dry run shows them too. Each is omitted when its stage is off.
@@ -1380,11 +1364,9 @@ class Orchestrator:
         print(user_message)
         print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
         for entry in attached_exhibits:
-            # An entry is one exhibit and may run to two lines, the label and
-            # caption then the footnote under them. Indenting every line of it
-            # keeps the block one exhibit to the eye.
-            for line in entry.splitlines():
-                print(f"  {line}")
+            # One line per exhibit: this is the manifest of what the message
+            # above attaches, and what each arrives with is printed there.
+            print(f"  {entry}")
         print("\n=== TOOL CATALOGUE (canonical JSON) ===\n")
         print(tool_catalogue)
         if checker_system is not None:
@@ -1440,14 +1422,11 @@ class Orchestrator:
                 user_message, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
-            # One exhibit per entry, and an entry starts at column 0: a
-            # manifest may record a footnote of any shape, blank lines
-            # included, so the separator has to be something a footnote cannot
-            # contain rather than something it is merely unlikely to. Every
-            # line after the first is indented, including an empty one.
+            # One line per exhibit, so the file is a list a reader or a
+            # script can take a line at a time. What each exhibit arrives
+            # with is in `user_message.md`, in the block it belongs to.
             (tmp_dir / "attached_exhibits.txt").write_text(
-                "".join(f"{_indent_continuation(entry)}\n"
-                        for entry in attached_exhibits),
+                "".join(f"{entry}\n" for entry in attached_exhibits),
                 encoding="utf-8")
             (tmp_dir / "fingerprints.json").write_text(
                 json.dumps(fingerprints, indent=2, sort_keys=False) + "\n",
@@ -2653,7 +2632,26 @@ class Orchestrator:
                 self.checker_config)
         return self._cached_checker_adapter
 
-    def _attached_exhibits_record(self, figures):
+    def _attached_exhibit_sources(self):
+        """`(label, document)` for every crop the extractor's message
+        attaches, in the order it attaches them.
+
+        `document` is None for the article's and the supplement's name for a
+        supplement's, which is the distinction the message keeps with its
+        sections and a flat list cannot.
+        """
+        sources = [(label, None) for label, _ in self.figures]
+        for supplement in self._supplements_for():
+            sources += [(label, supplement["name"])
+                        for label, _ in supplement["figures"]]
+        return sources
+
+    def _exhibit_manifest_entry(self, label, document):
+        """One line of the preview's exhibit manifest."""
+        where = f"({document}) " if document else ""
+        return f"{where}[{label}]"
+
+    def _attached_exhibits_record(self, labels):
         """The session's record of the exhibits the extractor's message carried.
 
         One entry per attachment, in the order the message attaches them,
@@ -2668,13 +2666,15 @@ class Orchestrator:
         — and, for the footnote, one the reader of a transcript is told apart
         from a session that recorded no footnotes at all.
 
-        Empty for a bundle carrying no crops and for a text-only extractor
-        alike; `meta.images_omitted` is what tells those two apart.
+        `labels` is the message's own figure sequence — the article's
+        followed by each supplement's, in the order they attach — so the
+        record covers every crop the message carried rather than the
+        article's alone. Empty only for a bundle that supplies no crops at
+        all.
         """
         return [{"label": label,
-                 "caption": self.image_captions.get(
-                     str(label).strip().lower()),
-                 "notes": self.image_notes.get(str(label).strip().lower()),
+                 "caption": self.image_captions.get(normalise_label(label)),
+                 "notes": self.image_notes.get(normalise_label(label)),
                  # Whether the exhibit's content rode with it as text. A flag
                  # rather than the markup: the transcription itself is in the
                  # rendered prompt, and repeating it here would put a table in
@@ -2685,9 +2685,8 @@ class Orchestrator:
                  # a cell was read as text or off pixels. `tables_fp` says
                  # WHICH transcriptions the bundle held; this says which of
                  # them the message actually carried.
-                 "transcribed": str(label).strip().lower()
-                 in self.image_tables}
-                for label, _ in figures]
+                 "transcribed": normalise_label(label) in self.image_tables}
+                for label in labels]
 
     def _extractor_message(self):
         """The extractor's opening user message, and the labels it attaches.

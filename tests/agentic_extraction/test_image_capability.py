@@ -493,21 +493,8 @@ def _mixed_case_label_bundle(tmp_path, bundle_minimal_dir):
 
 
 def _preview_entries(text):
-    """The exhibits a dry-run report names, back in the form the message
-    carries them.
-
-    The file's rule is that an entry starts at column 0 and every later line
-    of it is indented, so a footnote of any shape stays inside its exhibit.
-    Reading it back is how a test compares the file against the message
-    without either of them being the other's definition.
-    """
-    entries = []
-    for line in text.split("\n"):
-        if line.startswith("  "):
-            entries[-1] += "\n" + line[2:]
-        elif line:
-            entries.append(line)
-    return entries
+    """The exhibits a dry-run report's manifest names, one per line."""
+    return [line for line in text.split("\n") if line.strip()]
 
 
 class TestTheDryRunPreviewIsTheMessage:
@@ -525,9 +512,17 @@ class TestTheDryRunPreviewIsTheMessage:
         return (tmp_path / "report" / "attached_exhibits.txt").read_text(
             encoding="utf-8")
 
-    def _message_label_blocks(self, orch):
-        return [image_label_text(label, orch.image_captions, orch.image_notes)
-                for label, _ in orch.figures]
+    def _message_labels(self, orch):
+        """The labels the message attaches, spelt as the message spells them —
+        the article's followed by each supplement's."""
+        return [f"[{label}]" for label, _ in orch.figures] + [
+            f"({supplement['name']}) [{label}]"
+            for supplement in orch._supplements_for()
+            for label, _ in supplement["figures"]]
+
+    def _user_message(self, orch, tmp_path):
+        return (tmp_path / "report" / "user_message.md").read_text(
+            encoding="utf-8")
 
     def test_it_spells_a_label_the_way_the_message_does(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
@@ -538,24 +533,26 @@ class TestTheDryRunPreviewIsTheMessage:
         capsys.readouterr()
         assert "[Table_01]" in preview
         assert "[table_01]" not in preview
-        # Entry for entry, the message's own blocks.
-        assert _preview_entries(preview) == self._message_label_blocks(orch)
+        # Entry for entry, the labels the message attaches.
+        assert _preview_entries(preview) == self._message_labels(orch)
 
-    def test_the_printed_preview_indents_an_exhibit_whole(
+    def test_the_printed_manifest_is_one_line_per_exhibit(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        # stdout is read by eye rather than parsed, so what it owes the reader
-        # is that a footnote sits under the exhibit it belongs to instead of
-        # hanging at the margin as if it were one.
+        # The block is a manifest of what the message attaches, so a reader
+        # can count it by eye and a script can take it a line at a time. What
+        # each exhibit arrives with is printed in the message itself, once.
         orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
                      extractor_model="claude-opus-4-7")
         orch.dry_run_report(tmp_path / "report")
         printed = capsys.readouterr().out
         block = printed.split("=== ATTACHED EXHIBITS (1) ===")[1]
-        # To the next section, whatever follows this one.
         block = block.split("\n=== ")[0]
         lines = [ln for ln in block.split("\n") if ln.strip()]
-        assert lines[0].startswith("  [table_01] Table 1.")
-        assert lines[1].startswith("  Footnote: CI, confidence")
+        assert lines == ["  [table_01]"]
+        # And the caption and footnote are in the message, not repeated here.
+        message = self._user_message(orch, tmp_path)
+        assert "[table_01] Table 1." in message
+        assert "Footnote: CI, confidence" in message
 
     def test_a_footnote_of_any_shape_stays_inside_its_exhibit(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
@@ -584,7 +581,11 @@ class TestTheDryRunPreviewIsTheMessage:
                      extractor_model="claude-opus-4-7")
         preview = self._preview(orch, tmp_path)
         capsys.readouterr()
-        entries = _preview_entries(preview)
-        assert len(entries) == 2
-        assert entries == self._message_label_blocks(orch)
-        assert "\n\nUnits withdrawn" in entries[1]
+        # The manifest counts two exhibits whatever shape their footnotes are.
+        assert _preview_entries(preview) == self._message_labels(orch)
+        # And the footnote arrives whole inside its own exhibit's block: the
+        # blank line inside it does not end the block, because the block ends
+        # where the next one begins.
+        message = self._user_message(orch, tmp_path)
+        block = message.split("[table_01]")[1].split("[figure_02]")[0]
+        assert "\n\nUnits withdrawn" in block

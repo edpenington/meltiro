@@ -253,8 +253,13 @@ class TestExtractDryRun:
         expected = ("[table_01] Table 1. Primary and secondary "
                     "associations between baseline CRT-HD total score and "
                     "each outcome")
-        assert expected in (report / "attached_exhibits.txt").read_text(
+        # The caption reaches the preview in the form the message carries it,
+        # inside the message. The exhibits file beside it is the manifest of
+        # what that message attaches, one line per exhibit.
+        assert expected in (report / "user_message.md").read_text(
             encoding="utf-8")
+        assert (report / "attached_exhibits.txt").read_text(
+            encoding="utf-8").splitlines() == ["[table_01]"]
         # ... and neither system prompt names the paper's exhibits at all.
         for name in ("extractor_system.md", "review_system.md"):
             assert "table_01" not in (report / name).read_text(

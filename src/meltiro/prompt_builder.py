@@ -84,13 +84,14 @@ def bundle_root_for_prompt(system_prompt_path):
 def _extractor_header(study_id):
     """The extractor's opening framing line.
 
-    One definition, used by both `build_initial_user_blocks` (what is sent)
-    and `render_user_prompt_text` (what is recorded), so the transcript
-    record cannot drift from the message.
+    One definition, used wherever the extractor's opening message is built,
+    so the transcript record cannot drift from the message.
     """
     return (
-        f"Extract study {study_id}. The full text follows; "
-        "every cropped table and figure for this paper is attached below."
+        f"Extract study {study_id}. The full text follows, and every cropped "
+        "table and figure this study supplies is attached below — the "
+        "article's here, and each supplement's inside its own section. Where "
+        "something is not attached, the message says so in its place."
     )
 
 
@@ -129,13 +130,24 @@ REVIEW_TOOL_REPROMPT = (
 EMPTY_ASSISTANT_PLACEHOLDER = "(the model returned no text or tool call.)"
 
 
-# The text block a role reads in place of the attachments when its figure
-# sequence is empty. Presence of an exhibit is a fact about the MESSAGE, not
-# about the machinery, so the message is where it is stated: a bundle whose
-# manifest declares `exhibits: []` and a text-only role that is sent no image
-# parts both arrive here, and each reads the same statement rather than a
-# system prompt promising an attachment that never follows.
+# The text block a role reads in place of the attachments when the message
+# carries none at all. Presence of an exhibit is a fact about the MESSAGE, not
+# about the machinery, so the message is where it is stated: a role reads what
+# accompanies this study rather than inferring it from a message that simply
+# stops after the paper text. Every role can read a crop — a run whose model
+# cannot is refused at startup — so this now says one thing only: the STUDY
+# supplies none.
 NO_EXHIBITS_NOTICE = "(no cropped figures or tables accompany this study)"
+
+# And where the article prints none but a supplement does. The message
+# attaches crops, so `NO_EXHIBITS_NOTICE` would be false; the article having
+# no exhibits of its own is still a fact a role would otherwise infer from a
+# gap, and it is the one the extractor's own initial check asks about. A paper
+# that ships its data tables as supplementary material is the ordinary case
+# here, not an edge.
+NO_ARTICLE_EXHIBITS_NOTICE = (
+    "(the article prints no cropped figures or tables of its own; the "
+    "supplementary material's follow in their own sections)")
 
 
 # What introduces an exhibit's printed footnote where the manifest records
@@ -503,33 +515,19 @@ def render_message_text(blocks, image_labels):
     return "\n\n".join(parts)
 
 
-def render_user_prompt_text(study_id, paper_text, image_labels,
-                            image_captions=None, image_notes=None,
-                            image_tables=None, supplements=None):
-    """The text-only view of the initial user message.
+def _no_figures_blocks(figures, supplements):
+    """What stands where the article's attachments would be, if anything.
 
-    Built by assembling that message and projecting it, so there is ONE
-    implementation of what the extractor is sent: captions, exhibit
-    footnotes, transcriptions, supplement sections, delimiters and the
-    no-exhibits notice all reach this view because they reach the message,
-    not because they are written out a second time here. It is what a session
-    captures as the canonical "what was the user prompt" record, and what
-    `--dry-run` prints before anything is spent.
-
-    Only the crops' bytes are absent, which is the one thing a written record
-    cannot hold; each is named where it attaches.
-
-    `image_labels` is the labels of the figure sequence that message carries,
-    in the order it carries them. A caller passing a re-sorted or re-cased set
-    would record a prompt naming the same exhibits in a different form from the
-    one that was sent, which is the one thing this function exists to rule out.
+    Three cases, and the message states which one it is rather than leaving a
+    role to read a gap: the study supplies no crops at all, the article
+    supplies none while a supplement does, or the article supplies some and
+    nothing needs saying.
     """
-    figures = [(label, b"") for label in image_labels]
-    blocks = build_initial_user_blocks(
-        study_id, paper_text or "", figures,
-        image_captions, image_notes, image_tables, supplements)
-    return render_message_text(
-        blocks, message_figure_labels(figures, supplements))
+    if figures:
+        return []
+    if any(supplement.get("figures") for supplement in supplements or []):
+        return [{"type": "text", "text": NO_ARTICLE_EXHIBITS_NOTICE}]
+    return [{"type": "text", "text": NO_EXHIBITS_NOTICE}]
 
 
 def build_initial_user_blocks(study_id, paper_text, figures,
@@ -571,8 +569,7 @@ def build_initial_user_blocks(study_id, paper_text, figures,
                  + "\n" + framing.PAPER_TEXT_CLOSE),
     })
 
-    if not figures:
-        blocks.append({"type": "text", "text": NO_EXHIBITS_NOTICE})
+    blocks.extend(_no_figures_blocks(figures, supplements))
 
     for label, png_bytes in figures:
         # Label first so the model can refer to it by name in `source`, and
@@ -679,8 +676,7 @@ def build_review_user_blocks(study_id, paper_text, figures,
                  + "\n" + framing.PAPER_TEXT_CLOSE),
     })
 
-    if not figures:
-        blocks.append({"type": "text", "text": NO_EXHIBITS_NOTICE})
+    blocks.extend(_no_figures_blocks(figures, supplements))
 
     for label, png_bytes in figures:
         blocks.append({"type": "text",

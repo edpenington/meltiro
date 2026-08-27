@@ -40,7 +40,6 @@ from meltiro.prompt_builder import (
     build_review_system_message,
     build_review_user_blocks,
     build_system_message,
-    render_user_prompt_text,
     supplement_close,
     supplement_open,
 )
@@ -203,13 +202,12 @@ class TestItReachesTheMessageAsItsOwnDocument:
             {}, {}, {}, [section])
         assert NO_SUPPLEMENT_TEXT_NOTICE in _joined(blocks)
 
-    def test_the_recorded_prompt_matches_the_message(
-            self, supplemented, sections):
+    def test_the_recorded_prompt_matches_the_message(self, supplemented, sections, rendered_user_message):
         sent = build_initial_user_blocks(
             supplemented.study_id, supplemented.text,
             [("table_01", b"png")], supplemented.all_exhibits(),
             supplemented.all_exhibit_notes(), {}, sections)
-        recorded = render_user_prompt_text(
+        recorded = rendered_user_message(
             supplemented.study_id, supplemented.text, ["table_01"],
             supplemented.all_exhibits(), supplemented.all_exhibit_notes(),
             {}, sections)

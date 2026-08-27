@@ -45,7 +45,6 @@ from meltiro.prompt_builder import (
     build_review_user_blocks,
     build_system_message,
     image_label_text,
-    render_user_prompt_text,
 )
 from meltiro.quote_check import find_quote
 
@@ -155,8 +154,7 @@ class TestItReachesEveryRoleVerbatim:
             "[table_01]")
         assert block.endswith(markup)
 
-    def test_the_recorded_prompt_matches_the_message(
-            self, transcribed, markup):
+    def test_the_recorded_prompt_matches_the_message(self, transcribed, markup, rendered_user_message):
         # The session captures a text-only render of the initial user message.
         # A transcription in one and not the other would make the record a
         # description of a message that was never sent.
@@ -165,7 +163,7 @@ class TestItReachesEveryRoleVerbatim:
             [("table_01", b"png-bytes")],
             transcribed.exhibits, transcribed.exhibit_notes,
             {"table_01": markup})
-        recorded = render_user_prompt_text(
+        recorded = rendered_user_message(
             transcribed.study_id, transcribed.text, ["table_01"],
             transcribed.exhibits, transcribed.exhibit_notes,
             {"table_01": markup})
