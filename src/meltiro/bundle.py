@@ -366,13 +366,32 @@ def consumer_problems(bundle):
                 f"{key!r}, so one exhibit's crop would arrive under the "
                 f"other's caption. Rename one of them.")
 
-    sources = [("text.md", bundle.text)]
+    # A supplement's printed title goes INSIDE a line this engine writes, so
+    # it has to be one line. A title carrying a break becomes two lines, the
+    # second ending in the ` ---` the delimiter's own suffix supplies — a
+    # forgery the title alone never spells and no check of its text could see.
+    for name, supplement in bundle.supplements.items():
+        if not framing.interpolates_text(supplement.title):
+            problems.append(
+                f"supplements.json title for {name!r} spans more than one "
+                f"line. It is printed inside the line that opens the "
+                f"supplement's section, so a break in it moves the boundary "
+                f"the section is read by. Keep the title to one line.")
+
+    # `manifest.json`'s own free text. The title and the summary reach the
+    # checker as the study's identity, and the summary is the one a run falls
+    # back to; both were out of this list while the same string was refused in
+    # `text.md`.
+    sources = [("text.md", bundle.text),
+               ("manifest.json title", bundle.title),
+               ("manifest.json summary", bundle.summary)]
     for label, caption in sorted(bundle.exhibits.items()):
         sources.append((f"manifest.json caption for {label!r}", caption))
     for label, note in sorted(bundle.exhibit_notes.items()):
         sources.append((f"manifest.json notes for {label!r}", note))
     for label, path in sorted(bundle.tables.items()):
-        sources.append((f"tables/{label}.html", _read_text(path)))
+        sources.append((f"tables/{label}.html",
+                        read_transcription(path)))
     for name, supplement in bundle.supplements.items():
         where = f"supplements/{name}"
         sources.append((f"supplements.json title for {name!r}",
@@ -384,17 +403,20 @@ def consumer_problems(bundle):
         for label, note in sorted(supplement.exhibit_notes.items()):
             sources.append((f"supplements.json notes for {label!r}", note))
         for label, path in sorted(supplement.tables.items()):
-            sources.append((f"{where}/tables/{label}.html", _read_text(path)))
+            sources.append((f"{where}/tables/{label}.html",
+                                read_transcription(path)))
 
     for where, text in sources:
-        for line in framing.forged_lines(text):
+        # One problem per SOURCE, naming each distinct line once: a separator
+        # repeated through a long text.md would otherwise bury every other
+        # problem in the raised error under copies of itself.
+        forged = list(dict.fromkeys(framing.forged_lines(text)))
+        if forged:
+            named = ", ".join(repr(line) for line in forged)
             problems.append(
-                f"{where} contains the line {line!r}, which is a delimiter "
-                f"this pipeline writes around the material it sends a model. "
-                f"Text that spells one moves a boundary the model has nothing "
-                f"else to check it against. Remove it.")
+                f"{where} contains {named}, which this pipeline writes as a "
+                f"delimiter around the material it sends a model. Text that "
+                f"spells one moves a boundary the model has nothing else to "
+                f"check it against. Remove it.")
     return problems
 
-
-def _read_text(path):
-    return Path(path).read_text(encoding="utf-8")

@@ -67,14 +67,41 @@ def image_placeholder(label):
     return f"(image: {label}.png)"
 
 
+def _bare(line):
+    """A line with every space removed, for comparing shapes not spellings.
+
+    A role reads `---END PAPER TEXT---` and `--- END  PAPER TEXT ---` as the
+    boundary just as readily as the exact string, so the check compares what
+    survives removing the whitespace. Only a forgery survives it: no sentence
+    of a paper collapses to a delimiter with its spaces taken out.
+    """
+    return "".join(line.split())
+
+
+_BARE_FIXED = frozenset(_bare(line) for line in FIXED_LINES)
+
+
+def interpolates_text(text):
+    """Whether `text` can be put INSIDE a line this engine writes.
+
+    A delimiter is one line, and `supplement_open` builds one by wrapping a
+    title: `--- SUPPLEMENT {name}: {title} ---`. So a title carrying a line
+    break becomes two lines, the second ending in the ` ---` the builder
+    appends — which is how a title spelling the delimiter MINUS its trailing
+    dashes becomes a complete delimiter that no check of the title's own text
+    could ever see. Text that goes inside a line has to be one line.
+    """
+    return not any(ch in text for ch in ("\n", "\r", "\u2028", "\u2029"))
+
+
 def forged_lines(text):
     """Every line of `text` that spells one of this engine's own framing
     lines, in the order they appear.
 
-    Matched on the stripped line, because leading or trailing whitespace does
-    not change what a role reads. A line of bare dashes is NOT a forgery: a
-    thematic break is ordinary markdown and every delimiter here names what it
-    delimits.
+    Matched on the line with its whitespace removed, because neither the
+    spaces around a line nor the spaces inside one change what a role reads as
+    a boundary. A line of bare dashes is NOT a forgery: a thematic break is
+    ordinary markdown and every delimiter here names what it delimits.
     """
     if not text:
         return []
@@ -83,7 +110,7 @@ def forged_lines(text):
         stripped = line.strip()
         if not stripped:
             continue
-        if (stripped in FIXED_LINES
+        if (_bare(stripped) in _BARE_FIXED
                 or SUPPLEMENT_SECTION.match(stripped)
                 or IMAGE_PLACEHOLDER.match(stripped)):
             forged.append(stripped)
