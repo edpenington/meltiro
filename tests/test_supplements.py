@@ -917,3 +917,52 @@ class TestSeveralSupplements:
         assert len(attached) == len(bundle.all_figures()) == 4
         assert orch.dispatcher.image_labels == {
             label.lower() for label in bundle.all_figures()}
+
+
+class TestTheBriefingOffersOnlyRoutesThatValidate:
+    """What the extractor is told to do with a supplement's prose is something
+    the validator accepts.
+
+    A supplement's prose is not quotable, so the briefing pointed at the
+    field's `notes`. On a field whose evidence is REQUIRED, notes alone is
+    refused — `evidence_required` asks for a `<q>` or an `<img>` — and a
+    supplement that prints prose and no exhibits is a valid bundle, so the
+    briefing sent a role at a wall and the refusal it hits names no third way.
+    """
+
+    def test_notes_alone_is_refused_on_a_required_field(self, config_dir):
+        # The fact the briefing has to respect, asserted here so the sentence
+        # and the validator cannot drift apart.
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.extraction_record import ExtractionRecord
+        from meltiro.template import load_template
+        from meltiro.tools import ToolDispatcher
+
+        config = load_config_bundle(config_dir)
+        record = ExtractionRecord()
+        # The ordering gate is not the subject here.
+        record.initial_check_recorded = True
+        dispatcher = ToolDispatcher(
+            record, load_template(config.template_path),
+            "Some paper text.", set(),
+            reference_lists=config.reference_lists)
+        dispatcher.initial_check_recorded = True
+        result = dispatcher.dispatch("update_study", {"study": {
+            "sample_size": {"value": 402, "evidence": None,
+                            "notes": "Supplement A says 402 units."},
+        }})
+        assert result["status"] == "validation_failed"
+        # Refused for the evidence rule, not for anything else.
+        assert [e["code"] for e in result["errors"]] == ["evidence_required"]
+
+    def test_the_briefing_does_not_offer_it(self, config_dir):
+        from meltiro.config_bundle import load_config_bundle
+
+        bundle = load_config_bundle(config_dir)
+        text = build_system_message(
+            system_prompt_path=bundle.extractor_system_path,
+            reference_lists=bundle.reference_lists)
+        # It says what a required field can stand on, and says plainly that
+        # the prose alone is not it.
+        assert "cannot satisfy a field whose evidence is required" in text
+        assert "`<img>` on one of that supplement's exhibits" in text
