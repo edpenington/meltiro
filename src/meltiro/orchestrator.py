@@ -610,79 +610,14 @@ class Orchestrator:
     # Image capability (per role)
     # ----------------------------------------------------------------------
 
-    def _extractor_image_inputs(self):
-        """`(figures, image_labels)` to feed the extractor's message builders,
-        honouring the extractor model's declared image capability.
+    def _supplements_for(self):
+        """The supplement sections a role is sent: all of them.
 
-        A text-only extractor gets no figures and an empty label set, and the
-        two halves of that are mitigated together: its message carries no image
-        block and states instead that none accompany the study
-        (`prompt_builder.NO_EXHIBITS_NOTICE`), and the dispatcher it drives
-        validates `<img>` citations against an empty set, so a citation of an
-        unseen image fails as an unknown label. An image-capable extractor gets
-        the real figures/labels, untouched by this method.
+        A supplement reaches a role as a document — its prose, its crops and
+        its transcriptions together — and every role can read all three,
+        because `_startup_capability_guard` refuses a run whose models cannot.
         """
-        if self.extractor_supports_images:
-            return self.figures, self.image_labels
-        return [], set()
-
-    def _supplements_for(self, supports_images):
-        """The supplement sections a role is sent.
-
-        Guarded on the role's image capability, and so on exactly what
-        decides its crops. A supplement reaches a role as a document: its
-        prose, its crops and its transcriptions together. A text-only role is
-        sent no crops, so every exhibit in that document would arrive as a
-        label it cannot cite — its `<img>` set is empty — and the prose
-        beside them is not quotable either, because `text.md` is the only
-        thing a `<q>` is checked against. What it could do with the section
-        is therefore nothing, and what it could be tempted into is evidence
-        it cannot supply.
-        """
-        return self.supplements if supports_images else []
-
-    def _image_omitted_roles(self):
-        """`(role, model)` for every ENABLED stage whose model cannot accept
-        images, when the bundle actually carries figures to withhold.
-
-        Drives both `meta.images_omitted` and the run-start stderr warning. A
-        no-figures bundle yields no omissions even for a text-only model (the
-        capability still moves the fingerprint via `structure_hash`).
-        """
-        if not self.bundle.figures:
-            return []
-        roles = [("extractor", self.extractor_model)]
-        if self.checker_enabled:
-            roles.append(("checker", self.checker_config.checker_model))
-        if self.final_review:
-            roles.append(("review", self.review_model))
-        return [(role, model) for role, model in roles
-                if not model_supports_images(model)]
-
-    def _images_omitted_meta(self):
-        """`{role: True}` for every role whose figures are withheld this run.
-
-        Only omitted roles appear, so run.json carries `images_omitted:
-        {"extractor": true}` (or `{}` when nothing is withheld); a role that
-        accepts images is absent rather than recorded as false.
-        """
-        return {role: True for role, _ in self._image_omitted_roles()}
-
-    def _warn_images_withheld(self):
-        """One stderr line per role whose figures are withheld: role, model,
-        figure count.
-
-        Pairs with `meta.images_omitted`. Stderr-only, so a resume
-        re-announces it without duplicating a persisted warning.
-        """
-        figure_count = len(self.bundle.figures)
-        for role, model in self._image_omitted_roles():
-            print(
-                f"WARNING: images-omitted: the {role} model {model!r} is "
-                f"text-only (no image input); {figure_count} bundle "
-                f"figure(s) withheld from the {role}.",
-                file=sys.stderr,
-            )
+        return self.supplements
 
     def _warn_if_truncated(self, role, max_tokens, response):
         """Say so, loudly, when a role's response stopped on `max_tokens`.
@@ -744,7 +679,7 @@ class Orchestrator:
         that stage's fingerprint and only that one.
         """
         instrument = self.instrument
-        ext_figures, ext_image_labels = self._extractor_image_inputs()
+        ext_figures, ext_image_labels = self.figures, self.image_labels
         system_text = instrument.render_extractor_system_text()
         # Paper-INDEPENDENT prompt hash: nothing of the paper reaches a system
         # prompt, so two papers under the same code share a config_fp.
@@ -802,6 +737,7 @@ class Orchestrator:
     def prepare_new_session(self):
         """Build the fingerprints + initial messages + Session, return self."""
         # Pre-flight config check, before any API spend.
+        self._startup_capability_guard()
         self._startup_identity_guard()
         # Fingerprints + rendered extractor prompt, via the shared recipe a
         # dry run also uses.
@@ -869,14 +805,12 @@ class Orchestrator:
                 "max_checks_per_field": self.max_checks_per_field,
             },
             structure=self._structure_dict(),
-            images_omitted=self._images_omitted_meta(),
             decoding_specified=self.decoding_specified,
             diagnostics=self.diagnostics,
         )
         # Loud run-start signals: the figures a text-only model never sees
         # (pairs with meta.images_omitted), and any decoding value the operator
         # configured that this run's models never send.
-        self._warn_images_withheld()
         self._warn_inert_decoding_params()
 
         # Extraction record + dispatcher. The dispatcher validates `<img>`
@@ -911,6 +845,7 @@ class Orchestrator:
     def resume_session(self, session_dir):
         """Reattach to an in-progress session and rebuild the conversation."""
         # Pre-flight config check, before any API spend.
+        self._startup_capability_guard()
         self._startup_identity_guard()
         # Inputs derived from the bundle in __init__. That they are the
         # ORIGINAL bundle's is enforced below, by the paper axes passed to
@@ -919,7 +854,7 @@ class Orchestrator:
         # figures/labels it started with, so the rebuilt prompt and fingerprint
         # match the original session.
         instrument = self.instrument
-        ext_figures, ext_image_labels = self._extractor_image_inputs()
+        ext_figures, ext_image_labels = self.figures, self.image_labels
         self.system_text = instrument.render_extractor_system_text()
         # Paper-INDEPENDENT prompt hash; see _build_fingerprints.
         prompt_hash = instrument.extractor_prompt_hash()
@@ -1076,7 +1011,6 @@ class Orchestrator:
         )
         # Re-announce any image omission at this run start (stderr only; the
         # persisted meta.images_omitted carries over from session creation).
-        self._warn_images_withheld()
         self._warn_inert_decoding_params()
         self.initial_user_blocks, _ = self._extractor_message()
         replayed = self.session.replay_messages()
@@ -1133,6 +1067,7 @@ class Orchestrator:
         Returns the rendered artefacts for inspection by callers and tests.
         """
         # Pre-flight config check, the same guard a real run runs before spend.
+        self._startup_capability_guard()
         self._startup_identity_guard()
         fps = self._build_fingerprints()
         self.system_text = fps["system_text"]
@@ -1157,8 +1092,8 @@ class Orchestrator:
         # the article's alone would under-count a supplemented study and say
         # so in a headline count, which is the one number a reader of this
         # report takes on trust.
-        ext_figures, _ = self._extractor_image_inputs()
-        ext_supplements = self._supplements_for(self.extractor_supports_images)
+        ext_figures = self.figures
+        ext_supplements = self._supplements_for()
         attached_exhibits = [image_label_text(label, self.image_captions,
                                               self.image_notes,
                                               self.image_tables)
@@ -1234,7 +1169,6 @@ class Orchestrator:
             "tool_set_hash": fps["tool_hash"],
             "reference_lists_hash": self.instrument.reference_hash(),
             "structure": self._structure_dict(),
-            "images_omitted": self._images_omitted_meta(),
             "decoding_params": self._decoding_params_meta(),
         }
 
@@ -1245,7 +1179,6 @@ class Orchestrator:
         # warning matters most here: the report above prints the RESOLVED
         # params, and only this says which value the operator wrote was
         # dropped to produce them.
-        self._warn_images_withheld()
         self._warn_inert_decoding_params()
 
         if report_dir is not None:
@@ -1435,8 +1368,6 @@ class Orchestrator:
         print("\n=== USER MESSAGE (image blocks as their labels) ===\n")
         print(user_message)
         print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
-        print("  (the extractor's message; the reviewer's are guarded on its "
-              "own model)\n")
         for entry in attached_exhibits:
             # An entry is one exhibit and may run to two lines, the label and
             # caption then the footnote under them. Indenting every line of it
@@ -2765,8 +2696,8 @@ class Orchestrator:
         used. A text-only extractor's sequence is empty, and its message
         states that none accompany the study.
         """
-        ext_figures, _ = self._extractor_image_inputs()
-        supplements = self._supplements_for(self.extractor_supports_images)
+        ext_figures = self.figures
+        supplements = self._supplements_for()
         blocks = build_initial_user_blocks(
             self.study_id, self.paper_text, ext_figures, self.image_captions,
             self.image_notes, self.image_tables, supplements,
@@ -2795,9 +2726,8 @@ class Orchestrator:
         `self` here: the review turn passes the output as it stands when the
         review begins, and the preview passes a line saying so.
         """
-        review_figures, _ = self._review_image_inputs()
-        supplements = self._supplements_for(
-            model_supports_images(self.review_model))
+        review_figures = self.figures
+        supplements = self._supplements_for()
         blocks = build_review_user_blocks(
             self.study_id, self.paper_text, review_figures,
             extraction_record_dict,
@@ -2818,25 +2748,11 @@ class Orchestrator:
         blocks, labels = self._extractor_message()
         return render_message_text(blocks, labels)
 
-    def _review_image_inputs(self):
-        """The reviewer's effective (figures, labels).
-
-        The reviewer guards on its OWN model: a text-only reviewer is sent no
-        image parts and no label blocks, whatever the extractor could see. Its
-        message states that none accompany the study in their place, and its
-        share of the dispatcher validates against the empty label set, exactly
-        as the extractor's does.
-        """
-        if model_supports_images(self.review_model):
-            return self.figures, self.image_labels
-        return [], set()
-
     def _render_review_system_text(self):
         """The reviewer's rendered system message.
 
         Paper-independent, like the extractor's: which cropped exhibits the
-        reviewer actually receives is decided where they are attached
-        (`_review_image_inputs`, guarded on the reviewer's own model), not in
+        reviewer actually receives is decided where they are attached, not in
         this text.
         """
         return self.instrument.render_review_system_text()
@@ -2916,6 +2832,44 @@ class Orchestrator:
     # ----------------------------------------------------------------------
     # Study-identity context for the checker
     # ----------------------------------------------------------------------
+
+    def _startup_capability_guard(self):
+        """Fail loudly, before any API spend, when a role's model cannot
+        accept images.
+
+        This pipeline extracts from the paper AND its exhibits: a table's
+        value is read off a crop, an `<img>` citation names one, and the
+        checker verifies a value against the exhibit it was read from. A model
+        that cannot receive an image cannot do any of that, so a run
+        configured with one is not a degraded run, it is a different task
+        wearing this one's fingerprints — and it would answer with the same
+        `run_fp` a full run answers with.
+
+        Every ENABLED stage is checked, and the message names the role, the
+        model and the key that set it, because that is the line an operator
+        edits.
+        """
+        roles = [("extractor", self.extractor_model, "extractor_model")]
+        if self.checker_enabled:
+            roles.append(("checker", self.checker_config.checker_model,
+                          "checker_model"))
+        if self.final_review:
+            roles.append(("review", self.review_model, "review_model"))
+        blind = [(role, model, key) for role, model, key in roles
+                 if not model_supports_images(model)]
+        if not blind:
+            return
+        named = "; ".join(
+            f"the {role} model {model!r} (pipeline.yaml `{key}`)"
+            for role, model, key in blind)
+        raise AgenticExtractionError(
+            f"Image input is not optional in this pipeline: {named} cannot "
+            f"accept images. Every role reads the paper's cropped exhibits — "
+            f"a value taken from a table is cited as `<img>label</img>` and "
+            f"checked against the crop it names — so a text-only model would "
+            f"be asked for evidence it cannot see. Configure a model with "
+            f"image input for every enabled stage."
+        )
 
     def _startup_identity_guard(self):
         """Fail loudly, before any API spend, when the checker would have no

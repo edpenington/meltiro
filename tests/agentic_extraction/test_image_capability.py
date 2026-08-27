@@ -25,8 +25,11 @@ from alteksto.bundle import SCHEMA_VERSION
 from meltiro.bundle import load_bundle
 from meltiro.checker import CheckerConfig
 from meltiro.config_bundle import load_config_bundle
+from meltiro.errors import AgenticExtractionError
 from meltiro.extraction_record import ExtractionRecord
 from meltiro.fingerprint import structure_hash
+from meltiro.instrument import Instrument
+from meltiro.template import load_template
 from meltiro import orchestrator as orch_mod
 from meltiro.orchestrator import Orchestrator
 from meltiro.prompt_builder import NO_EXHIBITS_NOTICE, image_label_text
@@ -60,7 +63,7 @@ def _register_text_only(monkeypatch):
 
 def _orch(config_dir, bundle_dir, out_dir, *, extractor_model,
           checker_model="claude-sonnet-4-6", review_model="claude-opus-4-7",
-          max_checks_per_field=3, final_review=True):
+          max_checks_per_field=3, final_review=True, dry_run=False):
     config = load_config_bundle(config_dir)
     bundle = load_bundle(bundle_dir)
     return Orchestrator(
@@ -73,6 +76,23 @@ def _orch(config_dir, bundle_dir, out_dir, *, extractor_model,
         final_review=final_review,
         extractor_max_tokens=4096,
         review_max_tokens=4096,
+        dry_run=dry_run,
+    )
+
+
+def _instrument(config_dir, **kwargs):
+    """The instrument alone, with no run around it.
+
+    The two fingerprint claims below are about an argument, not about a
+    configuration that could be run: a text-only model has no session to read
+    a fingerprint out of, because the run is refused first.
+    """
+    config = load_config_bundle(config_dir)
+    return Instrument(
+        config, load_template(config.template_path), config.reference_lists,
+        max_checks_per_field=kwargs.get("max_checks_per_field", 3),
+        final_review=kwargs.get("final_review", True),
+        check_reviewer_edits=kwargs.get("check_reviewer_edits", False),
     )
 
 
@@ -154,168 +174,125 @@ class TestFingerprintFolding:
         assert off.endswith("_noimages")
         assert on != off
 
-    def test_capability_flag_moves_config_fp(
-            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
+    def test_capability_flag_moves_config_fp(self, config_dir):
         # Same model id, prompts, template, tools, decoding, provider: only the
         # registry capability flag differs. config_fp must move, proving the
         # flag itself (not just the model id) folds into the fingerprint, so a
         # registry edit that turns a text-only model into a vision one can
         # never happen silently.
-        a = _orch(config_dir, bundle_minimal_dir, tmp_path / "a",
-                  extractor_model=TEXT_ONLY_MODEL)
-        a.prepare_new_session()
-        fp_text_only = a.session.meta["config_fp"]
-
-        patched = dataclasses.replace(
-            MODEL_REGISTRY[TEXT_ONLY_MODEL], supports_images=True)
-        monkeypatch.setitem(MODEL_REGISTRY, TEXT_ONLY_MODEL, patched)
-        b = _orch(config_dir, bundle_minimal_dir, tmp_path / "b",
-                  extractor_model=TEXT_ONLY_MODEL)
-        b.prepare_new_session()
-        fp_capable = b.session.meta["config_fp"]
-
-        assert fp_text_only != fp_capable
+        #
+        # Asserted on the instrument rather than through a run, because a run
+        # configured with a text-only model is refused before it has a session
+        # to read a fingerprint out of (see TestATextOnlyModelIsRefused). The
+        # flag stays in the recipe for the runs already recorded under it: a
+        # consumer holding a config_fp from one still resolves it here.
+        instrument = _instrument(config_dir)
+        shared = dict(prompt_hash=instrument.extractor_prompt_hash(),
+                      tool_hash=instrument.tool_set_hash())
+        identity = ("claude-opus-4-7", {"max_tokens": 4096})
+        assert instrument.extractor_fingerprint(
+            identity, supports_images=False, **shared) != \
+            instrument.extractor_fingerprint(
+                identity, supports_images=True, **shared)
 
 
 # ---------------------------------------------------------------------------
 # Extractor: no image parts sent, none-available prompt, meta + warning
 # ---------------------------------------------------------------------------
 
-class TestTextOnlyExtractor:
-    def test_no_image_blocks_in_the_canonical_messages(
+class TestATextOnlyModelIsRefused:
+    """Image input is not optional in this pipeline, so a model that cannot
+    take an image is refused before the run starts.
+
+    This pipeline reads the paper AND its exhibits: a table's value is read
+    off a crop, `<img>label</img>` names one, and the checker verifies a value
+    against the exhibit it was read from. A role that cannot see an image
+    cannot do that, and a run that proceeded anyway would answer with the same
+    `run_fp` a full run answers with — the same question, apparently asked and
+    actually not.
+
+    The refusal is per ENABLED stage, so an ablation that turns the checker or
+    the reviewer off is not refused for the model it is no longer using.
+    """
+
+    def _refusal(self, config_dir, bundle_dir, out_dir, **kwargs):
+        orch = _orch(config_dir, bundle_dir, out_dir, **kwargs)
+        with pytest.raises(AgenticExtractionError) as excinfo:
+            orch.prepare_new_session()
+        return orch, str(excinfo.value)
+
+    @pytest.mark.parametrize("role,key,kwargs", [
+        ("extractor", "extractor_model",
+         {"extractor_model": TEXT_ONLY_MODEL}),
+        ("checker", "checker_model",
+         {"extractor_model": "claude-opus-4-7",
+          "checker_model": TEXT_ONLY_MODEL}),
+        ("review", "review_model",
+         {"extractor_model": "claude-opus-4-7",
+          "review_model": TEXT_ONLY_MODEL}),
+    ])
+    def test_each_enabled_role_is_refused_by_name(
+            self, config_dir, bundle_minimal_dir, tmp_path, role, key,
+            kwargs):
+        # The message names the role, the model and the pipeline.yaml key,
+        # because that key is the line an operator edits.
+        _, message = self._refusal(
+            config_dir, bundle_minimal_dir, tmp_path / role, **kwargs)
+        assert role in message
+        assert TEXT_ONLY_MODEL in message
+        assert key in message
+
+    def test_nothing_is_created_and_nothing_is_called(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # bundle_minimal carries one figure (table_01). A text-only
-        # extractor must put zero image parts into the canonical messages.
-        # That is the whole of meltiro's responsibility here: a wire
-        # translation renders what it is given and cannot invent an image,
-        # so asserting against a provider's translator would test the
-        # provider layer's job through its private surface. The companion
-        # test below pins the same property at the adapter boundary, which
-        # is the last point meltiro owns.
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
+        # Refused BEFORE spend: the guard runs ahead of session creation, so
+        # there is no session on disk to resume and no provider was reached.
+        out_dir = tmp_path / "runs"
+        orch, _ = self._refusal(config_dir, bundle_minimal_dir, out_dir,
+                                extractor_model=TEXT_ONLY_MODEL)
+        assert orch.session is None
+        assert not out_dir.exists()
 
-        assert _canonical_image_blocks(orch.messages) == []
-
-    def test_fake_adapter_receives_no_image_parts(
+    def test_a_dry_run_is_refused_too(
             self, config_dir, bundle_minimal_dir, tmp_path):
-        # A fake adapter captures exactly what the extractor turn would send.
+        # A dry run exists to show what a run would send. For a configuration
+        # that cannot run, the honest report is the refusal, not a preview of
+        # a message no role could read.
         orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
+                     extractor_model=TEXT_ONLY_MODEL, dry_run=True)
+        with pytest.raises(AgenticExtractionError) as excinfo:
+            orch.dry_run_report()
+        assert TEXT_ONLY_MODEL in str(excinfo.value)
+
+    @pytest.mark.parametrize("stage_off", ["checker", "review"])
+    def test_a_disabled_stage_is_not_refused_for_its_model(
+            self, config_dir, bundle_minimal_dir, tmp_path, stage_off):
+        # The guard asks what this run USES. A pipeline that names a
+        # text-only checker and then runs `max_checks_per_field: 0` never
+        # sends it anything, and refusing it would make a documented ablation
+        # unrunnable on a model it does not reach.
+        kwargs = {"extractor_model": "claude-opus-4-7"}
+        if stage_off == "checker":
+            kwargs.update(checker_model=TEXT_ONLY_MODEL,
+                          max_checks_per_field=0)
+        else:
+            kwargs.update(review_model=TEXT_ONLY_MODEL, final_review=False)
+        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / stage_off,
+                     **kwargs)
         orch.prepare_new_session()
+        assert orch.session is not None
 
-        captured = {}
-
-        class _Capture:
-            def create_message(self, **kwargs):
-                captured["messages"] = kwargs["messages"]
-                captured["system"] = kwargs["system"]
-                return SimpleNamespace(
-                    content=[], usage=SimpleNamespace(),
-                    resolved_model=TEXT_ONLY_MODEL, provider="openai_compat",
-                    base_url="x", raw_request={}, raw_response={},
-                    wire_request=None, decoding_params={})
-
-        orch._call_extractor(_Capture(), tool_defs=[])
-        assert _canonical_image_blocks(captured["messages"]) == []
-        # No label block either: a label with no image behind it would invite
-        # a citation of an exhibit the model was never shown.
-        assert "table_01" not in _message_text(captured["messages"])
-        # And nothing about the paper is in the system prompt, whatever the
-        # model's capability.
-        sys_text = "".join(b["text"] for b in captured["system"])
-        assert "table_01" not in sys_text
-
-    def test_the_labels_go_with_the_images(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        text_only = _orch(config_dir, bundle_minimal_dir, tmp_path / "glm",
-                          extractor_model=TEXT_ONLY_MODEL)
-        text_only.prepare_new_session()
-        # The captured user prompt lists no image label, and the system
-        # prompt never carried one.
-        user_prompt = (text_only.session.instrument_dir /
-                       "user_prompt.txt").read_text(encoding="utf-8")
-        assert "table_01" not in user_prompt
-        assert "table_01" not in text_only.system_text
-
-        capable = _orch(config_dir, bundle_minimal_dir, tmp_path / "opus",
-                        extractor_model="claude-opus-4-7")
-        capable.prepare_new_session()
-        # Positive control: an image-capable extractor is shown the real
-        # label, in the message the crop itself arrives in.
-        assert "table_01" in _message_text(capable.messages)
-        assert "table_01" not in capable.system_text
-
-    def test_the_message_says_that_none_accompany_the_study(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        # The other half of withholding the images. The system prompt is one
-        # string per config and cannot know this role's capability, so the
-        # statement belongs to the message — and a text-only role reads the
-        # same one a no-crops bundle produces, rather than a message that
-        # simply stops after the paper text. It is in the capture too, because
-        # the capture is the record of the message.
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
-        assert NO_EXHIBITS_NOTICE in _message_text(orch.messages)
-        assert NO_EXHIBITS_NOTICE in (
-            orch.session.instrument_dir / "user_prompt.txt").read_text(
-                encoding="utf-8")
-
-        # Positive control: the same bundle under an image-capable extractor
-        # carries the crop instead, and says nothing of the kind.
-        capable = _orch(config_dir, bundle_minimal_dir, tmp_path / "opus",
-                        extractor_model="claude-opus-4-7")
-        capable.prepare_new_session()
-        assert NO_EXHIBITS_NOTICE not in _message_text(capable.messages)
-
-    def test_the_exhibits_record_is_empty_for_a_text_only_extractor(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        # `instrument/image_labels.json` records what the message carried, so
-        # a role sent no crop records none. `meta.images_omitted` beside it is
-        # what separates this from a bundle that ships no crops at all.
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
-        assert json.loads(
-            (orch.session.instrument_dir / "image_labels.json").read_text(
-                encoding="utf-8")) == []
-        assert orch.session.meta["images_omitted"] == {"extractor": True}
-
-    def test_meta_flag_and_warning(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
-        assert orch.session.meta["images_omitted"] == {"extractor": True}
-        err = capsys.readouterr().err
-        assert "images-omitted" in err
-        assert "extractor" in err
-        assert TEXT_ONLY_MODEL in err
-        assert "1 bundle figure" in err  # one figure withheld
-
-    def test_img_citation_fails_validation_for_text_only_extractor(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        # The dispatcher a text-only extractor drives carries an empty label
-        # set, so an <img> citation of a figure it never saw fails as an
-        # unknown label. The validator is not special-cased on capability; the
-        # empty set is the whole of what makes the citation unknown.
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
-        assert orch.dispatcher.image_labels == set()
-
-    def test_image_capable_extractor_is_unaffected(
+    def test_an_image_capable_run_is_unaffected(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
         orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
                      extractor_model="claude-opus-4-7")
         orch.prepare_new_session()
-        # Image block present, dispatcher carries the real label, no omission.
+        # The crop rides, the dispatcher carries the real label, and nothing
+        # is said about withholding anything.
         assert len(_canonical_image_blocks(orch.messages)) == 1
         assert orch.dispatcher.image_labels == {"table_01"}
-        assert orch.session.meta["images_omitted"] == {}
         assert "images-omitted" not in capsys.readouterr().err
+        # And the record carries no omission key: no run can populate one.
+        assert "images_omitted" not in orch.session.meta
 
 
 # ---------------------------------------------------------------------------
@@ -347,31 +324,20 @@ def test_empty_label_set_rejects_img_citation(
 # ---------------------------------------------------------------------------
 
 class TestNoFiguresBundle:
-    def test_image_capable_extractor_records_no_omission(
+    def test_the_message_says_the_paper_supplies_none(
             self, config_dir, tmp_path, capsys):
+        # The bundle's `exhibits: []` is an assertion that the paper has no
+        # tables and no figures, and the message passes it on: a role is told
+        # there are none rather than left to infer it from a message that
+        # stops after the paper text. This is the ONLY thing that produces
+        # that notice now — a role that cannot read a crop is refused, so the
+        # notice always describes the paper and never the model.
         bundle_dir = _no_figures_bundle(tmp_path)
         orch = _orch(config_dir, bundle_dir, tmp_path / "runs",
                      extractor_model="claude-opus-4-7")
         orch.prepare_new_session()
         assert _canonical_image_blocks(orch.messages) == []
-        # The bundle's `exhibits: []` is an assertion that the paper has no
-        # tables and no figures, and the message passes it on: an
-        # image-capable model is told there are none rather than left to infer
-        # it from a message that stops after the paper text.
         assert NO_EXHIBITS_NOTICE in _message_text(orch.messages)
-        assert orch.session.meta["images_omitted"] == {}
-        assert "images-omitted" not in capsys.readouterr().err
-
-    def test_text_only_extractor_withholds_nothing(
-            self, config_dir, tmp_path, capsys):
-        # No figures means nothing is withheld even for a text-only model, so
-        # no omission is recorded and no warning fires (the fingerprint still
-        # moves via the capability flag, tested separately).
-        bundle_dir = _no_figures_bundle(tmp_path)
-        orch = _orch(config_dir, bundle_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
-        assert orch.session.meta["images_omitted"] == {}
         assert "images-omitted" not in capsys.readouterr().err
 
 
@@ -496,29 +462,20 @@ class TestCheckerAttachment:
 
 class TestReviewCapability:
     def test_review_fp_moves_with_review_model_capability(
-            self, config_dir, bundle_minimal_dir, tmp_path, monkeypatch):
-        base = _orch(config_dir, bundle_minimal_dir, tmp_path / "a",
-                     extractor_model="claude-opus-4-7",
-                     review_model=TEXT_ONLY_MODEL)
-        base.prepare_new_session()
-        fp_text_only = base.session.meta["review_fp"]
-
+            self, config_dir, monkeypatch):
+        # The reviewer's stage fingerprint folds its own model's capability,
+        # so the flag cannot flip under a recorded run without the number
+        # moving. Asserted on the instrument, for the reason the extractor's
+        # twin is: a run naming a text-only reviewer is refused before it has
+        # a session.
+        identity = (TEXT_ONLY_MODEL, {"max_tokens": 4096})
+        fp_text_only = _instrument(config_dir).review_fingerprint(
+            identity, review_model=TEXT_ONLY_MODEL, tool_hash="t")
         patched = dataclasses.replace(
             MODEL_REGISTRY[TEXT_ONLY_MODEL], supports_images=True)
         monkeypatch.setitem(MODEL_REGISTRY, TEXT_ONLY_MODEL, patched)
-        capable = _orch(config_dir, bundle_minimal_dir, tmp_path / "b",
-                        extractor_model="claude-opus-4-7",
-                        review_model=TEXT_ONLY_MODEL)
-        capable.prepare_new_session()
-        assert fp_text_only != capable.session.meta["review_fp"]
-
-    def test_text_only_review_records_omission(
-            self, config_dir, bundle_minimal_dir, tmp_path):
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model="claude-opus-4-7",
-                     review_model=TEXT_ONLY_MODEL)
-        orch.prepare_new_session()
-        assert orch.session.meta["images_omitted"] == {"review": True}
+        assert fp_text_only != _instrument(config_dir).review_fingerprint(
+            identity, review_model=TEXT_ONLY_MODEL, tool_hash="t")
 
 
 # ---------------------------------------------------------------------------
@@ -569,9 +526,9 @@ class TestTheDryRunPreviewIsTheMessage:
     is built from that message's own figure sequence.
 
     The normalised label set is the dispatcher's, lower-cased and covering the
-    whole bundle. A preview built from it would differ from the message in two
-    ways at once, and each is reachable from a valid bundle: a label the paper
-    capitalised, and a role that was sent no images at all.
+    whole bundle. A preview built from it would name a label the message never
+    sent, in a case the message never used, and a paper that capitalises its
+    own label is a valid bundle.
     """
 
     def _preview(self, orch, tmp_path):
@@ -580,9 +537,8 @@ class TestTheDryRunPreviewIsTheMessage:
             encoding="utf-8")
 
     def _message_label_blocks(self, orch):
-        figures, _ = orch._extractor_image_inputs()
         return [image_label_text(label, orch.image_captions, orch.image_notes)
-                for label, _ in figures]
+                for label, _ in orch.figures]
 
     def test_it_spells_a_label_the_way_the_message_does(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):
@@ -609,24 +565,8 @@ class TestTheDryRunPreviewIsTheMessage:
         # To the next section, whatever follows this one.
         block = block.split("\n=== ")[0]
         lines = [ln for ln in block.split("\n") if ln.strip()]
-        # The block opens by saying whose message these are: the exhibits a
-        # role receives are guarded on that role's own model, so a count
-        # standing alone is a count of nobody's message in particular.
-        assert lines[0].startswith("  (the extractor's message")
-        assert lines[1].startswith("  [table_01] Table 1.")
-        assert lines[2].startswith("  Footnote: CI, confidence")
-
-    def test_a_text_only_extractor_previews_no_exhibits(
-            self, config_dir, bundle_minimal_dir, tmp_path, capsys):
-        # Its message states that none accompany the study, so a preview
-        # listing the bundle's crops would contradict the message and the
-        # `images_omitted` flag in the same report.
-        orch = _orch(config_dir, bundle_minimal_dir, tmp_path / "runs",
-                     extractor_model=TEXT_ONLY_MODEL)
-        preview = self._preview(orch, tmp_path)
-        capsys.readouterr()
-        assert preview == ""
-        assert self._message_label_blocks(orch) == []
+        assert lines[0].startswith("  [table_01] Table 1.")
+        assert lines[1].startswith("  Footnote: CI, confidence")
 
     def test_a_footnote_of_any_shape_stays_inside_its_exhibit(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):

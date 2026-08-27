@@ -809,12 +809,16 @@ class _Renderer:
         self._block(_table(
             ["Role", "Configured", "Reported by the provider", "Decoding"],
             rows))
+        # Only a session recorded before image input became a requirement
+        # carries this: a run configured with a text-only model is refused at
+        # startup now, so no new session can populate it. Read here because a
+        # session that did record one is still rendered by this view.
         omitted = meta.get("images_omitted") or {}
         if omitted:
             roles = ", ".join(f"`{r}`" for r in sorted(omitted))
             self._p(
                 f"The paper's figures were withheld from {roles}: that role's "
-                "model is text-only, so it was sent no image parts and none "
+                "model was text-only, so it was sent no image parts and none "
                 "of the labels that introduce them."
             )
             self._p()

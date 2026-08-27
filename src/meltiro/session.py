@@ -363,7 +363,7 @@ class Session:
                user_prompt=None, image_labels=None,
                review_system_prompt=None, checker_system_prompt=None,
                checker_user_scaffold=None,
-               caps=None, structure=None, images_omitted=None,
+               caps=None, structure=None,
                checker_context_chars=None, decoding_specified=None,
                diagnostics=DEFAULT_DIAGNOSTICS):
         """Start a fresh session and write the initial run.json + empty
@@ -571,12 +571,6 @@ class Session:
             # stage fingerprint (checker_fp / review_fp) above, and its model
             # may be null too.
             "structure": structure or {},
-            # Per-role image omission: {role: true} for every enabled stage
-            # whose text-only model had the bundle's figures withheld. Empty
-            # when nothing was withheld; a role that accepts images is absent
-            # rather than recorded as false. The stderr warning at run start
-            # is the loud companion to this structural record.
-            "images_omitted": images_omitted or {},
             # The operator's decoding block per role, verbatim, as the config
             # bundle wrote it; a role that wrote none is absent. Its
             # counterpart `decoding_params` is written per role as each role's

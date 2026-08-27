@@ -401,38 +401,60 @@ class TestTheDryRunPreviewIsTheMessage:
                 f"the preview's {axis} is not the one a run would record")
 
 
-class TestTheTextOnlyRoleIsSentNone:
-    def test_no_section_reaches_a_role_sent_no_crops(
-            self, supplemented, sections):
-        # A supplement reaches a role as a document: prose, crops and
-        # transcriptions together. With no crops its exhibits are labels the
-        # role cannot cite, and its prose is not quotable, so the section
-        # could only invite evidence the role cannot supply.
-        blocks = build_initial_user_blocks(
-            supplemented.study_id, supplemented.text, [],
-            supplemented.all_exhibits(), supplemented.all_exhibit_notes(),
-            {}, [])
-        joined = _joined(blocks)
-        assert "--- SUPPLEMENT" not in joined
+class TestEveryRoleIsSentEveryOne:
+    """No role is sent a subset of the supplementary material.
 
-    def test_the_orchestrator_withholds_them(
-            self, config_dir, bundle_supplemented_dir, tmp_path):
+    A supplement reaches a role as a document — prose, crops and
+    transcriptions together — and there is no configuration in which a role
+    gets part of one or none of them: a run whose model cannot read a crop is
+    refused before it starts (see
+    tests/agentic_extraction/test_image_capability.py).
+
+    Asserted against the bundle rather than against the orchestrator's own
+    attribute, so it is the loader's answer being compared with the message's.
+    """
+
+    def _orch(self, config_dir, bundle_dir, out_dir):
         from meltiro.checker import CheckerConfig
         from meltiro.config_bundle import load_config_bundle
         from meltiro.orchestrator import Orchestrator
 
-        orch = Orchestrator(
-            load_config_bundle(config_dir),
-            load_bundle(bundle_supplemented_dir), tmp_path / "runs",
+        return Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
             extractor_model="claude-opus-4-8",
             checker_config=CheckerConfig(max_tokens=1024,
                                          checker_model="claude-sonnet-4-6"),
             review_model="claude-opus-4-8",
             extractor_max_tokens=4096, review_max_tokens=4096,
         )
-        assert orch._supplements_for(True) == orch.supplements
-        assert orch._supplements_for(True) != []
-        assert orch._supplements_for(False) == []
+
+    def test_the_sections_are_the_bundles_supplements(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        bundle = load_bundle(bundle_supplemented_dir)
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        sections = orch._supplements_for()
+        assert [s["name"] for s in sections] == list(bundle.supplements)
+        for section, supplement in zip(sections, bundle.supplements.values()):
+            assert section["title"] == supplement.title
+            assert section["text"] == supplement.text
+            assert [label for label, _ in section["figures"]] == list(
+                supplement.figures)
+
+    def test_both_message_building_roles_get_them(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        bundle = load_bundle(bundle_supplemented_dir)
+        supplement = next(iter(bundle.supplements.values()))
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        orch.prepare_new_session()
+        extractor = _joined(orch.messages[0]["content"])
+        reviewer = _joined(orch._review_message({"study": {}})[0])
+        for message in (extractor, reviewer):
+            assert supplement_open(
+                supplement.name, supplement.title) in message
+            assert supplement.text.strip() in message
+            assert supplement_close(supplement.name) in message
 
 
 class TestEveryRoleShownASectionIsBriefedOnIt:
