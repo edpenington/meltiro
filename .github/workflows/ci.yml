@@ -99,12 +99,15 @@ jobs:
       # --no-deps, then the dependencies that ARE needed at import time
       # (meltiro.bundle imports alteksto; meltiro.reference_lists imports
       # yaml; meltiro.cli imports dotenv). direktoro, anthropic and openai are
-      # all left out. alteksto comes from git for as long as it is off PyPI,
-      # and brings nothing with it: its format contract is stdlib-only.
+      # all left out — direktoro's absence is the whole point of this job, so
+      # ONE line of the pin file is installed rather than the file, and it is
+      # read from the file so this job cannot end up on a different alteksto
+      # from every other. alteksto brings nothing with it: its format contract
+      # is stdlib-only.
       - run: |
           pip install --no-deps dist/*.whl
           pip install pyyaml python-dotenv
-          pip install --no-deps -r requirements/sisters.txt
+          pip install --no-deps "$(grep '^alteksto' requirements/sisters.txt)"
       - name: Import and use the library with direktoro absent
         run: |
           python - <<'PY'
