@@ -218,23 +218,74 @@ def test_meltiro_declares_neither_sdk():
 SISTER_PINS = REPO_ROOT / "requirements" / "sisters.txt"
 
 
+def _require(package):
+    """Skip when a sister is not installed at all.
+
+    The suite ships in the sdist and is run by consumers who install
+    `--no-deps`, and one CI job deliberately has no direktoro. A test about
+    WHICH release is installed has nothing to say where none is, and erroring
+    there reports a missing package as a pin problem.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec(package) is None:
+        pytest.skip(f"{package} is not installed")
+
+
+# The one line shape this file's job depends on: a name, a git URL, and a tag.
+# Anything else is a pin that does not say which release, and the point of the
+# file is to say which release — so it is reported as a problem with the file
+# rather than crashing the parser on an index error.
+_PIN_LINE = re.compile(
+    r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>\S+?)@(?P<tag>v[^\s#]+)$")
+
+
 def _pinned_sisters():
-    """`{name: version}` from the pin file, which names an exact tag each.
+    """`{name: {"tag", "version", "url"}}` from the pin file.
 
     The file is the development environment's answer to "which release", where
-    pyproject's floor is the consumer's answer to "at least which release".
+    pyproject's floor is the consumer's answer to "at least which release". So
+    every line has to name a release: a branch, a bare `==`, an extra, a pip
+    option or a URL with no tag all fail here, naming the line, rather than
+    reaching an assertion about versions through a parser that shrugged.
     """
     assert SISTER_PINS.is_file(), (
         f"{SISTER_PINS} is missing, so what this tree was tested against "
         f"cannot be read")
     pins = {}
-    for line in SISTER_PINS.read_text(encoding="utf-8").splitlines():
+    for number, line in enumerate(
+            SISTER_PINS.read_text(encoding="utf-8").splitlines(), start=1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        name, _, ref = line.partition("@")
-        pins[name.strip()] = ref.rsplit("@", 1)[1].strip().lstrip("v")
+        match = _PIN_LINE.match(line)
+        assert match, (
+            f"{SISTER_PINS.name} line {number} does not pin a release: "
+            f"{line!r}. Every line must read `NAME @ git+URL@vTAG` — a "
+            f"branch or a bare version does not say which release a green "
+            f"run was green against.")
+        pins[match.group("name")] = {
+            "tag": match.group("tag"),
+            "version": match.group("tag").lstrip("v"),
+            "url": match.group("url"),
+        }
     return pins
+
+
+def _installed_provenance(package):
+    """Where an installed distribution came FROM, as pip recorded it.
+
+    `direct_url.json` is written for anything installed from a URL or a path,
+    and it holds the ref that was asked for and the commit it resolved to.
+    Version strings cannot answer this: a local checkout at the pinned
+    version, or a branch that happens to carry it, satisfies every comparison
+    of numbers while being a different tree from the one a green run was green
+    against.
+    """
+    import importlib.metadata as metadata
+
+    raw = metadata.distribution(package).read_text("direct_url.json")
+    return json.loads(raw) if raw else {}
 
 
 def _installed_version(package):
@@ -257,8 +308,9 @@ def test_the_installed_sister_is_the_pinned_release(package):
     # difference is not cosmetic: alteksto validates a manifest against
     # exactly its own schema version, so its tip moving refuses every fixture
     # here.
+    _require(package)
     installed = _installed_version(package)
-    pinned = _pinned_sisters()[package]
+    pinned = _pinned_sisters()[package]["version"]
     assert installed == pinned, (
         f"{package} {installed} is installed but {SISTER_PINS.name} pins "
         f"{pinned}. Install the pin — `pip install -r "
@@ -267,9 +319,32 @@ def test_the_installed_sister_is_the_pinned_release(package):
 
 
 @pytest.mark.parametrize("package", ["alteksto", "direktoro"])
+def test_the_installed_sister_came_from_the_pinned_TAG(package):
+    # The version is not the question a pin answers. A local checkout at the
+    # pinned version, or a branch carrying it, passes every comparison of
+    # numbers and is a different tree — which is exactly the state this
+    # machine was in when the pin file was written: a checkout whose metadata
+    # said one version while its code had moved two releases on.
+    _require(package)
+    pinned = _pinned_sisters()[package]
+    recorded = _installed_provenance(package)
+    vcs = recorded.get("vcs_info") or {}
+    assert vcs.get("requested_revision") == pinned["tag"], (
+        f"{package} was installed from "
+        f"{vcs.get('requested_revision') or recorded.get('url') or 'an index'}"
+        f", not from the pinned {pinned['tag']}. Reinstall it with `pip "
+        f"install -r requirements/sisters.txt`, or state the change in the "
+        f"pin file.")
+    assert not (recorded.get("dir_info") or {}).get("editable"), (
+        f"{package} is installed editable, so what is imported can move "
+        f"without anything recording it.")
+
+
+@pytest.mark.parametrize("package", ["alteksto", "direktoro"])
 def test_a_sisters_metadata_agrees_with_its_module(package):
     # The two disagree exactly when a checkout has moved under an editable
     # install, which is the state that hides everything else here.
+    _require(package)
     module = importlib.import_module(package)
     assert module.__version__ == _installed_version(package), (
         f"{package} reports __version__ {module.__version__} while its "
@@ -296,14 +371,16 @@ def test_installed_alteksto_satisfies_the_declared_floor():
         f"of {floor}; the enumeration `load_bundle` calls is not there")
 
 
-def test_the_declared_floor_admits_the_pin():
+@pytest.mark.parametrize("package", ["alteksto", "direktoro"])
+def test_the_declared_floor_admits_the_pin(package):
     # The two answers have to be compatible: a floor above the pin would
-    # declare a release this tree has never run against.
+    # declare a release this tree has never run against, and the failure would
+    # otherwise surface as an opaque resolution error in CI's install step.
     floor = _declared_floor(
-        _meltiro_requirements(), "alteksto", "meltiro's pyproject.toml")
-    assert _version_tuple(_pinned_sisters()["alteksto"]) >= \
+        _meltiro_requirements(), package, "meltiro's pyproject.toml")
+    assert _version_tuple(_pinned_sisters()[package]["version"]) >= \
         _version_tuple(floor), (
-        f"requirements/sisters.txt pins alteksto below meltiro's own floor "
+        f"requirements/sisters.txt pins {package} below meltiro's own floor "
         f"of {floor}")
 
 

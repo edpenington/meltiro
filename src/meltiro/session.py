@@ -730,6 +730,35 @@ class Session:
             moved = [axis for axis in BUNDLE_AXES
                      if meta.get(axis) is not None
                      and meta.get(axis) != current[axis]]
+            # Unrecorded axes decide the REMEDY, because no bundle can clear
+            # them: re-pointing `--paper` at the original directory returns
+            # this same refusal. So where any axis is unrecorded the message
+            # says so and sends the operator to a fresh session, naming any
+            # axis that also moved rather than dropping it — the two facts are
+            # both true and only one of them has a fix.
+            if unrecorded:
+                named = ", ".join(unrecorded)
+                also = ""
+                if moved:
+                    also = (
+                        " Separately, "
+                        + "; ".join(
+                            f"{axis} moved (session started with "
+                            f"{meta.get(axis)}, the bundle now supplied is "
+                            f"{current[axis]})" for axis in moved)
+                        + ".")
+                raise ResumeRefused(
+                    f"this session records no {named}, so whether the paper "
+                    f"is the one it started against cannot be settled: those "
+                    f"axes were not written when it began."
+                    + (" The axes it does record all match." if not moved
+                       else "")
+                    + also
+                    + f" Re-pointing --paper at the original bundle will not "
+                    f"clear this, because no bundle hashes to a missing "
+                    f"value. Start a fresh session against the bundle you "
+                    f"mean to extract, under this engine."
+                )
             if moved:
                 detail = "; ".join(
                     f"{axis}: session started with {meta.get(axis)}, the "
@@ -742,18 +771,6 @@ class Session:
                     f"evidence was verified against them. Point --paper at "
                     f"the original bundle, or start a fresh session against "
                     f"the new one."
-                )
-            if unrecorded:
-                named = ", ".join(unrecorded)
-                raise ResumeRefused(
-                    f"this session records no {named}, so whether the paper "
-                    f"is the one it started against cannot be settled: those "
-                    f"axes were not written when it began, and the axes it "
-                    f"does record all match. The paper may be unchanged — "
-                    f"re-pointing --paper at the original bundle will not "
-                    f"clear this, because no bundle hashes to a missing "
-                    f"value. Start a fresh session against the bundle you "
-                    f"mean to extract, under this engine."
                 )
         s = cls(session_dir, meta)
         # A hard kill (power loss) mid-append can leave the last line of the

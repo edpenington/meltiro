@@ -170,10 +170,16 @@ class TestAnAxisTheSessionNeverRecorded:
         # Nor does it prescribe the fix that cannot work.
         assert "Point --paper at the original bundle" not in message
 
-    def test_a_paper_that_really_moved_is_still_reported_as_moved(
+    def test_a_paper_that_really_moved_is_named_too(
             self, config_dir, paper, tmp_path):
-        # The control: an absent axis does not mask a real change to an axis
-        # the session DID record.
+        """Both facts, and the remedy that can actually work.
+
+        An unrecorded axis does not mask a real change — the moved axis is
+        named — but it decides the remedy, because no bundle clears a missing
+        value. Prescribing `--paper` here sends the operator round a loop:
+        they re-point at the original directory and get this refusal again,
+        with nothing naming the real boundary.
+        """
         out = tmp_path / "runs"
         session_dir = self._paused_without(
             config_dir, paper, out, ["supplements_fp"])
@@ -185,8 +191,13 @@ class TestAnAxisTheSessionNeverRecorded:
         with pytest.raises(ResumeRefused) as caught:
             orch.resume_session(session_dir)
         message = str(caught.value)
-        assert "the paper bundle changed" in message
-        assert "text_fp" in message
+        assert "records no supplements_fp" in message
+        assert "text_fp moved" in message
+        assert "Point --paper at the original bundle" not in message
+        assert "Start a fresh session" in message
+        # And it does not claim the recorded axes all match, because one did
+        # not.
+        assert "does record all match" not in message
 
 
 class TestTheTwoNewestAxesAreCompared:
