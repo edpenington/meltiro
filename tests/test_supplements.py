@@ -244,17 +244,29 @@ class TestThePapersIdentity:
         assert fp["supplements_fp"].startswith("supplements_fp:")
 
     def test_a_supplement_landing_moves_no_article_axis(
-            self, supplemented, bundle_transcribed_dir):
+            self, bundle_supplemented_dir, tmp_path):
         # The property the whole shape was built for: a consumer that
         # identifies a paper by the article's own bytes — the screening side
         # does — is untouched by supplementary material arriving later, while
         # one that reads the whole bundle sees it.
-        article = bundle_fingerprint(load_bundle(bundle_transcribed_dir))
-        withsupp = bundle_fingerprint(supplemented)
+        #
+        # ONE bundle, before and after. Comparing two fixtures instead would
+        # rest on their articles being byte-identical clones of each other,
+        # which is a fact about the fixture directory rather than about the
+        # axes: give two fixtures two different crops, as two real papers
+        # have, and such a test fails while the property holds.
+        before = tmp_path / "article_only"
+        shutil.copytree(bundle_supplemented_dir, before)
+        shutil.rmtree(before / "supplements")
+        (before / "supplements.json").unlink()
+
+        article = bundle_fingerprint(load_bundle(before))
+        withsupp = bundle_fingerprint(load_bundle(bundle_supplemented_dir))
 
         assert withsupp["text_fp"] == article["text_fp"]
         assert withsupp["figures_fp"] == article["figures_fp"]
         assert withsupp["tables_fp"] == article["tables_fp"]
+        assert withsupp["manifest_fp"] == article["manifest_fp"]
         assert withsupp["supplements_fp"] != article["supplements_fp"]
         assert withsupp["bundle_fp"] != article["bundle_fp"]
 
@@ -966,3 +978,108 @@ class TestTheBriefingOffersOnlyRoutesThatValidate:
         # the prose alone is not it.
         assert "cannot satisfy a field whose evidence is required" in text
         assert "`<img>` on one of that supplement's exhibits" in text
+
+
+class TestTheRightCropReachesTheRightPlace:
+    """Which crop was attached, and which exhibit's footnote and content came
+    with it — asserted on the BYTES and on the strings that differ between
+    documents.
+
+    Every assertion about attachment used to be a count or a presence check,
+    and the fixture crops were byte-identical, so a run that resolved every
+    label to the article's crop passed the whole suite. So did a checker handed
+    the first exhibit's footnote and transcription for every citation: both
+    fixtures' footnotes open "IQR, interquartile range." and both
+    transcriptions open "<table>", so an assertion on those prefixes cannot
+    tell a right answer from a wrong one.
+    """
+
+    def _orch(self, config_dir, bundle_dir, out_dir):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6",
+                                         context_chars=0),
+            review_model="claude-opus-4-8",
+            max_checks_per_field=2,
+            extractor_max_tokens=4096, review_max_tokens=4096,
+        )
+        orch.prepare_new_session()
+        return orch
+
+    @staticmethod
+    def _attached(blocks):
+        """`{label: bytes}` for the crops a message actually carries.
+
+        The label is read off the `[label]` block above each image, so the
+        pairing is the one a role makes rather than the one the code asserts.
+        """
+        import base64
+
+        attached = {}
+        for index, block in enumerate(blocks):
+            if block.get("type") != "image":
+                continue
+            above = blocks[index - 1]["text"]
+            label = above[1:above.index("]")]
+            attached[label] = base64.b64decode(block["source"]["data"])
+        return attached
+
+    def test_each_message_block_carries_its_own_crops_bytes(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        bundle = load_bundle(bundle_supplemented_dir)
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        attached = self._attached(orch.messages[0]["content"])
+        expected = {label: path.read_bytes()
+                    for label, path in bundle.all_figures().items()}
+        assert attached == expected
+        # The two crops really are distinguishable, so the comparison above
+        # can fail: a fixture directory of identical PNGs cannot test this.
+        assert len(set(expected.values())) == 2
+
+    def test_the_reviewer_gets_the_same_bytes(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        bundle = load_bundle(bundle_supplemented_dir)
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        blocks, _ = orch._review_message({"study": {}})
+        assert self._attached(blocks) == {
+            label: path.read_bytes()
+            for label, path in bundle.all_figures().items()}
+
+    @pytest.mark.parametrize("label", ["table_01", "supplement_a_table_01"])
+    def test_the_checker_gets_that_exhibits_crop_footnote_and_content(
+            self, config_dir, bundle_supplemented_dir, tmp_path, label):
+        from meltiro.extraction_record import ExtractionRecord
+
+        bundle = load_bundle(bundle_supplemented_dir)
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        record = ExtractionRecord()
+        record.apply_update_study(study={
+            "sample_size": {"value": 402, "evidence": f"<img>{label}</img>"},
+        })
+        orch.extraction_record = record
+        calls, _ = orch._build_checker_calls(["study.sample_size"])
+        blocks = calls[0]["user_message_blocks"]
+
+        assert self._attached(blocks) == {
+            label: bundle.all_figures()[label].read_bytes()}
+        # The footnote and the content of THAT exhibit, identified by the part
+        # that differs between the two documents rather than by their shared
+        # opening words.
+        block = next(b["text"] for b in blocks
+                     if b.get("type") == "text"
+                     and b["text"].startswith(f"[{label}]"))
+        assert bundle.all_exhibit_notes()[label] in block
+        assert read_transcription(bundle.all_tables()[label]) in block
+        other = ("supplement_a_table_01" if label == "table_01"
+                 else "table_01")
+        assert bundle.all_exhibit_notes()[other] not in block
+        assert read_transcription(bundle.all_tables()[other]) not in block
