@@ -273,7 +273,9 @@ class TestThePapersIdentity:
             bundle_transcribed_dir).study_id
 
     @pytest.mark.parametrize("edit", ["prose", "crop", "transcription",
-                                      "title", "withdrawn"])
+                                      "title", "caption", "notes",
+                                      "notes-removed", "renamed",
+                                      "withdrawn"])
     def test_every_part_of_a_supplement_moves_it(
             self, bundle_supplemented_dir, tmp_path, edit):
         import json
@@ -298,6 +300,32 @@ class TestThePapersIdentity:
             path = dst / "supplements.json"
             declared = json.loads(path.read_text(encoding="utf-8"))
             declared["supplements"][0]["title"] = "Supplement A. Renamed"
+            path.write_text(json.dumps(declared), encoding="utf-8")
+        elif edit in ("caption", "notes", "notes-removed"):
+            # `supplements.json`'s free prose. Every role is shown it, and
+            # nothing else in the bundle hashes this file.
+            path = dst / "supplements.json"
+            declared = json.loads(path.read_text(encoding="utf-8"))
+            exhibit = declared["supplements"][0]["exhibits"][0]
+            if edit == "caption":
+                exhibit["caption"] = "Table S1. MEAN turnaround time by shift"
+            elif edit == "notes":
+                exhibit["notes"] = "SD, standard deviation. Site A only."
+            else:
+                del exhibit["notes"]
+            path.write_text(json.dumps(declared), encoding="utf-8")
+        elif edit == "renamed":
+            # ONLY the name: same prose, same title, same exhibit under the
+            # same label, in a directory called something else. Which document
+            # a value came out of is the name — the message prints it in the
+            # section's delimiters — so the name has to be hashed in its own
+            # right, and every other edit here would move an axis even if it
+            # were not.
+            (dst / "supplements" / "supplement_a").rename(
+                dst / "supplements" / "supplement_b")
+            path = dst / "supplements.json"
+            declared = json.loads(path.read_text(encoding="utf-8"))
+            declared["supplements"][0]["name"] = "supplement_b"
             path.write_text(json.dumps(declared), encoding="utf-8")
         elif edit == "withdrawn":
             shutil.rmtree(dst / "supplements")

@@ -595,11 +595,20 @@ def _supplement_payload(bundle):
     One entry per supplement, in name order, carrying everything a run is
     shown out of it: the name and the printed title, a digest of the prose
     (a digest rather than the prose itself, so the preimage stays a fixed
-    size whatever a supplement runs to), and its crops and transcriptions as
-    `figures_fp`'s own (label, digest) pairs.
+    size whatever a supplement runs to), each exhibit's caption and printed
+    footnote, and its crops and transcriptions as `figures_fp`'s own
+    (label, digest) pairs.
 
     `None` for a supplement that prints no prose, which is a different fact
     from an empty one and hashes differently from it.
+
+    The captions and footnotes are here because `supplements.json` is hashed
+    NOWHERE ELSE. The article's are covered by `manifest_fp`, which digests
+    `manifest.json` whole, and a supplement's declaration has no such
+    wholesale cover — so free prose that every role is shown, and that says
+    what an exhibit reports, would otherwise move no axis at all. A caption
+    edited from "median" to "mean" tells three roles the exhibit reports
+    something the crop does not, and this is the axis that has to notice.
     """
     entries = []
     for name in sorted(bundle.supplements):
@@ -609,6 +618,8 @@ def _supplement_payload(bundle):
             "title": supplement.title,
             "text": (_sha256(supplement.text)
                      if supplement.text is not None else None),
+            "exhibits": sorted(supplement.exhibits.items()),
+            "exhibit_notes": sorted(supplement.exhibit_notes.items()),
             "figures": _label_digests(supplement.figures),
             "tables": _label_digests(supplement.tables),
         })
