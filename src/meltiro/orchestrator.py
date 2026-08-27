@@ -846,9 +846,11 @@ class Orchestrator:
         # supplement's crop with no baseline here is a crop whose re-cropping
         # `supplements_fp` reports in aggregate and nothing attributes to a
         # label.
-        if self.bundle.all_figures():
-            self.session.capture_image_hashes(
-                sorted(self.bundle.all_figures().values()))
+        attached_bytes = dict(self.figures)
+        for supplement in self.supplements:
+            attached_bytes.update(dict(supplement["figures"]))
+        if attached_bytes:
+            self.session.capture_image_hashes(attached_bytes)
         # The paper's own fingerprint, from the same bundle. Unconditional — a
         # paper with no figures is still a paper the run must name — and in no
         # other fingerprint (see fingerprint.bundle_fingerprint).

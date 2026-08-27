@@ -1413,12 +1413,19 @@ class _Renderer:
                      # session that recorded none for any exhibit.
                      _cell(_present(e["notes"], absent="*(none printed)*")
                            if "notes" in e else _present(None)),
+                     # Whether the exhibit's content rode with the crop as
+                     # text. The record carries it at every diagnostics level
+                     # and nothing read it, so the one question it answers —
+                     # was this cell read as text or off pixels — could not be
+                     # answered from the document a reader is handed.
+                     ("yes" if e.get("transcribed") else "no")
+                     if "transcribed" in e else _present(None),
                      _code_cell((hashes.get(e["label"]) or {}).get("sha256")),
                      _present((hashes.get(e["label"]) or {}).get(
                          "byte_length"))]
                     for e in exhibits]
             self._block(_table(
-                ["Label", "Caption", "Footnote",
+                ["Label", "Caption", "Footnote", "Content as text",
                  "SHA-256 of the cropped PNG", "Bytes"],
                 rows))
         extra = sorted(set(hashes) - set(labels))

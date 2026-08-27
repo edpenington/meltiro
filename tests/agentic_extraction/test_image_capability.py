@@ -152,7 +152,9 @@ class TestRegistryFlag:
             assert model_supports_images(mid) is expected, mid
 
     def test_unknown_model_raises(self):
-        with pytest.raises(ValueError):
+        # Named, so the test cannot pass on some other ValueError raised for
+        # some other reason on the way.
+        with pytest.raises(ValueError, match="no-such-model"):
             model_supports_images("no-such-model")
 
 
@@ -433,7 +435,13 @@ class TestCheckerAttachment:
         # sends a verdict on an exhibit nobody saw.
         orch = _checker_orch(config_dir, bundle_supplemented_dir,
                              tmp_path, "claude-sonnet-4-6")
-        assert orch.image_labels == set(orch.image_figures)
+        # Compared with the BUNDLE, not with each other: both maps are built
+        # in `__init__` from one expression, so narrowing both to the
+        # article's crops would satisfy an equality between them.
+        expected = {label.lower() for label in
+                    load_bundle(bundle_supplemented_dir).all_figures()}
+        assert orch.image_labels == expected
+        assert set(orch.image_figures) == expected
 
     def test_the_attached_crops_footnote_arrives_under_its_label(
             self, config_dir, bundle_minimal_dir, tmp_path):

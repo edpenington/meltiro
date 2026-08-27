@@ -644,6 +644,7 @@ class TestItReadsStartToFinish:
             document.index("## 7. The tool definitions in full"):]
         tools = json.loads((session.session.instrument_dir /
                             "tool_definitions.json").read_text())
+        assert tools, "an empty catalogue makes every assertion below vacuous"
         for tool in tools:
             assert tool["description"] in appendix
             assert json.dumps(tool["input_schema"], indent=2,
@@ -656,6 +657,7 @@ class TestItReadsStartToFinish:
                     "diagnostics" / "transcript.md").read_text()
         tools = json.loads((session.session.instrument_dir /
                             "tool_definitions.json").read_text())
+        assert tools, "an empty catalogue makes every assertion below vacuous"
         for tool in tools:
             anchor = f'<a id="tool-{tool["name"].replace("_", "-")}"></a>'
             assert document.count(anchor) == 1, tool["name"]
@@ -962,7 +964,13 @@ class TestOneCodePath:
         before = {p.name: p.read_bytes()
                   for p in (session_dir / "diagnostics").iterdir()
                   if p.is_file()}
-        assert render_transcript(session_dir) == render_transcript(session_dir)
+        # Two renders of the same session. The length floor is what stops
+        # the equality being vacuous: an empty document, or a renderer that
+        # returned nothing at all, compares equal to itself.
+        first = render_transcript(session_dir)
+        second = render_transcript(session_dir)
+        assert first == second
+        assert len(first) > 1000
         after = {p.name: p.read_bytes()
                  for p in (session_dir / "diagnostics").iterdir()
                  if p.is_file()}

@@ -1481,3 +1481,40 @@ class TestTheManifestIsTheMessagesOwnSequence:
               "figures": [(label, path.read_bytes())
                           for label, path in supplement.figures.items()]}],
         )
+
+
+class TestTheBriefingOffersNoRouteTheValidatorRefuses:
+    """The refused route is absent, not merely outnumbered.
+
+    The test written with the fix asserted the new sentences were PRESENT, so
+    appending the pre-fix route back — "reported in the field's `notes`, which
+    is a complete and sufficient route for any field" — passed. A briefing can
+    say both things, and a role reading the second one walks into the refusal
+    the first exists to prevent.
+    """
+
+    def _sentences_about(self, text, word):
+        import re
+
+        return [part.strip() for part in re.split(r"(?<=\.)\s+", text)
+                if word in part]
+
+    def test_one_sentence_governs_a_supplements_prose_as_support(
+            self, config_dir):
+        from meltiro.config_bundle import load_config_bundle
+
+        bundle = load_config_bundle(config_dir)
+        text = build_system_message(
+            system_prompt_path=bundle.extractor_system_path,
+            reference_lists=bundle.reference_lists)
+        # EVERY sentence that offers `notes` for what a supplement's prose
+        # says has to name the requirement it does not satisfy. A briefing
+        # can hold two sentences, and a role reading the unqualified one walks
+        # into the refusal the other exists to prevent — which is why
+        # asserting the qualified sentence is present does not settle it.
+        sentences = [s for s in self._sentences_about(text, "notes")
+                     if "supplement" in s]
+        assert sentences, "the route is not offered at all"
+        for sentence in sentences:
+            assert "evidence is required" in sentence \
+                or "requiring evidence" in sentence, sentence

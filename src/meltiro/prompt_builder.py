@@ -733,6 +733,15 @@ def build_review_user_blocks(study_id, paper_text, figures,
 
     extraction_record_text = json.dumps(
         extraction_record_dict, indent=2, ensure_ascii=False)
+    # The one delimiter pair whose contents are MODEL output rather than
+    # bundle text, so the loader's refusal cannot cover it. `json.dumps`
+    # escapes a newline, which is why a forged close line cannot occupy a line
+    # of its own — but it leaves U+2028 and U+2029 alone, and `splitlines`
+    # splits on both. Escaped here, in the block that frames the output, so a
+    # value a model writes cannot end the block it sits in.
+    extraction_record_text = (extraction_record_text
+                              .replace("\u2028", "\\u2028")
+                              .replace("\u2029", "\\u2029"))
     blocks.append({
         "type": "text",
         "text": (

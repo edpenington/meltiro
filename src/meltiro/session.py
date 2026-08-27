@@ -51,6 +51,7 @@ assistant side from each turn's `assistant_message` event, the tool_result
 side from the same serialisation the live loop sent).
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -322,17 +323,24 @@ class Session:
             return
         self._api_writer.write(entry)
 
-    def capture_image_hashes(self, figure_paths):
-        """At session start, sha256 every cropped figure used by this
-        study so subsequent re-cropping is detectable. `figure_paths`
-        is an iterable of pathlib.Path. Stored in meta as
-        `image_hashes: {label: {sha256, byte_length}}`.
+    def capture_image_hashes(self, attached):
+        """At session start, sha256 every crop the run ATTACHED, so
+        re-cropping afterwards is detectable. `attached` is
+        `{label: png_bytes}` — the bytes already in the message. Stored in
+        meta as `image_hashes: {label: {sha256, byte_length}}`.
 
-        The recipe is `fingerprint.figure_hashes`, the same one `figures_fp`
-        is built from, so this per-image record and the bundle fingerprint
-        beside it are the same numbers.
+        The bytes, not the paths, because this record is what the wire log's
+        per-image digests are compared against (`api_logger`): a second read
+        of the directory would describe a later moment than the message did,
+        and a crop replaced between construction and session start would make
+        the two disagree while both were honestly computed. `figures_fp` reads
+        the directory on purpose — it is the paper's identity on disk — and
+        the pair is then two statements rather than one made twice.
         """
-        self.meta["image_hashes"] = figure_hashes(figure_paths)
+        self.meta["image_hashes"] = {
+            label: {"sha256": hashlib.sha256(data).hexdigest(),
+                    "byte_length": len(data)}
+            for label, data in sorted(attached.items())}
         self.write_meta()
 
     def capture_bundle_fingerprint(self, bundle):

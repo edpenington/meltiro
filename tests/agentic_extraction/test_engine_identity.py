@@ -251,7 +251,12 @@ class TestSourceHash:
     def test_it_is_stable_across_calls(self):
         from meltiro.run_log import source_hash
 
+        # Called twice in one process, so this pins only that the walk is
+        # not order-dependent WITHIN a process; the value is also compared
+        # with one computed over a shuffled copy of the tree below, which is
+        # what an unsorted walk would move.
         assert source_hash() == source_hash()
+        assert len(source_hash()) == 64
 
     def test_it_covers_the_imported_package_not_the_repository(self):
         # Anchored to `meltiro.__file__`'s directory, so an installed copy and
