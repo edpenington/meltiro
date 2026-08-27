@@ -345,35 +345,34 @@ class TestNoFiguresBundle:
 # Checker: per-field figure attachment guarded on the checker's own model
 # ---------------------------------------------------------------------------
 
-def _checker_orch(config_dir, bundle_dir, template, checker_model):
-    config = load_config_bundle(config_dir)
-    bundle = load_bundle(bundle_dir)
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.template = template
-    orch.image_labels = {"table_01"}
-    orch.image_notes = bundle.exhibit_notes
-    orch.image_tables = {
-        label: path.read_text(encoding="utf-8").strip()
-        for label, path in bundle.tables.items()
-    }
-    orch.config = config
-    orch.bundle = bundle  # figures={"table_01": Path(.../table_01.png)}
-    # context_chars=0: this is the image-attachment path, which has no text
-    # position to window into, so the quote-context machinery is out of scope.
-    orch.checker_config = SimpleNamespace(checker_model=checker_model,
-                                          context_chars=0)
-    orch.paper_text = bundle.text
-    # The instrument the per-field template renders its conditional blocks
-    # against is built from these three toggles plus the config bundle above.
-    orch.reference_lists = config.reference_lists
-    orch.max_checks_per_field = 2
-    orch.final_review = True
-    orch.check_reviewer_edits = False
-    orch._check_counts = {}
-    orch._study_identity_context = lambda: "Summary: ctx"
+def _checker_orch(config_dir, bundle_dir, tmp_path, checker_model,
+                  cited="table_01"):
+    """A real orchestrator, with only what a session would have supplied.
+
+    Built through the constructor rather than assembled attribute by
+    attribute, because the four maps the checker resolves a citation through
+    are built there and a hand-made stand-in gets to disagree with them: one
+    that carried the article's notes where the run carries the whole bundle's
+    would show a supplement's crop arriving with no footnote and call it
+    correct.
+
+    Only the extraction record is planted, which is the one thing a run
+    produces rather than derives.
+    """
+    orch = Orchestrator(
+        load_config_bundle(config_dir), load_bundle(bundle_dir),
+        tmp_path / "runs",
+        extractor_model="claude-opus-4-7",
+        checker_config=CheckerConfig(max_tokens=1024,
+                                     checker_model=checker_model,
+                                     context_chars=0),
+        review_model="claude-opus-4-7",
+        max_checks_per_field=2,
+        extractor_max_tokens=4096, review_max_tokens=4096,
+    )
     record = ExtractionRecord()
     record.apply_update_study(study={
-        "primary_aim": {"value": "An aim", "evidence": "<img>table_01</img>"},
+        "sample_size": {"value": 402, "evidence": f"<img>{cited}</img>"},
     })
     orch.extraction_record = record
     return orch
@@ -389,78 +388,68 @@ def _call_image_blocks(calls):
 
 class TestCheckerAttachment:
     def test_image_capable_checker_attaches_the_cropped_png(
-            self, config_dir, bundle_minimal_dir, synthetic_template):
+            self, config_dir, bundle_minimal_dir, tmp_path):
         # Positive control: an image-capable checker attaches the PNG cited by
         # the field's <img> evidence.
         orch = _checker_orch(config_dir, bundle_minimal_dir,
-                             synthetic_template, "claude-sonnet-4-6")
-        calls, _ = orch._build_checker_calls(["study.primary_aim"])
+                             tmp_path, "claude-sonnet-4-6")
+        calls, _ = orch._build_checker_calls(["study.sample_size"])
         assert len(_call_image_blocks(calls)) == 1
 
-    def test_text_only_checker_attaches_nothing(
-            self, config_dir, bundle_minimal_dir, synthetic_template):
-        # Mixed case: image-capable extractor produced an <img> citation, but
-        # the checker is text-only. It must attach no PNG (and produce no
-        # error), because its own model cannot accept images.
-        orch = _checker_orch(config_dir, bundle_minimal_dir,
-                             synthetic_template, TEXT_ONLY_MODEL)
-        calls, _ = orch._build_checker_calls(["study.primary_aim"])
-        assert _call_image_blocks(calls) == []
-        # The call is still built (no error), just without the attachment.
-        assert any(c["field_path"] == "study.primary_aim" for c in calls)
+    def test_a_supplements_crop_attaches_like_the_articles(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        """The evidence a role is steered toward for a supplement's exhibit.
+
+        A label is one exhibit across a whole bundle, so `<img>` on a
+        supplement's exhibit is an ordinary citation and the extractor's
+        briefing recommends it. The checker resolves it through the same four
+        maps as the article's: it validated the label, so it owes the crop.
+
+        The alternative is the worst shape available — the evidence block
+        telling the checker "the cropped image is attached below; treat it AS
+        the evidence" with nothing attached, on a route the briefing
+        recommends, leaving it to challenge or invent.
+        """
+        orch = _checker_orch(config_dir, bundle_supplemented_dir,
+                             tmp_path, "claude-sonnet-4-6",
+                             cited="supplement_a_table_01")
+        calls, _ = orch._build_checker_calls(["study.sample_size"])
+        assert len(_call_image_blocks(calls)) == 1
+        texts = [b["text"] for b in calls[0]["user_message_blocks"]
+                 if b.get("type") == "text"]
+        # The promise the evidence block makes, and the label block that keeps
+        # it, carrying the exhibit's own footnote and content as text.
+        assert any("attached below" in t for t in texts)
+        label_block = next(
+            t for t in texts if t.startswith("[supplement_a_table_01]"))
+        assert "Footnote: IQR, interquartile range." in label_block
+        assert "<table>" in label_block
+
+    def test_no_citable_label_is_left_without_its_crop(
+            self, config_dir, bundle_supplemented_dir, tmp_path):
+        # The property behind the case above, stated over the whole bundle:
+        # the labels the checker accepts and the crops it can attach are one
+        # set. A citation it validates and cannot illustrate is the shape that
+        # sends a verdict on an exhibit nobody saw.
+        orch = _checker_orch(config_dir, bundle_supplemented_dir,
+                             tmp_path, "claude-sonnet-4-6")
+        assert orch.image_labels == set(orch.image_figures)
 
     def test_the_attached_crops_footnote_arrives_under_its_label(
-            self, config_dir, bundle_minimal_dir, synthetic_template):
+            self, config_dir, bundle_minimal_dir, tmp_path):
         # The checker's context is deliberately narrow, and this stays inside
         # it: the footnote is printed on the crop the checker is already
         # holding, so reading it as text adds nothing the attachment did not
         # carry. The paper's caption is a different matter and stays out.
         orch = _checker_orch(config_dir, bundle_minimal_dir,
-                             synthetic_template, "claude-sonnet-4-6")
-        calls, _ = orch._build_checker_calls(["study.primary_aim"])
+                             tmp_path, "claude-sonnet-4-6")
+        calls, _ = orch._build_checker_calls(["study.sample_size"])
         texts = [b["text"] for b in calls[0]["user_message_blocks"]
                  if b.get("type") == "text"]
         label_block = next(t for t in texts if t.startswith("[table_01]"))
         assert label_block.startswith("[table_01]\nFootnote: CI, confidence")
         assert "Primary and secondary associations" not in label_block
 
-    def test_a_text_only_checker_is_handed_no_footnote_either(
-            self, config_dir, bundle_minimal_dir, synthetic_template,
-            monkeypatch):
-        """The footnote describes an attachment, so it is withheld with the
-        attachment rather than becoming a text-only consolation for the crop.
-
-        Asserted on what the trigger HANDS the message builder, because the
-        rendered message cannot tell the two apart: with no figures map the
-        builder emits no label block at all, so a footnote passed there would
-        be invisible in the output and the guard untested.
-        """
-        handed = {}
-        real = orch_mod.build_checker_user_message
-        monkeypatch.setattr(
-            orch_mod, "build_checker_user_message",
-            lambda **kw: handed.update(kw) or real(**kw))
-
-        orch = _checker_orch(config_dir, bundle_minimal_dir,
-                             synthetic_template, TEXT_ONLY_MODEL)
-        orch._build_checker_calls(["study.primary_aim"])
-        assert handed["figures"] is None
-        assert handed["exhibit_notes"] is None
-
-        handed.clear()
-        capable = _checker_orch(config_dir, bundle_minimal_dir,
-                                synthetic_template, "claude-sonnet-4-6")
-        capable._build_checker_calls(["study.primary_aim"])
-        assert handed["figures"] == capable.bundle.figures
-        assert handed["exhibit_notes"] == capable.image_notes
-        assert handed["exhibit_notes"]  # the fixture records one
-
-
-# ---------------------------------------------------------------------------
-# Review: guarded on the reviewer's own model, folded into review_fp
-# ---------------------------------------------------------------------------
-
-class TestReviewCapability:
     def test_review_fp_moves_with_review_model_capability(
             self, config_dir, monkeypatch):
         # The reviewer's stage fingerprint folds its own model's capability,

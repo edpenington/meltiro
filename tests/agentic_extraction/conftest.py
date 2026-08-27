@@ -95,6 +95,7 @@ def checker_trigger_orch(template, extraction_record, *,
     orch.image_labels = set()
     orch.image_notes = {}
     orch.image_tables = {}
+    orch.image_figures = {}
     orch.bundle = SimpleNamespace(figures={}, tables={})
     orch.config = SimpleNamespace(partials_dir="/unused")
     orch.checker_config = SimpleNamespace(

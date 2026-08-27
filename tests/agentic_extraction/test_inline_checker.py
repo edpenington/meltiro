@@ -262,6 +262,7 @@ def _live_orch(tmp_path, template, paper_text, image_labels, *,
     orch.image_labels = image_labels
     orch.image_notes = {}
     orch.image_tables = {}
+    orch.image_figures = {}
     orch.paper_text = paper_text
     orch.bundle = SimpleNamespace(figures={}, tables={})
     orch.config = SimpleNamespace(partials_dir="/unused",

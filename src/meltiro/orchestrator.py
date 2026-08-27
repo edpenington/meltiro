@@ -393,6 +393,17 @@ class Orchestrator:
             label.strip().lower(): path.read_text(encoding="utf-8").strip()
             for label, path in bundle.all_tables().items()
         }
+        # Where each crop IS, on that same key: the map a role's citation is
+        # resolved through when the crop has to be attached again away from
+        # the opening message, which is the checker's whole case. It is built
+        # here, from `all_figures()`, for the reason the three above are —
+        # a checker handed the article's map alone accepts a supplement's
+        # label as a citation, says the crop is attached, and attaches
+        # nothing, because the label set and the file map disagreed about
+        # which document they covered.
+        self.image_figures = {
+            label.strip().lower(): path
+            for label, path in bundle.all_figures().items()}
         # Each supplement as the message builders take one: its name, the
         # title the paper prints for it, its prose where it printed any, and
         # its own crops read here beside the article's. Built once, in name
@@ -3873,20 +3884,17 @@ class Orchestrator:
         if not checkable:
             return [], {}
 
-        # Guard on the checker's own model. A text-only checker attaches no
-        # cropped PNGs and renders evidence with no image references (empty
-        # label set, no figures map); the guard matters in the mixed case
-        # (image-capable extractor, text-only checker).
-        if model_supports_images(self.checker_config.checker_model):
-            checker_image_labels = self.image_labels
-            checker_figures = self.bundle.figures
-            checker_notes = self.image_notes
-            checker_tables = self.image_tables
-        else:
-            checker_image_labels = set()
-            checker_figures = None
-            checker_notes = None
-            checker_tables = None
+        # The four maps the checker resolves a citation through, all four the
+        # WHOLE bundle's and all four keyed the same way. They travel together
+        # because they answer one question between them — what this label is,
+        # where its crop is, what it prints underneath, and what its content
+        # says — and a checker holding three of them agrees with the extractor
+        # about which labels exist while disagreeing about which crops it can
+        # produce.
+        checker_image_labels = self.image_labels
+        checker_figures = self.image_figures
+        checker_notes = self.image_notes
+        checker_tables = self.image_tables
 
         calls = []
         envelopes = {}
