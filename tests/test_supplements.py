@@ -359,6 +359,47 @@ class TestTheDryRunPreviewIsTheMessage:
         out = capsys.readouterr().out
         assert "(supplement_a) [supplement_a_table_01]" in out
 
+    def test_the_preview_carries_the_section_the_message_carries(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        """The supplement's own framing, previewed before anything is spent.
+
+        A dry run exists to show what a run would send, and a supplement's
+        prose rides in the same cached user message as the paper's, which is
+        most of what that run pays for. The delimiters are the part an
+        operator cannot read off the bundle: they are the engine's, and they
+        are what tells a role which document a value came out of.
+        """
+        supplemented = load_bundle(bundle_supplemented_dir)
+        supplement = next(iter(supplemented.supplements.values()))
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        report = orch.dry_run_report()
+        out = capsys.readouterr().out
+
+        for previewed in (report["user_message"], out):
+            assert supplement_open(
+                supplement.name, supplement.title) in previewed
+            assert supplement_close(supplement.name) in previewed
+            # Its prose in full, and the article's beside it: the message
+            # holds both, so a preview of one is a preview of half the spend.
+            assert supplement.text.strip() in previewed
+            assert supplemented.text.strip() in previewed
+
+    def test_the_preview_reports_the_axis_a_supplement_moves(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        # A dry run is per-paper, so whether supplementary material moved the
+        # input's identity is answerable without paying for the run that
+        # would record it.
+        orch = self._orch(config_dir, bundle_supplemented_dir,
+                          tmp_path / "runs")
+        report = orch.dry_run_report()
+        capsys.readouterr()
+        fps = report["fingerprints"]
+        expected = bundle_fingerprint(load_bundle(bundle_supplemented_dir))
+        for axis, value in expected.items():
+            assert fps[axis] == value, (
+                f"the preview's {axis} is not the one a run would record")
+
 
 class TestTheTextOnlyRoleIsSentNone:
     def test_no_section_reaches_a_role_sent_no_crops(
@@ -455,3 +496,94 @@ class TestEveryRoleShownASectionIsBriefedOnIt:
         assert "supplement" not in briefings["checker"].lower(), (
             "the checker is shown no supplement section, so naming one to it "
             "describes a part of the message it cannot see")
+
+
+class TestThePreviewIsTheMessageBlockForBlock:
+    """`--dry-run` exists to show what a run would send before it spends, so
+    the preview is compared with the message a run actually starts from.
+
+    The comparison is built by reading the SENT blocks: each text block's text
+    verbatim, and where an attachment's bytes sit, the label read off the
+    block above it — which is how a person checking this report would do it,
+    and is not a second call of the code under test. A crop's bytes are the
+    only thing the preview cannot hold, and it names each one where it
+    attaches.
+    """
+
+    def _orch(self, config_dir, bundle_dir, out_dir, **kwargs):
+        from meltiro.checker import CheckerConfig
+        from meltiro.config_bundle import load_config_bundle
+        from meltiro.orchestrator import Orchestrator
+
+        return Orchestrator(
+            load_config_bundle(config_dir), load_bundle(bundle_dir), out_dir,
+            extractor_model="claude-opus-4-8",
+            checker_config=CheckerConfig(max_tokens=1024,
+                                         checker_model="claude-sonnet-4-6"),
+            review_model="claude-opus-4-8",
+            extractor_max_tokens=4096, review_max_tokens=4096,
+            **kwargs)
+
+    @staticmethod
+    def _read_back(blocks):
+        """What a reader of these blocks would write down as their text view.
+
+        An image block carries the crop's bytes and no label, so the label is
+        taken from the `[label]` the block above it opens with — the same
+        pairing a role makes when it reads the message.
+        """
+        parts = []
+        for index, block in enumerate(blocks):
+            if block["type"] == "text":
+                parts.append(block["text"])
+                continue
+            assert block["type"] == "image"
+            above = blocks[index - 1]["text"]
+            assert above.startswith("[")
+            parts.append(f"(image: {above[1:above.index(']')]}.png)")
+        return "\n\n".join(parts)
+
+    def test_the_extractor_preview_is_what_the_run_would_send(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        previewed = self._orch(config_dir, bundle_supplemented_dir,
+                               tmp_path / "preview", dry_run=True)
+        report = previewed.dry_run_report()
+        printed = capsys.readouterr().out
+
+        run = self._orch(config_dir, bundle_supplemented_dir,
+                         tmp_path / "runs")
+        run.prepare_new_session()
+        sent = run.messages[0]["content"]
+
+        assert report["user_message"] == self._read_back(sent)
+        assert report["user_message"] in printed
+        # Both crops ride as bytes and are named, not silently dropped.
+        assert sum(1 for b in sent if b["type"] == "image") == 2
+        assert report["user_message"].count("(image: ") == 2
+
+    def test_the_reviewer_preview_is_what_the_review_would_send(
+            self, config_dir, bundle_supplemented_dir, tmp_path, capsys):
+        # The reviewer's message differs from the extractor's in its framing
+        # and in carrying the extraction output, and its exhibits are guarded
+        # on its own model, so it is previewed from its own construction.
+        previewed = self._orch(config_dir, bundle_supplemented_dir,
+                               tmp_path / "preview", dry_run=True)
+        report = previewed.dry_run_report()
+        capsys.readouterr()
+
+        run = self._orch(config_dir, bundle_supplemented_dir,
+                         tmp_path / "runs")
+        sent, _ = run._review_message(run.REVIEW_OUTPUT_PLACEHOLDER)
+
+        assert report["review_user_message"] == self._read_back(sent)
+        # Everything but the output is previewed: the supplement's section
+        # reaches the reviewer as it reaches the extractor.
+        supplement = next(
+            iter(load_bundle(bundle_supplemented_dir).supplements.values()))
+        assert supplement_open(
+            supplement.name, supplement.title) in report[
+                "review_user_message"]
+        assert supplement.text.strip() in report["review_user_message"]
+        # And the one part a dry run cannot know says so rather than showing
+        # an empty record as if it were what the reviewer will be sent.
+        assert "not previewable" in report["review_user_message"]

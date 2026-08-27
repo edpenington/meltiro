@@ -184,11 +184,23 @@ without spending anything:
 ```
 
 A dry run makes no API call, needs no key, and creates no session. It loads and
-validates both bundles and prints the rendered prompts, the tool catalogue, the
-attached exhibits and the fingerprints. With the Checker on it also prints the
+validates both bundles and prints both halves of the conversation each role
+would be opened with: the system message, and the user message itself — the
+paper's whole text, every supplement in its own delimited section, and each
+exhibit under the label a role must cite with its footnote and its content as
+text where the bundle carries them. Each is projected from the message the run
+would send, so only the crops' bytes are absent, and each is named where it
+attaches. The reviewer's carries all of that too; the assembled extraction
+output is the one part of it that does not exist until a run has produced one,
+and the preview says so where it will sit.
+
+Beside them the report prints the tool catalogue, the exhibits attached, and
+the fingerprints: the run's own axes and the paper's, so whether a crop, a
+transcription or a supplement moved the input's identity is answerable without
+paying for the run that would record it. With the Checker on it also prints the
 scaffold every per-field check is asked through, and fills it in as a specimen
 check for the first field of your template a check could reach, so the question
-a check puts can be read before one is paid for. Add `--out DIR` to write them
+a check puts can be read before one is paid for. Add `--out DIR` to write it all
 to `{out}/{study}/dry_run/` as well. The same command without `--dry-run` calls
 the providers and needs their keys.
 

@@ -606,10 +606,15 @@ class TestTheDryRunPreviewIsTheMessage:
         orch.dry_run_report(tmp_path / "report")
         printed = capsys.readouterr().out
         block = printed.split("=== ATTACHED EXHIBITS (1) ===")[1]
-        block = block.split("=== FINGERPRINTS ===")[0]
+        # To the next section, whatever follows this one.
+        block = block.split("\n=== ")[0]
         lines = [ln for ln in block.split("\n") if ln.strip()]
-        assert lines[0].startswith("  [table_01] Table 1.")
-        assert lines[1].startswith("  Footnote: CI, confidence")
+        # The block opens by saying whose message these are: the exhibits a
+        # role receives are guarded on that role's own model, so a count
+        # standing alone is a count of nobody's message in particular.
+        assert lines[0].startswith("  (the extractor's message")
+        assert lines[1].startswith("  [table_01] Table 1.")
+        assert lines[2].startswith("  Footnote: CI, confidence")
 
     def test_a_text_only_extractor_previews_no_exhibits(
             self, config_dir, bundle_minimal_dir, tmp_path, capsys):

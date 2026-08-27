@@ -225,28 +225,6 @@ def supplement_blocks(supplement, captions=None, notes=None, tables=None):
     return blocks
 
 
-def supplement_render_text(supplement, captions=None, notes=None,
-                           tables=None):
-    """The text-only render of one supplement's section.
-
-    The blocks above minus the base64 bytes, on the terms
-    `render_user_prompt_text` renders the article's, so the recorded prompt
-    and the message cannot drift.
-    """
-    parts = [supplement_open(supplement["name"], supplement["title"])]
-    text = supplement.get("text")
-    if text:
-        parts.append(SUPPLEMENT_TEXT_OPEN + "\n" + text + "\n"
-                     + SUPPLEMENT_TEXT_CLOSE)
-    else:
-        parts.append(NO_SUPPLEMENT_TEXT_NOTICE)
-    for label, _ in supplement.get("figures") or []:
-        parts.append(image_label_text(label, captions, notes, tables))
-        parts.append(f"(image: {label}.png)")
-    parts.append(supplement_close(supplement["name"]))
-    return parts
-
-
 def image_label_text(label, captions=None, notes=None, tables=None):
     """The text block that introduces one attached exhibit.
 
@@ -463,39 +441,90 @@ def system_message_blocks(text):
     ]
 
 
+def message_figure_labels(figures, supplements=None):
+    """The labels a message attaches, in the order it attaches them.
+
+    The article's figure sequence followed by each supplement's, which is the
+    order `build_initial_user_blocks` and `build_review_user_blocks` emit
+    their image blocks in. One definition, because a text view of a message
+    pairs labels to image blocks by position: a second answer to this
+    question is a view that names the wrong crop.
+    """
+    labels = [label for label, _ in figures]
+    for supplement in supplements or []:
+        labels += [label for label, _ in supplement.get("figures") or []]
+    return labels
+
+
+def render_message_text(blocks, image_labels):
+    """The text-only view of a message, PROJECTED from that message.
+
+    Every text block's text verbatim, in the message's own order, with
+    `(image: LABEL.png)` written where each attachment's bytes are. Nothing
+    is re-rendered: the strings here are the strings in `blocks`, so a view
+    of a message cannot say one thing while the message says another. That is
+    the whole reason this takes blocks rather than the material they were
+    built from.
+
+    `image_labels` is the figure sequence those blocks were built from, in
+    the order they attach — the article's followed by each supplement's — and
+    is consumed one label per image block. An `image` block carries the
+    crop's bytes and no label, so the label has to come from the sequence
+    that built it; a caller passing a re-sorted, re-cased or short sequence
+    is naming attachments the message never carried, and the checks below
+    refuse it rather than writing a wrong label.
+    """
+    labels = iter(list(image_labels))
+    parts = []
+    for block in blocks:
+        kind = block.get("type")
+        if kind == "text":
+            parts.append(block["text"])
+        elif kind == "image":
+            label = next(labels, None)
+            if label is None:
+                raise ValueError(
+                    "the message attaches more images than the figure "
+                    "sequence has labels, so a text view of it would name "
+                    "the wrong crop")
+            parts.append(f"(image: {label}.png)")
+        else:
+            raise ValueError(f"unrenderable content block: {kind!r}")
+    left = list(labels)
+    if left:
+        raise ValueError(
+            f"the figure sequence carries labels the message does not "
+            f"attach: {left}")
+    return "\n\n".join(parts)
+
+
 def render_user_prompt_text(study_id, paper_text, image_labels,
                             image_captions=None, image_notes=None,
                             image_tables=None, supplements=None):
-    """Render the text-only view of the initial user message.
+    """The text-only view of the initial user message.
 
-    Mirrors `build_initial_user_blocks` minus the base64 image bytes,
-    suitable for capturing inline into the session as the canonical
-    "what was the user prompt" record. The exact text strings match
-    those `build_initial_user_blocks` emits as text content blocks, captions,
-    exhibit footnotes, transcriptions and the no-exhibits notice included.
+    Built by assembling that message and projecting it, so there is ONE
+    implementation of what the extractor is sent: captions, exhibit
+    footnotes, transcriptions, supplement sections, delimiters and the
+    no-exhibits notice all reach this view because they reach the message,
+    not because they are written out a second time here. It is what a session
+    captures as the canonical "what was the user prompt" record, and what
+    `--dry-run` prints before anything is spent.
+
+    Only the crops' bytes are absent, which is the one thing a written record
+    cannot hold; each is named where it attaches.
 
     `image_labels` is the labels of the figure sequence that message carries,
     in the order it carries them. A caller passing a re-sorted or re-cased set
     would record a prompt naming the same exhibits in a different form from the
     one that was sent, which is the one thing this function exists to rule out.
     """
-    header = _extractor_header(study_id)
-    parts = [
-        header,
-        "--- PAPER TEXT ---\n" + (paper_text or "")
-        + "\n--- END PAPER TEXT ---",
-    ]
-    labels = list(image_labels)
-    if not labels:
-        parts.append(NO_EXHIBITS_NOTICE)
-    for label in labels:
-        parts.append(image_label_text(label, image_captions, image_notes,
-                                      image_tables))
-        parts.append(f"(image: {label}.png)")
-    for supplement in supplements or []:
-        parts.extend(supplement_render_text(
-            supplement, image_captions, image_notes, image_tables))
-    return "\n\n".join(parts)
+    figures = [(label, b"") for label in image_labels]
+    blocks = build_initial_user_blocks(
+        study_id, paper_text or "", figures,
+        image_captions, image_notes, image_tables, supplements)
+    return render_message_text(
+        blocks, message_figure_labels(figures, supplements))
 
 
 def build_initial_user_blocks(study_id, paper_text, figures,

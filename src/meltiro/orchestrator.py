@@ -74,6 +74,7 @@ from meltiro.diagnostics import DEFAULT_DIAGNOSTICS, validate_diagnostics
 from meltiro.errors import AgenticExtractionError, truncation_report
 from meltiro.extraction_record import ROLE_REVIEW
 from meltiro.fingerprint import (
+    bundle_fingerprint,
     call_fingerprint as _call_fp,
     run_fingerprint as _run_fp)
 from meltiro.instrument import Instrument
@@ -95,7 +96,8 @@ from meltiro.prompt_builder import (
     build_initial_user_blocks,
     build_review_user_blocks,
     image_label_text,
-    render_user_prompt_text,
+    message_figure_labels,
+    render_message_text,
     system_message_blocks as extractor_sys_blocks,
 )
 from meltiro.template import load_template
@@ -899,12 +901,10 @@ class Orchestrator:
 
         # Initial conversation: empty messages list; the system + first
         # user message are added at the extractor turn. A text-only
-        # extractor gets no image blocks (ext_figures is empty).
-        self.initial_user_blocks = build_initial_user_blocks(
-            self.study_id, self.paper_text, ext_figures, self.image_captions,
-            self.image_notes, self.image_tables,
-            self._supplements_for(self.extractor_supports_images),
-        )
+        # extractor gets no image blocks (ext_figures is empty). Built by the
+        # one method the capture above was projected from, so the message
+        # sent and the message recorded are the same object's contents.
+        self.initial_user_blocks, _ = self._extractor_message()
         self.messages = [{"role": "user", "content": self.initial_user_blocks}]
         return self
 
@@ -1078,11 +1078,7 @@ class Orchestrator:
         # persisted meta.images_omitted carries over from session creation).
         self._warn_images_withheld()
         self._warn_inert_decoding_params()
-        self.initial_user_blocks = build_initial_user_blocks(
-            self.study_id, self.paper_text, ext_figures, self.image_captions,
-            self.image_notes, self.image_tables,
-            self._supplements_for(self.extractor_supports_images),
-        )
+        self.initial_user_blocks, _ = self._extractor_message()
         replayed = self.session.replay_messages()
         self.messages = [
             {"role": "user", "content": self.initial_user_blocks},
@@ -1118,6 +1114,21 @@ class Orchestrator:
         scaffold every check is rendered from, and one specimen check filled in
         from it for a real field of this template. A checker round is otherwise
         the one thing an operator cannot read without paying for it.
+
+        Both halves of the extractor's opening conversation are in it: the
+        system message and the user message the run would send, the second
+        rendered text-only through the helper a real run captures. That
+        message is where the paper's whole text, every supplement's prose and
+        each exhibit's label and transcription actually sit, so a report
+        showing the instrument alone would preview the smaller half of what a
+        run spends its input tokens on and none of the framing the engine
+        builds around the study.
+
+        The paper's own fingerprint axes are printed beside the run's, on the
+        keys `run.json` records them under. A dry run is per-paper, so the
+        question a bundle's axes answer — whether this crop, transcription or
+        supplement moved the input's identity — is answerable here without
+        paying for the run that would record them.
 
         Returns the rendered artefacts for inspection by callers and tests.
         """
@@ -1181,6 +1192,21 @@ class Orchestrator:
         review_system = (self._render_review_system_text()
                          if self.final_review else None)
 
+        # The extractor's user message, rendered by the same helper that
+        # captures it into a session, so the preview cannot say one thing and
+        # the message another. Text-only: an image block is rendered as the
+        # label text it is attached under, which is the most a written report
+        # can carry of a crop, and the exhibits block below itemises them.
+        user_message = self._render_user_prompt_text()
+        # The reviewer's, on the same terms and from the same construction the
+        # review turn sends. Its exhibits are guarded on the REVIEWER's model,
+        # so this is where a run with a text-only reviewer shows what that
+        # role is actually sent.
+        review_user_message = (
+            render_message_text(*self._review_message(
+                self.REVIEW_OUTPUT_PLACEHOLDER))
+            if self.final_review else None)
+
         fingerprints = {
             "study_id": self.study_id,
             "extractor_model": self.extractor_model,
@@ -1197,6 +1223,12 @@ class Orchestrator:
             "review_call_fp": fps["review_call_fp"],
             "engine_fp": fps["engine_fp"],
             "run_fp": fps["run_fp"],
+            # The paper, folded into none of the axes above: `run_fp` says
+            # what would be asked and `bundle_fp` what it would be asked of.
+            # Recomputed from the loaded bundle by the one recipe a run
+            # records, in the key order `run.json` uses, so a preview and a
+            # record of the same bundle are read the same way.
+            **bundle_fingerprint(self.bundle),
             "template_hash": self.instrument.template_hash,
             "prompt_hash": fps["prompt_hash"],
             "tool_set_hash": fps["tool_hash"],
@@ -1208,7 +1240,7 @@ class Orchestrator:
 
         self._print_dry_run(fingerprints, tool_catalogue, attached_exhibits,
                             checker_system, checker_scaffold, checker_round,
-                            review_system)
+                            review_system, user_message, review_user_message)
         # Loud run-start signals a real run start also emits. The inert-param
         # warning matters most here: the report above prints the RESOLVED
         # params, and only this says which value the operator wrote was
@@ -1220,9 +1252,12 @@ class Orchestrator:
             self._write_dry_run_report(
                 Path(report_dir), tool_catalogue, attached_exhibits,
                 checker_system, checker_scaffold, checker_round,
-                review_system, fingerprints)
+                review_system, fingerprints, user_message,
+                review_user_message)
         return {
             "system_text": self.system_text,
+            "user_message": user_message,
+            "review_user_message": review_user_message,
             "tool_catalogue": tool_catalogue,
             "attached_exhibits": attached_exhibits,
             "checker_system": checker_system,
@@ -1387,12 +1422,27 @@ class Orchestrator:
 
     def _print_dry_run(self, fingerprints, tool_catalogue, attached_exhibits,
                        checker_system, checker_scaffold, checker_round,
-                       review_system):
+                       review_system, user_message, review_user_message):
         """Print the full, untruncated dry-run report to stdout."""
         print("=== DRY RUN (no session created) ===\n")
         print(f"Study: {self.study_id}\n")
         print("=== SYSTEM MESSAGE ===\n")
         print(self.system_text)
+        # The extractor's other half, printed untruncated like the rest: the
+        # study delimited, then a section per supplement, then the exhibits
+        # itemised below in the order that message attaches them. The pair is
+        # kept together because it is one conversation.
+        print("\n=== USER MESSAGE (image blocks as their labels) ===\n")
+        print(user_message)
+        print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
+        print("  (the extractor's message; the reviewer's are guarded on its "
+              "own model)\n")
+        for entry in attached_exhibits:
+            # An entry is one exhibit and may run to two lines, the label and
+            # caption then the footnote under them. Indenting every line of it
+            # keeps the block one exhibit to the eye.
+            for line in entry.splitlines():
+                print(f"  {line}")
         print("\n=== TOOL CATALOGUE (canonical JSON) ===\n")
         print(tool_catalogue)
         if checker_system is not None:
@@ -1411,20 +1461,17 @@ class Orchestrator:
         if review_system is not None:
             print("\n=== REVIEW SYSTEM MESSAGE ===\n")
             print(review_system)
-        print(f"\n=== ATTACHED EXHIBITS ({len(attached_exhibits)}) ===\n")
-        for entry in attached_exhibits:
-            # An entry is one exhibit and may run to two lines, the label and
-            # caption then the footnote under them. Indenting every line of it
-            # keeps the block one exhibit to the eye.
-            for line in entry.splitlines():
-                print(f"  {line}")
+            print("\n=== REVIEW USER MESSAGE (image blocks as their "
+                  "labels) ===\n")
+            print(review_user_message)
         print("\n=== FINGERPRINTS ===\n")
         print(json.dumps(fingerprints, indent=2, sort_keys=False))
 
     def _write_dry_run_report(self, report_dir, tool_catalogue,
                               attached_exhibits, checker_system,
                               checker_scaffold, checker_round,
-                              review_system, fingerprints):
+                              review_system, fingerprints, user_message,
+                              review_user_message):
         """Write the dry-run report as plain files under `report_dir`.
 
         Deliberately NOT a session: no run.json, no status, no
@@ -1447,6 +1494,8 @@ class Orchestrator:
         try:
             (tmp_dir / "extractor_system.md").write_text(
                 self.system_text, encoding="utf-8")
+            (tmp_dir / "user_message.md").write_text(
+                user_message, encoding="utf-8")
             (tmp_dir / "tool_catalogue.json").write_text(
                 tool_catalogue, encoding="utf-8")
             # One exhibit per entry, and an entry starts at column 0: a
@@ -1474,6 +1523,8 @@ class Orchestrator:
             if review_system is not None:
                 (tmp_dir / "review_system.md").write_text(
                     review_system, encoding="utf-8")
+                (tmp_dir / "review_user_message.md").write_text(
+                    review_user_message, encoding="utf-8")
             # Swap the freshly written temp dir into place. A rename cannot
             # replace a non-empty directory, so remove the old report first,
             # then rename. The gap only ever exposes a missing report_dir.
@@ -2181,20 +2232,12 @@ class Orchestrator:
         # Guard on the reviewer's own model: a text-only reviewer is sent no
         # image parts and no label blocks, independent of the extractor's
         # capability.
-        review_figures, _ = self._review_image_inputs()
         review_system_text = self._render_review_system_text()
-        review_user_blocks = build_review_user_blocks(
-            self.study_id, self.paper_text, review_figures,
-            # Without the check blocks: the reviewer records its OWN quality
-            # check, so the extractor's self-assessment is withheld for the
-            # same reason the checker's verdicts are (see
-            # build_review_user_blocks).
-            self.extraction_record.to_dict(include_checks=False),
-            self.image_captions,
-            self.image_notes,
-            self.image_tables,
-            self._supplements_for(model_supports_images(self.review_model)),
-        )
+        # Without the check blocks: the reviewer records its OWN quality
+        # check, so the extractor's self-assessment is withheld for the same
+        # reason the checker's verdicts are (see build_review_user_blocks).
+        review_user_blocks, _ = self._review_message(
+            self.extraction_record.to_dict(include_checks=False))
         review_messages = [{"role": "user", "content": review_user_blocks}]
         tool_defs = get_tool_definitions(self.template, role=ROLE_REVIEW)
 
@@ -2704,26 +2747,76 @@ class Orchestrator:
                  in self.image_tables}
                 for label, _ in figures]
 
-    def _render_user_prompt_text(self):
-        """Text-only render of the initial user message, captured into
-        the session at creation time so the transcript view never has
-        to re-read the paper text from disk.
+    def _extractor_message(self):
+        """The extractor's opening user message, and the labels it attaches.
 
-        Built from the extractor's effective FIGURE SEQUENCE, which is what
+        The ONE construction of that message in this class: the conversation
+        is started from it, the session captures its text view, and
+        `--dry-run` prints that same view. A second construction anywhere
+        would be a second answer to "what is the extractor sent", and the two
+        would agree until one of them was edited.
+
+        The labels beside it are the effective FIGURE SEQUENCE, which is what
         `build_initial_user_blocks` iterates: the same labels, in the same
-        order, spelt the same way. The normalised label set beside it is the
-        dispatcher's, lower-cased and unordered, so a capture derived from that
-        would record the labels a message carries in a case and an order the
-        message never used. A text-only extractor's sequence is empty, and its
-        captured prompt states that none accompany the study, matching the
-        blocks actually sent."""
+        order, spelt the same way, the article's followed by each
+        supplement's. The normalised label set beside it is the dispatcher's,
+        lower-cased and unordered, so a view derived from that would name the
+        labels a message carries in a case and an order the message never
+        used. A text-only extractor's sequence is empty, and its message
+        states that none accompany the study.
+        """
         ext_figures, _ = self._extractor_image_inputs()
-        return render_user_prompt_text(
-            self.study_id, self.paper_text,
-            [label for label, _ in ext_figures], self.image_captions,
-            self.image_notes, self.image_tables,
-            self._supplements_for(self.extractor_supports_images),
+        supplements = self._supplements_for(self.extractor_supports_images)
+        blocks = build_initial_user_blocks(
+            self.study_id, self.paper_text, ext_figures, self.image_captions,
+            self.image_notes, self.image_tables, supplements,
         )
+        return blocks, message_figure_labels(ext_figures, supplements)
+
+    # What stands in the preview where the assembled extraction output goes.
+    # A dry run happens before there is one, and the alternative — an empty
+    # record, rendered as JSON — would preview a shape the reviewer is never
+    # sent, which is worse than saying plainly that this part is not knowable
+    # yet. Everything around it in that message IS knowable, and is previewed.
+    REVIEW_OUTPUT_PLACEHOLDER = (
+        "(not previewable: the assembled extraction output as it stands when "
+        "the review begins)")
+
+    def _review_message(self, extraction_record_dict):
+        """The reviewer's user message, and the labels it attaches.
+
+        The ONE construction of that message, on the extractor's terms above:
+        the review turn sends it, and `--dry-run` prints its text view. Its
+        guard is the REVIEWER's own model, so a text-only reviewer previews
+        the message a text-only reviewer is sent.
+
+        `extraction_record_dict` is the only part of it a dry run cannot
+        know, which is why it is the caller's argument rather than read from
+        `self` here: the review turn passes the output as it stands when the
+        review begins, and the preview passes a line saying so.
+        """
+        review_figures, _ = self._review_image_inputs()
+        supplements = self._supplements_for(
+            model_supports_images(self.review_model))
+        blocks = build_review_user_blocks(
+            self.study_id, self.paper_text, review_figures,
+            extraction_record_dict,
+            self.image_captions, self.image_notes, self.image_tables,
+            supplements,
+        )
+        return blocks, message_figure_labels(review_figures, supplements)
+
+    def _render_user_prompt_text(self):
+        """The text view of the message above, projected FROM it.
+
+        Captured into the session at creation time so the transcript view
+        never has to re-read the paper text from disk, and printed by
+        `--dry-run` so what a run would send can be read before it is paid
+        for. Only the crops' bytes are absent; each is named where it
+        attaches.
+        """
+        blocks, labels = self._extractor_message()
+        return render_message_text(blocks, labels)
 
     def _review_image_inputs(self):
         """The reviewer's effective (figures, labels).

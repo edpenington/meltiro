@@ -238,12 +238,21 @@ def test_build_review_user_blocks_has_no_challenge_parameter():
 
 
 def test_final_review_passes_the_reviewer_nothing_but_the_output():
-    # The engine side of the same guarantee: `_final_review` builds the
-    # reviewer's message from the study, the paper, the figures, and the
-    # extraction output, and nothing else reaches it.
+    # The engine side of the same guarantee: the reviewer's message is built
+    # from the study, the paper, the figures, and the extraction output, and
+    # nothing else reaches it.
+    #
+    # It is pinned across the two methods that share the construction, because
+    # that is where the guarantee now lives: `_review_message` assembles the
+    # message — the one construction, so the preview a dry run prints and the
+    # message the review turn sends cannot differ — and `_final_review`
+    # decides what output goes into it.
+    build = inspect.getsource(Orchestrator._review_message)
+    assert "unresolved" not in build.lower()
+    assert "build_review_user_blocks(" in build
     src = inspect.getsource(Orchestrator._final_review)
     assert "unresolved" not in src.lower()
-    assert "build_review_user_blocks(\n" in src
+    assert "_review_message(" in src
     # And it hands over the output WITHOUT the check blocks. The withholding is
     # a keyword at this one call site, so it is pinned at this one call site.
     assert "to_dict(include_checks=False)" in src
