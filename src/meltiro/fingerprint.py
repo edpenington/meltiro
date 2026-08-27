@@ -512,9 +512,11 @@ def bundle_fingerprint(bundle):
 
     Returns the six self-prefixed values a run records, as a dict:
 
-      - `text_fp`: SHA-256 of `text.md`'s bytes, the whole text the models
-        were shown.
-      - `figures_fp`: SHA-256 over the bundle's cropped figures as sorted
+      - `text_fp`: SHA-256 of the ARTICLE's `text.md`. Every role is also
+        shown each supplement's prose, which rides in `supplements_fp`: the
+        split is what lets a consumer identify the paper by the article's own
+        bytes.
+      - `figures_fp`: SHA-256 over the ARTICLE's cropped figures as sorted
         `(label, sha256-of-bytes)` pairs, so a re-crop, a swapped image or a
         renamed label all move it. A bundle with no figures folds in the
         module's `ABSENT_STAGE` sentinel, making "this paper supplies no
@@ -522,7 +524,7 @@ def bundle_fingerprint(bundle):
       - `manifest_fp`: SHA-256 of `manifest.json`'s canonical JSON, so an
         edited title, id, summary or exhibit caption moves it while a
         reformat or a key reordering does not.
-      - `tables_fp`: SHA-256 over the bundle's table transcriptions as sorted
+      - `tables_fp`: SHA-256 over the ARTICLE's table transcriptions as sorted
         `(label, sha256-of-bytes)` pairs, on exactly `figures_fp`'s terms, so
         a re-transcribed cell, a transcription added to an exhibit that had
         none, or one withdrawn all move it. A bundle transcribing nothing

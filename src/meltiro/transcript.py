@@ -1385,9 +1385,11 @@ class _Renderer:
         labels = [e["label"] for e in exhibits]
         if not exhibits:
             self._p(
-                "No figures were attached to the extractor's prompt, either "
-                "because the paper bundle has none or because the extractor's "
-                "model is text-only (section 1 says which)."
+                "No figures were attached to the extractor's prompt: the "
+                "paper bundle supplies none. Every role in a run reads the "
+                "paper's exhibits, so a run configured with a model that "
+                "cannot is refused before it starts — there is no other "
+                "reason this section can be empty."
             )
             self._p()
         else:

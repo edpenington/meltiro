@@ -654,8 +654,11 @@ different paper fingerprints identically, which is what makes those a statement
 about the question rather than the answer. The paper carries an identity of its
 own instead, recorded with the run and folded into nothing:
 
-- `text_fp` — `text.md`'s bytes, the whole text the models were shown.
-- `figures_fp` — the cropped figures, as sorted (label, content-hash) pairs.
+- `text_fp` — the ARTICLE's `text.md`, byte for byte. Every role is also
+  shown each supplement's prose, which rides in `supplements_fp`: the split
+  is what lets a consumer identify the paper by the article's own bytes.
+- `figures_fp` — the ARTICLE's cropped figures, as sorted (label,
+  content-hash) pairs.
   A paper supplying no crops hashes a fixed token, so "no figures" is a
   recorded fact rather than an absent one.
 - `manifest_fp` — the manifest's content: id, title, doi, summary and the

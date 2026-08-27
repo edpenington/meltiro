@@ -11,8 +11,8 @@ The initial user message is also cached: paper text + every cropped image,
 each image under its label and the paper's caption for it, which is where a
 role learns what an `<img>` citation may name, with the exhibit's printed
 footnote and its transcription where the bundle carries them — and, where the
-role is sent none, the statement that none accompany the study, so exhibit
-presence is a fact of the message on both sides of it. Both get
+study supplies none, the statement that none accompany it, so exhibit presence
+is a fact of the message either way. Both get
 `cache_control: ephemeral` markers so turns 2..N pay the 0.1x cache-read rate
 on the bulk of the prompt.
 
@@ -145,9 +145,9 @@ NO_EXHIBITS_NOTICE = "(no cropped figures or tables accompany this study)"
 # And where the article prints none but a supplement does. The message
 # attaches crops, so `NO_EXHIBITS_NOTICE` would be false; the article having
 # no exhibits of its own is still a fact a role would otherwise infer from a
-# gap, and it is the one the extractor's own initial check asks about. A paper
-# that ships its data tables as supplementary material is the ordinary case
-# here, not an edge.
+# gap, and a review whose initial check asks whether the figures were included
+# is asking about exactly this. A paper that ships its data tables as
+# supplementary material is the ordinary case here, not an edge.
 NO_ARTICLE_EXHIBITS_NOTICE = (
     "(the article prints no cropped figures or tables of its own; the "
     "supplementary material's follow in their own sections)")

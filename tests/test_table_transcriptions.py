@@ -373,10 +373,17 @@ class TestEveryRoleShownOneIsBriefedOnIt:
 
     @pytest.mark.parametrize("role", ["extractor", "reviewer"])
     def test_the_briefing_keeps_a_cell_out_of_a_quote(self, briefings, role):
-        assert "a cell is not a verbatim quote of the paper" in briefings[
-                role], (
+        # The instruction and its mechanism, and no claim about what a
+        # particular bundle's text.md contains: inline one table row into it
+        # and a cell quote validates, so a briefing that said a cell CANNOT
+        # be quoted would be asserting something the validator does not
+        # enforce.
+        text = briefings[role]
+        assert "cited as `<img>label</img>` and never quoted" in text, (
             f"the {role} writes evidence and is shown a table's content as "
-            "text, so it has to be told the content is not quotable")
+            "text, so it has to be told how to cite it")
+        assert "a `<q>` is resolved against the paper text alone" in text, (
+            f"the {role} is not told what a quote is checked against")
 
 
 class TestTheHashCoversWhatTheRoleReads:

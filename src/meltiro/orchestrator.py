@@ -427,7 +427,7 @@ class Orchestrator:
         # lookup happens to run first.
         self._refuse_unworkable_decoding()
 
-        # Declared per-role image capability, from the registry. A text-only
+        # Declared per-role image capability, from the registry. Every
         # extractor gets no image parts and no label blocks: its message states
         # that none accompany the study, and its dispatcher validates against
         # an empty label set, so citing an image it never saw fails as an
@@ -864,9 +864,9 @@ class Orchestrator:
         # Inputs derived from the bundle in __init__. That they are the
         # ORIGINAL bundle's is enforced below, by the paper axes passed to
         # `Session.resume` — not by config_fp, which folds in no part of the
-        # paper. A text-only extractor is resumed with the same empty
-        # figures/labels it started with, so the rebuilt prompt and fingerprint
-        # match the original session.
+        # paper. The figures and labels are rebuilt from the same bundle the
+        # session started against, so the rebuilt prompt and fingerprint match
+        # the original session.
         instrument = self.instrument
         ext_figures, ext_image_labels = self.figures, self.image_labels
         self.system_text = instrument.render_extractor_system_text()
@@ -1130,8 +1130,7 @@ class Orchestrator:
         user_message = self._render_user_prompt_text()
         # The reviewer's, on the same terms and from the same construction the
         # review turn sends. Its exhibits are guarded on the REVIEWER's model,
-        # so this is where a run with a text-only reviewer shows what that
-        # role is actually sent.
+        # so this is what that role is actually sent.
         review_user_message = (
             render_message_text(*self._review_message(
                 self.REVIEW_OUTPUT_PLACEHOLDER))
@@ -2150,9 +2149,8 @@ class Orchestrator:
                 f"disable the reviewer with final_review: false "
                 f"(or --no-final-review).")
 
-        # Guard on the reviewer's own model: a text-only reviewer is sent no
-        # image parts and no label blocks, independent of the extractor's
-        # capability.
+        # The reviewer's own message, from the one construction the preview
+        # is projected from.
         review_system_text = self._render_review_system_text()
         # Without the check blocks: the reviewer records its OWN quality
         # check, so the extractor's self-assessment is withheld for the same
@@ -2689,8 +2687,8 @@ class Orchestrator:
         supplement's. The normalised label set beside it is the dispatcher's,
         lower-cased and unordered, so a view derived from that would name the
         labels a message carries in a case and an order the message never
-        used. A text-only extractor's sequence is empty, and its message
-        states that none accompany the study.
+        used. A bundle supplying no crops has an empty sequence, and its
+        message states that none accompany the study.
         """
         ext_figures = self.figures
         supplements = self._supplements_for()
@@ -2714,8 +2712,7 @@ class Orchestrator:
 
         The ONE construction of that message, on the extractor's terms above:
         the review turn sends it, and `--dry-run` prints its text view. Its
-        guard is the REVIEWER's own model, so a text-only reviewer previews
-        the message a text-only reviewer is sent.
+        exhibits are the whole bundle's, as every role's are.
 
         `extraction_record_dict` is the only part of it a dry run cannot
         know, which is why it is the caller's argument rather than read from
